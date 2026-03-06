@@ -27,7 +27,7 @@ import { CursorExecHandlers } from "./cursor";
 import "./discovery";
 import { resolveConfigValue } from "./config/resolve-config-value";
 import { ToolResultBridge } from "./context/bridge";
-import { isAssemblerActive, isShadowMode, validateContextManagerConfig } from "./context-manager";
+import { isAssemblerActive, isShadowMode, ShadowTelemetry, validateContextManagerConfig } from "./context-manager";
 import { initializeWithSettings } from "./discovery";
 import { TtsrManager } from "./export/ttsr";
 import {

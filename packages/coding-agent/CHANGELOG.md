@@ -12,6 +12,7 @@
 
 ### Added
 
+- Added local assembler kernel V1 (`context/assembler/`) that produces `WorkingContextPacketV1` from `MemoryContractV1` using tiered memory scoring, locator-map hydration with token/latency budgeting, and freshness checks ([#3](https://github.com/durch/oh-my-pi/issues/3))
 - Added `thinking.ts` module with `getThinkingLevelMetadata()` and `resolveThinkingLevelForModel()` utilities for thinking level handling
 - Added `ThinkingConfig` support to model definitions for specifying supported thinking effort levels per model
 - Added `enrichModelThinking()` function to apply thinking configuration to models during registry initialization

@@ -26,6 +26,7 @@
 - Added fast mode indicator (⚡) to model segment in status line when priority service tier is active
 - Added context usage threshold levels (normal, warning, purple, error) with token-aware thresholds for better context awareness
 - Added `isFastModeEnabled()`, `setFastMode()`, and `toggleFastMode()` methods to AgentSession for fast mode control
+- Added shadow-mode context telemetry extension with NDJSON traces for context-assembly observability ([#2](https://github.com/durch/oh-my-pi/issues/2))
 
 ### Changed
 

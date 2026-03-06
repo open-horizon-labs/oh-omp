@@ -26,7 +26,7 @@ import { Settings, type SkillsSettings } from "./config/settings";
 import { CursorExecHandlers } from "./cursor";
 import "./discovery";
 import { resolveConfigValue } from "./config/resolve-config-value";
-import { validateContextManagerConfig } from "./context-manager";
+import { isShadowMode, ShadowTelemetry, validateContextManagerConfig } from "./context-manager";
 import { initializeWithSettings } from "./discovery";
 import { TtsrManager } from "./export/ttsr";
 import {
@@ -1526,6 +1526,14 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				}, debounceMs),
 			);
 		});
+	}
+
+	// ── Shadow-mode context telemetry ──────────────────────────────────────
+	if (isShadowMode(settings)) {
+		const telemetry = new ShadowTelemetry({ traceId: sessionId, mode: "shadow" });
+		session.subscribe(telemetry.observer);
+		postmortem.register("shadow-telemetry-flush", () => telemetry.close());
+		logger.debug("Shadow telemetry attached", { traceId: sessionId, path: telemetry.writer.filePath });
 	}
 
 	return {

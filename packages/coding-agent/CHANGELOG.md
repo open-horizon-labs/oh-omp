@@ -14,9 +14,9 @@
 
 - Added local assembler kernel V1 (`context/assembler/`) that produces `WorkingContextPacketV1` from `MemoryContractV1` using tiered memory scoring, locator-map hydration with token/latency budgeting, and freshness checks ([#3](https://github.com/durch/oh-my-pi/issues/3))
 - Added assembler context injection path: per-turn context assembly through `WorkingContextPacketV1` fragments injected as developer messages when `contextManager.mode = assembler` ([#4](https://github.com/durch/oh-my-pi/issues/4))
-- Added `formatAssembledContext()` formatter for structured XML-based context fragment injection (`context/assembler/format.ts`)
-- Added explicit legacy context injection guards gated on `isLegacyActive()` for memory summary and memory startup in assembler mode
-- Added assembler mode migration documentation (`docs/assembler-mode-migration.md`)
+- Added `formatAssembledContext()` formatter for structured XML-based context fragment injection (`context/assembler/format.ts`) ([#4](https://github.com/durch/oh-my-pi/issues/4))
+- Added explicit legacy context injection guards gated on `isLegacyActive()` for memory summary and memory startup in assembler mode ([#4](https://github.com/durch/oh-my-pi/issues/4))
+- Added assembler mode migration documentation (`docs/assembler-mode-migration.md`) ([#4](https://github.com/durch/oh-my-pi/issues/4))
 - Added `thinking.ts` module with `getThinkingLevelMetadata()` and `resolveThinkingLevelForModel()` utilities for thinking level handling
 - Added `ThinkingConfig` support to model definitions for specifying supported thinking effort levels per model
 - Added `enrichModelThinking()` function to apply thinking configuration to models during registry initialization

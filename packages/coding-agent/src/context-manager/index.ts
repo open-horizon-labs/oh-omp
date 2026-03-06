@@ -13,6 +13,8 @@ import { logger } from "@oh-my-pi/pi-utils";
 import type { Settings } from "../config/settings";
 import type { ContextManagerMode } from "../config/settings-schema";
 
+export type { ContextManagerMode } from "../config/settings-schema";
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Validation
 // ═══════════════════════════════════════════════════════════════════════════
@@ -134,3 +136,5 @@ export function getContextManagerState(settings: Settings): ContextManagerState 
 		shadowObserving: mode === "shadow",
 	};
 }
+
+export * from "./telemetry";

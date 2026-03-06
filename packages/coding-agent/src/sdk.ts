@@ -26,7 +26,8 @@ import { Settings, type SkillsSettings } from "./config/settings";
 import { CursorExecHandlers } from "./cursor";
 import "./discovery";
 import { resolveConfigValue } from "./config/resolve-config-value";
-import { validateContextManagerConfig } from "./context-manager";
+import { ToolResultBridge } from "./context/bridge";
+import { isAssemblerActive, isShadowMode, validateContextManagerConfig } from "./context-manager";
 import { initializeWithSettings } from "./discovery";
 import { TtsrManager } from "./export/ttsr";
 import {
@@ -1489,6 +1490,22 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		agentDir,
 		taskDepth,
 	});
+
+	// Wire tool-result bridge for shadow/assembler mode
+	if (isShadowMode(settings) || isAssemblerActive(settings)) {
+		const bridge = new ToolResultBridge();
+		const pendingArgs = new Map<string, unknown>();
+		session.subscribe(event => {
+			if (event.type === "tool_execution_start") {
+				pendingArgs.set(event.toolCallId, event.args);
+			} else if (event.type === "tool_execution_end") {
+				const args = pendingArgs.get(event.toolCallId) ?? {};
+				pendingArgs.delete(event.toolCallId);
+				bridge.handleToolResult(event.toolName, event.toolCallId, args, event.result, event.isError ?? false);
+			}
+		});
+		logger.debug("Tool-result bridge wired", { mode: isShadowMode(settings) ? "shadow" : "assembler" });
+	}
 
 	// Wire MCP manager callbacks to session for reactive tool updates
 	if (mcpManager) {

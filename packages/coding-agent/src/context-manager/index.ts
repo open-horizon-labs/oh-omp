@@ -7,7 +7,7 @@
  * Modes:
  *   - legacy:    Current behavior — memory injection, compaction, TTSR all active.
  *   - shadow:    Legacy is primary; assembler observes but never injects (no side effects).
- *   - assembler: Assembler-managed context (not yet implemented — fails closed).
+ *   - assembler: Assembler-managed context; legacy injection paths are disabled.
  */
 import { logger } from "@oh-my-pi/pi-utils";
 import type { Settings } from "../config/settings";
@@ -63,8 +63,6 @@ export function validateContextManagerConfig(settings: Settings): void {
 
 		case "assembler":
 			// Guard: assembler mode must not coexist with legacy subsystems.
-			// When assembler is implemented, remove the not-implemented throw below
-			// and this guard becomes the active validation.
 			{
 				const conflicts: string[] = [];
 				if (subsystems.memoriesEnabled) conflicts.push("memories.enabled");
@@ -76,10 +74,7 @@ export function validateContextManagerConfig(settings: Settings): void {
 					);
 				}
 			}
-			// Assembler is not yet implemented — fail closed.
-			throw new ContextManagerConfigError(
-				"Context manager mode 'assembler' is not yet implemented. Use 'legacy' or 'shadow'.",
-			);
+			break;
 
 		default:
 			throw new ContextManagerConfigError(

@@ -70,7 +70,7 @@ describe("context-manager", () => {
 	});
 
 	// ─────────────────────────────────────────────────────────────────────────
-	// Fail-closed: assembler mode rejects (not yet implemented)
+	// Fail-closed: assembler mode rejects conflicting legacy subsystems
 	// ─────────────────────────────────────────────────────────────────────────
 
 	describe("fail-closed behavior", () => {
@@ -101,14 +101,13 @@ describe("context-manager", () => {
 			expect(() => validateContextManagerConfig(settings)).toThrow(/compaction\.enabled/);
 		});
 
-		it("rejects assembler mode as not yet implemented even with subsystems disabled", () => {
+		it("accepts assembler mode when legacy subsystems are disabled", () => {
 			const settings = Settings.isolated({
 				"contextManager.mode": "assembler",
 				"memories.enabled": false,
 				"compaction.enabled": false,
 			});
-			expect(() => validateContextManagerConfig(settings)).toThrow(ContextManagerConfigError);
-			expect(() => validateContextManagerConfig(settings)).toThrow(/not yet implemented/);
+			expect(() => validateContextManagerConfig(settings)).not.toThrow();
 		});
 	});
 

@@ -26,8 +26,15 @@ import { Settings, type SkillsSettings } from "./config/settings";
 import { CursorExecHandlers } from "./cursor";
 import "./discovery";
 import { resolveConfigValue } from "./config/resolve-config-value";
+import { type AssemblerTurnInput, assemble, formatAssembledContext } from "./context/assembler";
 import { ToolResultBridge } from "./context/bridge";
-import { isAssemblerActive, isShadowMode, ShadowTelemetry, validateContextManagerConfig } from "./context-manager";
+import {
+	isAssemblerActive,
+	isLegacyActive,
+	isShadowMode,
+	ShadowTelemetry,
+	validateContextManagerConfig,
+} from "./context-manager";
 import { initializeWithSettings } from "./discovery";
 import { TtsrManager } from "./export/ttsr";
 import {
@@ -1196,7 +1203,10 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	const intentField = settings.get("tools.intentTracing") || $env.PI_INTENT_TRACING === "1" ? INTENT_FIELD : undefined;
 	const rebuildSystemPrompt = async (toolNames: string[], tools: Map<string, AgentTool>): Promise<string> => {
 		toolContextStore.setToolNames(toolNames);
-		const memoryInstructions = await buildMemoryToolDeveloperInstructions(agentDir, settings);
+		// Memory instructions are only injected in legacy/shadow mode (ADR-0003 cutover invariant)
+		const memoryInstructions = isLegacyActive(settings)
+			? await buildMemoryToolDeveloperInstructions(agentDir, settings)
+			: undefined;
 
 		// Build combined append prompt: memory instructions + MCP server instructions
 		const serverInstructions = mcpManager?.getServerInstructions();
@@ -1353,6 +1363,59 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		openaiWebsocketSetting === "on" ? true : openaiWebsocketSetting === "off" ? false : undefined;
 	const serviceTierSetting = settings.get("serviceTier");
 
+	// Pre-create bridge for assembler/shadow modes so it's available to transformContext.
+	// Event subscription is wired after session creation below.
+	const assemblerBridge = isShadowMode(settings) || isAssemblerActive(settings) ? new ToolResultBridge() : undefined;
+
+	// Build per-turn context transformer.
+	// In assembler mode, assembled context fragments are injected as a developer message.
+	// Extensions transform is always composed when available.
+	const assemblerMode = isAssemblerActive(settings);
+	const transformContext = (() => {
+		const extensionTransform = extensionRunner
+			? (messages: AgentMessage[]) => extensionRunner.emitContext(messages)
+			: undefined;
+
+		const assemblerTransform =
+			assemblerBridge && assemblerMode
+				? async (messages: AgentMessage[]): Promise<AgentMessage[]> => {
+						const stm = assemblerBridge.contract.shortTerm[0];
+						const turn: AssemblerTurnInput = {
+							turnId: `turn-${Date.now()}`,
+							objective: "",
+							activePaths: stm?.touchedPaths ?? [],
+							activeSymbols: stm?.touchedSymbols ?? [],
+							unresolvedLoops: stm?.unresolvedLoops ?? [],
+						};
+						const packet = await assemble(assemblerBridge.contract, turn);
+						const text = formatAssembledContext(packet);
+						if (text) {
+							const contextMessage: AgentMessage = {
+								role: "developer" as const,
+								content: text,
+								attribution: "agent" as const,
+								timestamp: Date.now(),
+							};
+							return [contextMessage, ...messages];
+						}
+						return messages;
+					}
+				: undefined;
+
+		if (!extensionTransform && !assemblerTransform) return undefined;
+		if (extensionTransform && !assemblerTransform) {
+			return async (messages: AgentMessage[]) => extensionTransform(messages);
+		}
+		if (!extensionTransform && assemblerTransform) {
+			return assemblerTransform;
+		}
+		// Compose: extensions first, then assembler injection
+		return async (messages: AgentMessage[]) => {
+			const afterExtensions = await extensionTransform!(messages);
+			return assemblerTransform!(afterExtensions);
+		};
+	})();
+
 	agent = new Agent({
 		initialState: {
 			systemPrompt,
@@ -1362,11 +1425,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		},
 		convertToLlm: convertToLlmFinal,
 		sessionId: sessionManager.getSessionId(),
-		transformContext: extensionRunner
-			? async messages => {
-					return extensionRunner.emitContext(messages);
-				}
-			: undefined,
+		transformContext,
 		steeringMode: settings.get("steeringMode") ?? "one-at-a-time",
 		followUpMode: settings.get("followUpMode") ?? "one-at-a-time",
 		interruptMode: settings.get("interruptMode") ?? "immediate",
@@ -1483,17 +1542,20 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		}
 	}
 
-	startMemoryStartupTask({
-		session,
-		settings,
-		modelRegistry,
-		agentDir,
-		taskDepth,
-	});
+	// Memory startup is a legacy subsystem — skip in assembler mode (ADR-0003)
+	if (isLegacyActive(settings)) {
+		startMemoryStartupTask({
+			session,
+			settings,
+			modelRegistry,
+			agentDir,
+			taskDepth,
+		});
+	}
 
-	// Wire tool-result bridge for shadow/assembler mode
-	if (isShadowMode(settings) || isAssemblerActive(settings)) {
-		const bridge = new ToolResultBridge();
+	// Wire tool-result bridge event subscription for shadow/assembler mode.
+	// The bridge itself was created above (before Agent constructor) so transformContext can use it.
+	if (assemblerBridge) {
 		const pendingArgs = new Map<string, unknown>();
 		session.subscribe(event => {
 			if (event.type === "tool_execution_start") {
@@ -1501,7 +1563,13 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			} else if (event.type === "tool_execution_end") {
 				const args = pendingArgs.get(event.toolCallId) ?? {};
 				pendingArgs.delete(event.toolCallId);
-				bridge.handleToolResult(event.toolName, event.toolCallId, args, event.result, event.isError ?? false);
+				assemblerBridge.handleToolResult(
+					event.toolName,
+					event.toolCallId,
+					args,
+					event.result,
+					event.isError ?? false,
+				);
 			}
 		});
 		logger.debug("Tool-result bridge wired", { mode: isShadowMode(settings) ? "shadow" : "assembler" });

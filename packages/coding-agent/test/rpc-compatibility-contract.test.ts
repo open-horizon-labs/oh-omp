@@ -1,11 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import {
+	isRpcCompatibilityAgentEventType,
 	RPC_COMPATIBILITY_AGENT_EVENT_TYPES,
 	RPC_COMPATIBILITY_VERSION,
 	RPC_COMPLETION_TOOL_NAME,
 	RPC_EXTENSION_UI_REQUEST_TYPE,
 	RPC_EXTENSION_UI_RESPONSE_TYPE,
-	isRpcCompatibilityAgentEventType,
 } from "@oh-my-pi/pi-coding-agent/modes/rpc/compatibility-contract";
 
 describe("RPC compatibility contract", () => {

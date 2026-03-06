@@ -9,8 +9,8 @@ import { isRecord, ptree, readJsonl } from "@oh-my-pi/pi-utils";
 import type { BashResult } from "../../exec/bash-executor";
 import type { SessionStats } from "../../session/agent-session";
 import type { CompactionResult } from "../../session/compaction";
-import type { RpcCommand, RpcResponse, RpcSessionState } from "./rpc-types";
 import { isRpcCompatibilityAgentEventType } from "./compatibility-contract";
+import type { RpcCommand, RpcResponse, RpcSessionState } from "./rpc-types";
 
 /** Distributive Omit that works with union types */
 type DistributiveOmit<T, K extends keyof T> = T extends unknown ? Omit<T, K> : never;
@@ -43,7 +43,6 @@ export interface ModelInfo {
 }
 
 export type RpcEventListener = (event: AgentEvent) => void;
-
 
 function isRpcResponse(value: unknown): value is RpcResponse {
 	if (!isRecord(value)) return false;

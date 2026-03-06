@@ -1,14 +1,14 @@
 import { describe, expect, test } from "bun:test";
 import {
+	isMemoryLocatorCanonicalRetrievalMethod,
+	isMemoryLocatorRetrievalMethod,
+	isMemoryLocatorTrustLevel,
+	isMemoryTierName,
 	MEMORY_CONTRACT_VERSION,
 	MEMORY_FRAGMENT_DROP_REASONS,
 	MEMORY_LOCATOR_RETRIEVAL_METHODS,
 	MEMORY_LOCATOR_TRUST_LEVELS,
 	MEMORY_TIER_NAMES,
-	isMemoryLocatorCanonicalRetrievalMethod,
-	isMemoryLocatorRetrievalMethod,
-	isMemoryLocatorTrustLevel,
-	isMemoryTierName,
 } from "@oh-my-pi/pi-coding-agent/context/memory-contract";
 
 describe("MemoryContractV1", () => {

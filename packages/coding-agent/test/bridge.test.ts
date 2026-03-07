@@ -14,7 +14,7 @@ import {
 	TOOL_RESULT_CATEGORIES,
 	ToolResultBridge,
 } from "@oh-my-pi/pi-coding-agent/context/bridge";
-import type { MemoryLocatorEntry } from "@oh-my-pi/pi-coding-agent/context/memory-contract";
+import type { MemoryAssemblyBudget, MemoryLocatorEntry } from "@oh-my-pi/pi-coding-agent/context/memory-contract";
 import { MEMORY_CONTRACT_VERSION } from "@oh-my-pi/pi-coding-agent/context/memory-contract";
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -456,6 +456,101 @@ describe("ToolResultBridge", () => {
 			expect(stmKeys).toContain("read:c2");
 			expect(stmKeys).toContain("read:c3");
 		});
+	});
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Working memory rebuild tests
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe("ToolResultBridge.rebuildWorkingMemory", () => {
+	const testBudget: MemoryAssemblyBudget = {
+		maxTokens: 50_000,
+		maxLatencyMs: 2000,
+		reservedTokens: { objective: 0, codeContext: 0, executionState: 0 },
+	};
+
+	test("populates contract.working from STM state", () => {
+		const bridge = createTestBridge();
+		bridge.handleToolResult("read", "c1", { path: "src/main.ts" }, "content", false);
+		bridge.handleToolResult("lsp", "c2", { query: "MyFunc", file: "src/main.ts" }, "def", false);
+		bridge.handleToolResult("bash", "c3", { path: "build.ts" }, "error", true);
+
+		bridge.rebuildWorkingMemory({ turnId: "turn-1", objective: "Fix the bug", budget: testBudget });
+
+		const wm = bridge.contract.working;
+		expect(wm).not.toBeNull();
+		expect(wm!.turnId).toBe("turn-1");
+		expect(wm!.subgoal).toBe("Fix the bug");
+		expect(wm!.activePaths).toContain("src/main.ts");
+		expect(wm!.activeSymbols).toContain("MyFunc");
+		expect(wm!.unresolvedLoops).toContain("bash:build.ts");
+		expect(wm!.budget).toEqual(testBudget);
+		expect(wm!.updatedAt).toBe(NOW);
+	});
+
+	test("produces fresh state each call (not accumulated)", () => {
+		const bridge = createTestBridge();
+		bridge.handleToolResult("read", "c1", { path: "a.ts" }, "x", false);
+		bridge.rebuildWorkingMemory({ turnId: "turn-1", objective: "first", budget: testBudget });
+
+		const wm1 = bridge.contract.working;
+		expect(wm1!.turnId).toBe("turn-1");
+		expect(wm1!.subgoal).toBe("first");
+
+		// Rebuild again with different input — should fully replace
+		bridge.rebuildWorkingMemory({ turnId: "turn-2", objective: "second", budget: testBudget });
+
+		const wm2 = bridge.contract.working;
+		expect(wm2!.turnId).toBe("turn-2");
+		expect(wm2!.subgoal).toBe("second");
+		// activePaths should still reflect STM (unchanged)
+		expect(wm2!.activePaths).toContain("a.ts");
+	});
+
+	test("WM activePaths are copies (not shared references with STM)", () => {
+		const bridge = createTestBridge();
+		bridge.handleToolResult("read", "c1", { path: "a.ts" }, "x", false);
+		bridge.rebuildWorkingMemory({ turnId: "turn-1", objective: "", budget: testBudget });
+
+		const wm = bridge.contract.working!;
+		const stm = bridge.contract.shortTerm[0];
+
+		// Mutating WM arrays should not affect STM
+		wm.activePaths.push("injected.ts");
+		expect(stm.touchedPaths).not.toContain("injected.ts");
+	});
+
+	test("WM contains locatorKeys from STM", () => {
+		const bridge = createTestBridge();
+		bridge.handleToolResult("read", "c1", { path: "a.ts" }, "x", false);
+		bridge.handleToolResult("grep", "c2", { pattern: "TODO" }, "y", false);
+		bridge.rebuildWorkingMemory({ turnId: "turn-1", objective: "", budget: testBudget });
+
+		const wm = bridge.contract.working!;
+		expect(wm.locatorKeys).toContain("read:c1");
+		expect(wm.locatorKeys).toContain("grep:c2");
+	});
+
+	test("WM is non-null after first rebuild", () => {
+		const bridge = createTestBridge();
+		expect(bridge.contract.working).toBeNull();
+
+		bridge.rebuildWorkingMemory({ turnId: "turn-1", objective: "", budget: testBudget });
+		expect(bridge.contract.working).not.toBeNull();
+	});
+
+	test("empty STM produces WM with empty arrays", () => {
+		const bridge = createTestBridge();
+		bridge.rebuildWorkingMemory({ turnId: "turn-1", objective: "test", budget: testBudget });
+
+		const wm = bridge.contract.working!;
+		expect(wm.activePaths).toEqual([]);
+		expect(wm.activeSymbols).toEqual([]);
+		expect(wm.unresolvedLoops).toEqual([]);
+		expect(wm.locatorKeys).toEqual([]);
+		expect(wm.hypotheses).toEqual([]);
+		expect(wm.nextActions).toEqual([]);
 	});
 });
 

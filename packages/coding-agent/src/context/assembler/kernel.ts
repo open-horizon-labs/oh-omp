@@ -45,7 +45,7 @@ const BUDGET_SAFETY_MARGIN = 0.9;
  * actually populated. Once WM rebuild and STM distillation land, their
  * reserves become real.
  */
-const DEFAULT_BUDGET: MemoryAssemblyBudget = {
+export const DEFAULT_BUDGET: MemoryAssemblyBudget = {
 	maxTokens: 40_000,
 	maxLatencyMs: DEFAULT_MAX_LATENCY_MS,
 	reservedTokens: {

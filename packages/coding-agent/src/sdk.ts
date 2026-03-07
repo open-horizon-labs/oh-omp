@@ -29,6 +29,7 @@ import { resolveConfigValue } from "./config/resolve-config-value";
 import {
 	type AssemblerTurnInput,
 	assemble,
+	DEFAULT_BUDGET,
 	deriveBudget,
 	estimateMessageTokens,
 	estimateToolDefinitionTokens,
@@ -374,6 +375,34 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		appendSystemPrompt: options.appendPrompt,
 		repeatToolDescriptions: options.repeatToolDescriptions,
 	});
+}
+
+/** Max characters to keep from the last user message as the WM objective. */
+const OBJECTIVE_MAX_CHARS = 500;
+
+/**
+ * Extract a short objective string from the last user message in the turn.
+ * Returns an empty string when no user message is found.
+ */
+function extractObjective(messages: AgentMessage[]): string {
+	for (let i = messages.length - 1; i >= 0; i--) {
+		const msg = messages[i];
+		if (!("role" in msg) || msg.role !== "user") continue;
+		const content = msg.content;
+		if (typeof content === "string") {
+			return content.slice(0, OBJECTIVE_MAX_CHARS);
+		}
+		if (Array.isArray(content)) {
+			const parts: string[] = [];
+			for (const block of content) {
+				if (typeof block === "object" && block.type === "text") {
+					parts.push(block.text);
+				}
+			}
+			return parts.join("\n").slice(0, OBJECTIVE_MAX_CHARS);
+		}
+	}
+	return "";
 }
 
 // Internal Helpers
@@ -1410,11 +1439,23 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 								})
 							: undefined;
 
+						// Extract objective from last user message.
+						const objective = extractObjective(messages);
+
+						// Rebuild working memory from STM state before assembly.
+						// This ensures the kernel sees fresh per-turn WM with budget and active context.
+						const turnId = `turn-${Date.now()}`;
+						assemblerBridge.rebuildWorkingMemory({
+							turnId,
+							objective,
+							budget: budget ?? DEFAULT_BUDGET,
+						});
+
 						// Step 2: Run assembly (hydrate fragments within budget).
 						const stm = assemblerBridge.contract.shortTerm[0];
 						const turn: AssemblerTurnInput = {
-							turnId: `turn-${Date.now()}`,
-							objective: "",
+							turnId,
+							objective,
 							activePaths: stm?.touchedPaths ?? [],
 							activeSymbols: stm?.touchedSymbols ?? [],
 							unresolvedLoops: stm?.unresolvedLoops ?? [],

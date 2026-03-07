@@ -12,6 +12,7 @@
 import { logger } from "@oh-my-pi/pi-utils";
 import type { LocatorRetriever } from "../assembler/types";
 import type {
+	MemoryAssemblyBudget,
 	MemoryContractV1,
 	MemoryLocatorEntry,
 	MemoryLocatorRetrievalMethod,
@@ -82,6 +83,29 @@ export class ToolResultBridge {
 	/** The populated memory contract. */
 	get contract(): MemoryContractV1 {
 		return this.#contract;
+	}
+
+	/**
+	 * Rebuild working memory from current STM state.
+	 *
+	 * This produces a fresh WorkingMemoryState each turn — it replaces
+	 * (not accumulates) the previous working memory on the contract.
+	 * Call this before assemble() so the kernel sees current-turn state.
+	 */
+	rebuildWorkingMemory(input: { turnId: string; objective: string; budget: MemoryAssemblyBudget }): void {
+		const now = this.#config.now;
+		this.#contract.working = {
+			turnId: input.turnId,
+			subgoal: input.objective,
+			hypotheses: [],
+			nextActions: [],
+			activePaths: [...this.#stm.touchedPaths],
+			activeSymbols: [...this.#stm.touchedSymbols],
+			unresolvedLoops: [...this.#stm.unresolvedLoops],
+			locatorKeys: [...this.#stm.locatorKeys],
+			budget: input.budget,
+			updatedAt: now,
+		};
 	}
 
 	/** Create a composite retriever backed by the given artifact resolver. */

@@ -6,6 +6,7 @@
  */
 
 import type {
+	MemoryAssemblyBudget,
 	MemoryContextFragment,
 	MemoryFragmentDropReason,
 	MemoryLocatorEntry,
@@ -115,6 +116,41 @@ export interface AssemblerConfig {
 	maxCandidates?: number;
 	/** Override current timestamp (ISO 8601) for deterministic assembly. */
 	now?: string;
+	/**
+	 * Pre-derived budget from model context window.
+	 * When provided, overrides both DEFAULT_BUDGET and working memory budget.
+	 * Use `deriveBudget()` from the kernel to compute this.
+	 */
+	budget?: MemoryAssemblyBudget;
+}
+
+/**
+ * Input for deriving the assembler budget from model context window.
+ *
+ * Budget decomposition:
+ *   available = contextWindow - systemPromptTokens - toolDefinitionTokens - currentTurnTokens
+ *
+ * Fixed costs (measured per turn via chars/4 heuristic):
+ *   - System prompt          (~5-15K tokens)
+ *   - Tool definitions       (~10-20K tokens)
+ *
+ * Variable costs (measured per turn):
+ *   - Current-turn messages   (variable)
+ *
+ * Available for assembler:
+ *   - Previous-turn management
+ *   - Hydrated fragments
+ *   - Working memory
+ */
+export interface BudgetDerivationInput {
+	/** Model's total context window in tokens. */
+	contextWindow: number;
+	/** Estimated tokens consumed by the system prompt. */
+	systemPromptTokens: number;
+	/** Estimated tokens consumed by tool definitions (JSON schema). */
+	toolDefinitionTokens: number;
+	/** Estimated tokens consumed by current-turn messages. */
+	currentTurnTokens: number;
 }
 
 /** Tier base-score values, ordered by priority. */

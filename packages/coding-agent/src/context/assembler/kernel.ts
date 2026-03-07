@@ -15,11 +15,12 @@ import {
 	type MemoryContractV1,
 	type WorkingContextPacketV1,
 } from "../memory-contract";
-import { createBudgetTracker, hydrateCandidates, stubRetriever } from "./hydrator";
+import { createBudgetTracker, estimateTokensFromCharCount, hydrateCandidates, stubRetriever } from "./hydrator";
 import { rankCandidates } from "./scoring";
 import {
 	type AssemblerConfig,
 	type AssemblerTurnInput,
+	type BudgetDerivationInput,
 	DEFAULT_MAX_CANDIDATES,
 	DEFAULT_MIN_SCORE,
 	DEFAULT_SCORING_WEIGHTS,
@@ -28,19 +29,107 @@ import {
 } from "./types";
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Default budget
+// Budget derivation
 // ═══════════════════════════════════════════════════════════════════════════
 
-/** Default assembly budget when working memory has none. */
+/** Default latency budget (ms) for hydration. */
+const DEFAULT_MAX_LATENCY_MS = 2000;
+
+/** Safety margin applied to derived budget to absorb estimation error. */
+const BUDGET_SAFETY_MARGIN = 0.9;
+
+/**
+ * Fallback budget when no model-derived budget or working memory budget exists.
+ *
+ * Reserved tokens are zero — reserves should only account for fields that are
+ * actually populated. Once WM rebuild and STM distillation land, their
+ * reserves become real.
+ */
 const DEFAULT_BUDGET: MemoryAssemblyBudget = {
-	maxTokens: 4096,
-	maxLatencyMs: 2000,
+	maxTokens: 40_000,
+	maxLatencyMs: DEFAULT_MAX_LATENCY_MS,
 	reservedTokens: {
-		objective: 256,
-		codeContext: 2048,
-		executionState: 512,
+		objective: 0,
+		codeContext: 0,
+		executionState: 0,
 	},
 };
+
+/**
+ * Derive the assembler budget from model context window minus measured costs.
+ *
+ * Budget decomposition:
+ *   available = contextWindow - systemPromptTokens - toolDefinitionTokens - currentTurnTokens
+ *
+ * A safety margin ({@link BUDGET_SAFETY_MARGIN}) is applied to the result to
+ * absorb chars/4 estimation error. Over-estimating costs is safer than under-estimating.
+ *
+ * Reserved tokens are zero — they should only reserve space for fields that
+ * are actually populated. Once working memory rebuild and STM distillation
+ * are wired, their reserves will be set to real measured values.
+ */
+export function deriveBudget(input: BudgetDerivationInput): MemoryAssemblyBudget {
+	const totalCosts = input.systemPromptTokens + input.toolDefinitionTokens + input.currentTurnTokens;
+	const rawAvailable = input.contextWindow - totalCosts;
+	const available = Math.max(0, Math.floor(rawAvailable * BUDGET_SAFETY_MARGIN));
+
+	return {
+		maxTokens: available,
+		maxLatencyMs: DEFAULT_MAX_LATENCY_MS,
+		reservedTokens: {
+			objective: 0,
+			codeContext: 0,
+			executionState: 0,
+		},
+	};
+}
+
+/**
+ * Estimate the token cost of tool definitions as serialized for the LLM.
+ *
+ * Sums name + description + JSON-stringified parameter schema for each tool,
+ * then applies the chars/4 heuristic. Conservative: real serialization adds
+ * envelope overhead, so this slightly under-estimates.
+ */
+export function estimateToolDefinitionTokens(tools: Array<{ name: string; description?: string; parameters?: unknown }>): number {
+	let chars = 0;
+	for (const tool of tools) {
+		chars += tool.name.length;
+		chars += tool.description?.length ?? 0;
+		if (tool.parameters) {
+			chars += JSON.stringify(tool.parameters).length;
+		}
+	}
+	return estimateTokensFromCharCount(chars);
+}
+
+/**
+ * Estimate the token cost of agent messages for budget derivation.
+ *
+ * Extracts text content from messages and sums via chars/4 heuristic.
+ * Non-text content (images, tool calls) is approximated by JSON stringification.
+ */
+export function estimateMessageTokens(messages: Array<{ content: unknown }>): number {
+	let chars = 0;
+	for (const msg of messages) {
+		if (typeof msg.content === "string") {
+			chars += msg.content.length;
+		} else if (Array.isArray(msg.content)) {
+			for (const block of msg.content) {
+				if (typeof block === "string") {
+					chars += block.length;
+				} else if (block && typeof block === "object" && "text" in block && typeof block.text === "string") {
+					chars += block.text.length;
+				} else {
+					chars += JSON.stringify(block).length;
+				}
+			}
+		} else if (msg.content != null) {
+			chars += JSON.stringify(msg.content).length;
+		}
+	}
+	return estimateTokensFromCharCount(chars);
+}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Kernel
@@ -70,8 +159,11 @@ export async function assemble(
 	const minScore = config.minScore ?? DEFAULT_MIN_SCORE;
 	const maxCandidates = config.maxCandidates ?? DEFAULT_MAX_CANDIDATES;
 
-	// Resolve budget from working memory or defaults
-	const budget: MemoryAssemblyBudget = contract.working?.budget ?? DEFAULT_BUDGET;
+	// Resolve budget: config-derived > working memory > fallback default
+	// config.budget is set by sdk.ts with a model-derived budget.
+	// contract.working?.budget may have a budget from a previous turn.
+	// DEFAULT_BUDGET is the last-resort fallback.
+	const budget: MemoryAssemblyBudget = config.budget ?? contract.working?.budget ?? DEFAULT_BUDGET;
 	const availableTokens =
 		budget.maxTokens -
 		budget.reservedTokens.objective -

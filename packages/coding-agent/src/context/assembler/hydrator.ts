@@ -43,6 +43,11 @@ export function estimateTokens(text: string): number {
 	return Math.ceil(text.length / 4);
 }
 
+/** Estimate token count from a pre-computed character count (avoids string allocation). */
+export function estimateTokensFromCharCount(charCount: number): number {
+	return Math.ceil(charCount / 4);
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Budget
 // ═══════════════════════════════════════════════════════════════════════════

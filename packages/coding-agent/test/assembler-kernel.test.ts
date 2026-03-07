@@ -5,7 +5,11 @@ import {
 	createBudgetTracker,
 	DEFAULT_MIN_SCORE,
 	DEFAULT_SCORING_WEIGHTS,
+	deriveBudget,
+	estimateMessageTokens,
 	estimateTokens,
+	estimateTokensFromCharCount,
+	estimateToolDefinitionTokens,
 	hydrateCandidates,
 	isFresh,
 	type LocatorRetriever,
@@ -741,5 +745,264 @@ describe("assemble", () => {
 		const packet = await assemble(contract, makeTurnInput(), { now: NOW });
 		expect(packet.fragments).toHaveLength(1);
 		expect(packet.fragments[0].provenance).toEqual(prov);
+	});
+});
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Budget derivation
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe("deriveBudget", () => {
+	test("derives available tokens from context window minus costs", () => {
+		const budget = deriveBudget({
+			contextWindow: 200_000,
+			systemPromptTokens: 10_000,
+			toolDefinitionTokens: 15_000,
+			currentTurnTokens: 5_000,
+		});
+
+		// available = (200000 - 10000 - 15000 - 5000) * 0.9 = 153_000
+		expect(budget.maxTokens).toBe(153_000);
+	});
+
+	test("reserved tokens are all zero", () => {
+		const budget = deriveBudget({
+			contextWindow: 200_000,
+			systemPromptTokens: 10_000,
+			toolDefinitionTokens: 15_000,
+			currentTurnTokens: 5_000,
+		});
+
+		expect(budget.reservedTokens.objective).toBe(0);
+		expect(budget.reservedTokens.codeContext).toBe(0);
+		expect(budget.reservedTokens.executionState).toBe(0);
+	});
+
+	test("floors at zero when costs exceed context window", () => {
+		const budget = deriveBudget({
+			contextWindow: 10_000,
+			systemPromptTokens: 5_000,
+			toolDefinitionTokens: 5_000,
+			currentTurnTokens: 5_000,
+		});
+
+		expect(budget.maxTokens).toBe(0);
+	});
+
+	test("applies 10% safety margin", () => {
+		const budget = deriveBudget({
+			contextWindow: 100_000,
+			systemPromptTokens: 0,
+			toolDefinitionTokens: 0,
+			currentTurnTokens: 0,
+		});
+
+		// 100000 * 0.9 = 90000
+		expect(budget.maxTokens).toBe(90_000);
+	});
+
+	test("small context window (8K) with typical costs", () => {
+		const budget = deriveBudget({
+			contextWindow: 8_192,
+			systemPromptTokens: 3_000,
+			toolDefinitionTokens: 4_000,
+			currentTurnTokens: 500,
+		});
+
+		// (8192 - 3000 - 4000 - 500) * 0.9 = 622.8 -> floor = 622
+		expect(budget.maxTokens).toBe(622);
+	});
+
+	test("sets maxLatencyMs to default (2000)", () => {
+		const budget = deriveBudget({
+			contextWindow: 200_000,
+			systemPromptTokens: 0,
+			toolDefinitionTokens: 0,
+			currentTurnTokens: 0,
+		});
+
+		expect(budget.maxLatencyMs).toBe(2000);
+	});
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Tool definition token estimation
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe("estimateToolDefinitionTokens", () => {
+	test("estimates from name + description + parameters", () => {
+		const tools = [
+			{
+				name: "read",
+				description: "Read a file from disk",
+				parameters: { type: "object", properties: { path: { type: "string" } } },
+			},
+		];
+		const tokens = estimateToolDefinitionTokens(tools);
+		expect(tokens).toBeGreaterThan(0);
+
+		// Manual: "read" (4) + "Read a file from disk" (20) + JSON.stringify(params)
+		const paramsJson = JSON.stringify({ type: "object", properties: { path: { type: "string" } } });
+		const expectedChars = 4 + 20 + paramsJson.length;
+		expect(tokens).toBe(Math.ceil(expectedChars / 4));
+	});
+
+	test("handles tools without description", () => {
+		const tools = [{ name: "noop" }];
+		const tokens = estimateToolDefinitionTokens(tools);
+		// Only name chars: "noop" = 4 chars -> 1 token
+		expect(tokens).toBe(1);
+	});
+
+	test("sums across multiple tools", () => {
+		const tools = [
+			{ name: "read", description: "Read a file" },
+			{ name: "write", description: "Write a file" },
+		];
+		const single1 = estimateToolDefinitionTokens([tools[0]]);
+		const single2 = estimateToolDefinitionTokens([tools[1]]);
+		const combined = estimateToolDefinitionTokens(tools);
+
+		// Due to ceil rounding, combined may differ slightly from sum of individuals
+		// but should be within 1 token
+		expect(Math.abs(combined - (single1 + single2))).toBeLessThanOrEqual(1);
+	});
+
+	test("empty tools array returns 0", () => {
+		expect(estimateToolDefinitionTokens([])).toBe(0);
+	});
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Message token estimation
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe("estimateMessageTokens", () => {
+	test("estimates string content", () => {
+		const messages = [{ content: "Hello world" }]; // 11 chars -> 3 tokens
+		expect(estimateMessageTokens(messages)).toBe(3);
+	});
+
+	test("estimates array content with text blocks", () => {
+		const messages = [
+			{ content: [{ type: "text", text: "Hello" }, { type: "text", text: "World" }] },
+		];
+		// 5 + 5 = 10 chars -> 3 tokens (ceil(10/4))
+		expect(estimateMessageTokens(messages)).toBe(3);
+	});
+
+	test("handles mixed content types", () => {
+		const messages = [
+			{ content: "simple string" },
+			{ content: [{ type: "text", text: "in array" }] },
+		];
+		// 13 + 8 = 21 chars -> 6 tokens
+		expect(estimateMessageTokens(messages)).toBe(6);
+	});
+
+	test("handles null/undefined content", () => {
+		const messages = [{ content: null }, { content: undefined }];
+		expect(estimateMessageTokens(messages)).toBe(0);
+	});
+
+	test("empty messages returns 0", () => {
+		expect(estimateMessageTokens([])).toBe(0);
+	});
+
+	test("non-text blocks are JSON-stringified", () => {
+		const block = { type: "image", data: "base64..." };
+		const messages = [{ content: [block] }];
+		const expectedChars = JSON.stringify(block).length;
+		expect(estimateMessageTokens(messages)).toBe(Math.ceil(expectedChars / 4));
+	});
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// estimateTokensFromCharCount
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe("estimateTokensFromCharCount", () => {
+	test("consistent with estimateTokens", () => {
+		const text = "Hello world, this is a test string.";
+		expect(estimateTokensFromCharCount(text.length)).toBe(estimateTokens(text));
+	});
+
+	test("zero chars returns 0", () => {
+		expect(estimateTokensFromCharCount(0)).toBe(0);
+	});
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// assemble() budget priority
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe("assemble budget priority", () => {
+	test("config.budget overrides working memory budget", async () => {
+		const configBudget: MemoryAssemblyBudget = {
+			maxTokens: 50_000,
+			maxLatencyMs: 3000,
+			reservedTokens: { objective: 0, codeContext: 0, executionState: 0 },
+		};
+		const wmBudget: MemoryAssemblyBudget = {
+			maxTokens: 8_000,
+			maxLatencyMs: 2000,
+			reservedTokens: { objective: 100, codeContext: 100, executionState: 100 },
+		};
+
+		const contract = makeContract({
+			working: {
+				turnId: "prev",
+				subgoal: "test",
+				hypotheses: [],
+				nextActions: [],
+				activePaths: [],
+				activeSymbols: [],
+				unresolvedLoops: [],
+				locatorKeys: [],
+				budget: wmBudget,
+				updatedAt: NOW,
+			},
+		});
+
+		const packet = await assemble(contract, makeTurnInput(), {
+			now: NOW,
+			budget: configBudget,
+		});
+		expect(packet.budget).toEqual(configBudget);
+	});
+
+	test("falls back to DEFAULT_BUDGET when no config or WM budget", async () => {
+		const contract = makeContract(); // working: null
+		const packet = await assemble(contract, makeTurnInput(), { now: NOW });
+
+		// DEFAULT_BUDGET has zero reserves and maxTokens of 40_000
+		expect(packet.budget.maxTokens).toBe(40_000);
+		expect(packet.budget.reservedTokens.objective).toBe(0);
+		expect(packet.budget.reservedTokens.codeContext).toBe(0);
+		expect(packet.budget.reservedTokens.executionState).toBe(0);
+	});
+
+	test("derived budget is used for hydration token limit", async () => {
+		// Create a locator that needs ~500 tokens to hydrate
+		const contract = makeContract({
+			locatorMap: [
+				makeLocator({ key: "big", cost: { estimatedTokens: 500, estimatedLatencyMs: 10 } }),
+			],
+		});
+
+		// Budget with only 100 tokens available -> should drop as token_budget
+		const tightBudget: MemoryAssemblyBudget = {
+			maxTokens: 100,
+			maxLatencyMs: 10_000,
+			reservedTokens: { objective: 0, codeContext: 0, executionState: 0 },
+		};
+
+		const packet = await assemble(contract, makeTurnInput(), {
+			now: NOW,
+			budget: tightBudget,
+		});
+		expect(packet.dropped).toHaveLength(1);
+		expect(packet.dropped[0].reason).toBe("token_budget");
 	});
 });

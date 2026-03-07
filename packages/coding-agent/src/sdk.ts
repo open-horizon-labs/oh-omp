@@ -26,7 +26,14 @@ import { Settings, type SkillsSettings } from "./config/settings";
 import { CursorExecHandlers } from "./cursor";
 import "./discovery";
 import { resolveConfigValue } from "./config/resolve-config-value";
-import { type AssemblerTurnInput, assemble, formatAssembledContext } from "./context/assembler";
+import {
+	type AssemblerTurnInput,
+	assemble,
+	deriveBudget,
+	estimateMessageTokens,
+	estimateToolDefinitionTokens,
+	formatAssembledContext,
+} from "./context/assembler";
 import { ToolResultBridge } from "./context/bridge";
 import {
 	isAssemblerActive,
@@ -1382,6 +1389,20 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		const assemblerTransform =
 			assemblerBridge && assemblerMode
 				? async (messages: AgentMessage[]): Promise<AgentMessage[]> => {
+						// Derive budget from current model context window and measured costs.
+						// agent.state is read each turn to reflect model/tool changes mid-session.
+						const currentModel = agent?.state.model;
+						const currentSystemPrompt = agent?.state.systemPrompt ?? "";
+						const currentTools = agent?.state.tools ?? [];
+						const budget = currentModel
+							? deriveBudget({
+									contextWindow: currentModel.contextWindow,
+									systemPromptTokens: Math.ceil(currentSystemPrompt.length / 4),
+									toolDefinitionTokens: estimateToolDefinitionTokens(currentTools),
+									currentTurnTokens: estimateMessageTokens(messages),
+								})
+							: undefined;
+
 						const stm = assemblerBridge.contract.shortTerm[0];
 						const turn: AssemblerTurnInput = {
 							turnId: `turn-${Date.now()}`,
@@ -1390,13 +1411,17 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 							activeSymbols: stm?.touchedSymbols ?? [],
 							unresolvedLoops: stm?.unresolvedLoops ?? [],
 						};
-						const packet = await assemble(assemblerBridge.contract, turn, { retriever: assemblerRetriever });
+						const packet = await assemble(assemblerBridge.contract, turn, {
+							retriever: assemblerRetriever,
+							budget,
+						});
 						logger.debug("assembler:transform", {
 							locators: assemblerBridge.contract.locatorMap.length,
 							fragments: packet.fragments.length,
 							dropped: packet.dropped.length,
 							drops: packet.dropped.map(d => `${d.id}:${d.reason}`),
 							usage: packet.usage,
+							budgetMaxTokens: packet.budget.maxTokens,
 						});
 						const text = formatAssembledContext(packet);
 						if (text) {

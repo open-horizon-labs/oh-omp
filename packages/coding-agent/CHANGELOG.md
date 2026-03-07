@@ -10,6 +10,10 @@
 - Changed model `reasoning` property to `thinking` property with `ThinkingConfig` for explicit effort level configuration
 - Changed `thinkingLevel` in session context to be optional (`ThinkingLevel | undefined`) instead of always present
 
+### Changed
+
+- Assembler budget is now derived from model context window instead of hardcoded 4096 tokens. Formula: `available = (contextWindow - systemPromptTokens - toolDefinitionTokens - currentTurnTokens) * 0.9`. Reserved tokens for unpopulated fields (objective, codeContext, executionState) are zero. ([#15](https://github.com/durch/oh-my-pi/issues/15))
+
 ### Added
 
 - Added local assembler kernel V1 (`context/assembler/`) that produces `WorkingContextPacketV1` from `MemoryContractV1` using tiered memory scoring, locator-map hydration with token/latency budgeting, and freshness checks ([#3](https://github.com/durch/oh-my-pi/issues/3))

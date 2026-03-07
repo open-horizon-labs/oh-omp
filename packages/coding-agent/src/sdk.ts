@@ -1506,6 +1506,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		obfuscator,
 		asyncJobManager,
 		pendingActionStore,
+		assemblerBridge,
 	});
 
 	if (model?.api === "openai-codex-responses") {

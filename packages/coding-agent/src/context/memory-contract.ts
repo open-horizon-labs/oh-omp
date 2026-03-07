@@ -36,6 +36,7 @@ export const MEMORY_LOCATOR_RETRIEVAL_METHODS = [
 	"rpc.get_messages",
 	"rpc.get_branch_messages",
 	"rpc.get_last_assistant_text",
+	"rpc.get_introspection",
 	"session.getAsyncJobSnapshot",
 	"memory.read",
 ] as const;

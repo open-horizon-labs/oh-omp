@@ -6,6 +6,8 @@
  */
 import type { AgentMessage, ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type { Effort, ImageContent, Model } from "@oh-my-pi/pi-ai";
+import type { MemoryAssemblyBudget, MemoryLocatorTrustLevel, MemoryTierName } from "../../context/memory-contract";
+import type { ContextManagerMode } from "../../context-manager";
 import type { BashResult } from "../../exec/bash-executor";
 import type { SessionStats } from "../../session/agent-session";
 import type { CompactionResult } from "../../session/compaction";
@@ -62,7 +64,10 @@ export type RpcCommand =
 	| { id?: string; type: "set_session_name"; name: string }
 
 	// Messages
-	| { id?: string; type: "get_messages" };
+	| { id?: string; type: "get_messages" }
+
+	// Introspection
+	| { id?: string; type: "get_introspection" };
 
 // ============================================================================
 // RPC State
@@ -175,8 +180,44 @@ export type RpcResponse =
 	// Messages
 	| { id?: string; type: "response"; command: "get_messages"; success: true; data: { messages: AgentMessage[] } }
 
+	// Introspection
+	| {
+			id?: string;
+			type: "response";
+			command: "get_introspection";
+			success: true;
+			data: RpcIntrospectionSnapshot;
+	  }
+
 	// Error response (any command can fail)
 	| { id?: string; type: "response"; command: string; success: false; error: string };
+
+// ============================================================================
+// Introspection
+// ============================================================================
+
+/** Aggregated provenance entry for introspection snapshots. */
+export interface RpcProvenanceSummaryEntry {
+	source: string;
+	count: number;
+	avgConfidence: number;
+}
+
+/** Consolidated assembler introspection snapshot returned by get_introspection. */
+export interface RpcIntrospectionSnapshot {
+	mode: ContextManagerMode;
+	assemblerActive: boolean;
+	contract: {
+		version: number;
+		locatorCount: number;
+		locatorsByTier: Record<MemoryTierName, number>;
+		locatorsByTrust: Record<MemoryLocatorTrustLevel, number>;
+		shortTermRecordCount: number;
+		unresolvedLoops: string[];
+	} | null;
+	provenance: RpcProvenanceSummaryEntry[];
+	budget: MemoryAssemblyBudget | null;
+}
 
 // ============================================================================
 // Extension UI Events (stdout)

@@ -17,6 +17,9 @@
 - Added `formatAssembledContext()` formatter for structured XML-based context fragment injection (`context/assembler/format.ts`) ([#4](https://github.com/durch/oh-my-pi/issues/4))
 - Added explicit legacy context injection guards gated on `isLegacyActive()` for memory summary and memory startup in assembler mode ([#4](https://github.com/durch/oh-my-pi/issues/4))
 - Added assembler mode migration documentation (`docs/assembler-mode-migration.md`) ([#4](https://github.com/durch/oh-my-pi/issues/4))
+- Added RPC `get_introspection` command returning consolidated assembler state snapshot (mode, locator summary, provenance, budget, unresolved loops) for external orchestrators ([#5](https://github.com/durch/oh-my-pi/issues/5))
+- Added `RpcClient.getIntrospection()` typed helper for the new introspection endpoint ([#5](https://github.com/durch/oh-my-pi/issues/5))
+- Added `buildIntrospectionSnapshot()` in `modes/rpc/rpc-introspection.ts` with unit tests for snapshot building ([#5](https://github.com/durch/oh-my-pi/issues/5))
 - Added `thinking.ts` module with `getThinkingLevelMetadata()` and `resolveThinkingLevelForModel()` utilities for thinking level handling
 - Added `ThinkingConfig` support to model definitions for specifying supported thinking effort levels per model
 - Added `enrichModelThinking()` function to apply thinking configuration to models during registry initialization

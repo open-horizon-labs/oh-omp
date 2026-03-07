@@ -54,6 +54,7 @@ import { MODEL_ROLE_IDS, type ModelRegistry, type ModelRole } from "../config/mo
 import { extractExplicitThinkingSelector, parseModelString, resolveModelRoleValue } from "../config/model-resolver";
 import { expandPromptTemplate, type PromptTemplate, renderPromptTemplate } from "../config/prompt-templates";
 import type { Settings, SkillsSettings } from "../config/settings";
+import type { ToolResultBridge } from "../context/bridge";
 import { type BashResult, executeBash as executeBashCommand } from "../exec/bash-executor";
 import { exportSessionToHtml } from "../export/html";
 import type { TtsrManager, TtsrMatchContext } from "../export/ttsr";
@@ -197,6 +198,8 @@ export interface AgentSessionConfig {
 	obfuscator?: SecretObfuscator;
 	/** Pending action store for preview/apply workflows */
 	pendingActionStore?: PendingActionStore;
+	/** Assembler bridge for introspection (shadow/assembler modes) */
+	assemblerBridge?: ToolResultBridge;
 }
 
 /** Options for AgentSession.prompt() */
@@ -306,6 +309,7 @@ export class AgentSession {
 	readonly agent: Agent;
 	readonly sessionManager: SessionManager;
 	readonly settings: Settings;
+	#assemblerBridge: ToolResultBridge | undefined;
 
 	#asyncJobManager: AsyncJobManager | undefined = undefined;
 	#scopedModels: Array<{ model: Model; thinkingLevel?: ThinkingLevel }>;
@@ -427,6 +431,7 @@ export class AgentSession {
 		this.#obfuscator = config.obfuscator;
 		this.agent.providerSessionState = this.#providerSessionState;
 		this.#pendingActionStore = config.pendingActionStore;
+		this.#assemblerBridge = config.assemblerBridge;
 		this.#unsubscribePendingActionPush = this.#pendingActionStore?.subscribePush(action => {
 			const reminderText = [
 				"<system-reminder>",
@@ -453,6 +458,11 @@ export class AgentSession {
 	/** Model registry for API key resolution and model discovery */
 	get modelRegistry(): ModelRegistry {
 		return this.#modelRegistry;
+	}
+
+	/** Assembler bridge for introspection (shadow/assembler modes). */
+	get assemblerBridge(): ToolResultBridge | undefined {
+		return this.#assemblerBridge;
 	}
 
 	/** Provider-scoped mutable state store for transport/session caches. */

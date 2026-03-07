@@ -10,7 +10,7 @@ import type { BashResult } from "../../exec/bash-executor";
 import type { SessionStats } from "../../session/agent-session";
 import type { CompactionResult } from "../../session/compaction";
 import { isRpcCompatibilityAgentEventType } from "./compatibility-contract";
-import type { RpcCommand, RpcResponse, RpcSessionState } from "./rpc-types";
+import type { RpcCommand, RpcIntrospectionSnapshot, RpcResponse, RpcSessionState } from "./rpc-types";
 
 /** Distributive Omit that works with union types */
 type DistributiveOmit<T, K extends keyof T> = T extends unknown ? Omit<T, K> : never;
@@ -411,6 +411,14 @@ export class RpcClient {
 	async getMessages(): Promise<AgentMessage[]> {
 		const response = await this.#send({ type: "get_messages" });
 		return this.#getData<{ messages: AgentMessage[] }>(response).messages;
+	}
+
+	/**
+	 * Get consolidated assembler introspection snapshot.
+	 */
+	async getIntrospection(): Promise<RpcIntrospectionSnapshot> {
+		const response = await this.#send({ type: "get_introspection" });
+		return this.#getData(response);
 	}
 
 	// =========================================================================

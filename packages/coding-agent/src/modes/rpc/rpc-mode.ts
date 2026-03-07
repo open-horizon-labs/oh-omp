@@ -14,6 +14,7 @@ import { readJsonl, Snowflake } from "@oh-my-pi/pi-utils";
 import type { ExtensionUIContext, ExtensionUIDialogOptions } from "../../extensibility/extensions";
 import { type Theme, theme } from "../../modes/theme/theme";
 import type { AgentSession } from "../../session/agent-session";
+import { buildIntrospectionSnapshot } from "./rpc-introspection";
 import type {
 	RpcCommand,
 	RpcExtensionUIRequest,
@@ -648,6 +649,15 @@ export async function runRpcMode(session: AgentSession): Promise<never> {
 
 			case "get_messages": {
 				return success(id, "get_messages", { messages: session.messages });
+			}
+
+			// =================================================================
+			// Introspection
+			// =================================================================
+
+			case "get_introspection": {
+				const snapshot = buildIntrospectionSnapshot(session.settings, session.assemblerBridge);
+				return success(id, "get_introspection", snapshot);
 			}
 
 			default: {

@@ -132,4 +132,4 @@ RUN verdaccio --config /root/.config/verdaccio/config.yaml &>/dev/null & \
 
 # Verify the installed package works
 ENV PATH="/test/node_modules/.bin:$PATH"
-RUN omp --version
+RUN oh-omp --version

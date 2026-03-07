@@ -39,7 +39,7 @@ bun --cwd=packages/coding-agent run build:binary
 
 BINARY_DIR="$WORK_DIR/binary-bin"
 mkdir -p "$BINARY_DIR"
-cp packages/coding-agent/dist/omp "$BINARY_DIR/omp"
+cp packages/coding-agent/dist/oh-omp "$BINARY_DIR/oh-omp"
 shopt -s nullglob
 native_addons=(packages/natives/native/pi_natives.*.node)
 shopt -u nullglob
@@ -49,7 +49,7 @@ if [ "${#native_addons[@]}" -eq 0 ]; then
 fi
 cp "${native_addons[@]}" "$BINARY_DIR/"
 
-smoke_cli "$BINARY_DIR/omp"
+smoke_cli "$BINARY_DIR/oh-omp"
 
 section "Source install smoke"
 SOURCE_BUN_HOME="$WORK_DIR/bun-source"
@@ -57,7 +57,7 @@ SOURCE_BUN_HOME="$WORK_DIR/bun-source"
 	export BUN_INSTALL="$SOURCE_BUN_HOME"
 	export PATH="$BUN_INSTALL/bin:$PATH"
 	bun --cwd="$ROOT_DIR/packages/coding-agent" link
-	smoke_cli "$BUN_INSTALL/bin/omp"
+	smoke_cli "$BUN_INSTALL/bin/oh-omp"
 )
 
 section "Tarball install smoke"
@@ -101,7 +101,7 @@ mkdir -p "$TARBALL_APP_DIR"
 	"
 
 	bun add "$utils_tgz" "$natives_tgz" "$ai_tgz" "$agent_tgz" "$tui_tgz" "$stats_tgz" "$coding_agent_tgz"
-	smoke_cli ./node_modules/.bin/omp
+	smoke_cli ./node_modules/.bin/oh-omp
 )
 
 echo ""

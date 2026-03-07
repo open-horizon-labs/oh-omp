@@ -10,6 +10,7 @@
 
 import type { MemoryLocatorEntry } from "../memory-contract";
 import {
+	DEFAULT_MMR_LAMBDA,
 	DEFAULT_SCORING_WEIGHTS,
 	type ScoredCandidate,
 	type ScoringBreakdown,
@@ -157,4 +158,86 @@ export function rankCandidates(
 		return a.locator.key.localeCompare(b.locator.key);
 	});
 	return scored;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Diversity: Maximal Marginal Relevance (MMR)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * Compute similarity between two locator entries based on path and provenance.
+ *
+ * Returns a value in [0, 1]:
+ *   - 1.0: same locator key (duplicate)
+ *   - 0.8: same file path
+ *   - 0.4: same directory
+ *   - 0.2: same provenance source and reason (same tool invocation type)
+ *   - 0.0: unrelated
+ */
+export function candidateSimilarity(a: MemoryLocatorEntry, b: MemoryLocatorEntry): number {
+	if (a.key === b.key) return 1.0;
+	if (a.where === b.where) return 0.8;
+
+	const dirA = a.where.substring(0, a.where.lastIndexOf("/"));
+	const dirB = b.where.substring(0, b.where.lastIndexOf("/"));
+	if (dirA.length > 0 && dirA === dirB) return 0.4;
+
+	if (a.provenance.source === b.provenance.source && a.provenance.reason === b.provenance.reason) return 0.2;
+
+	return 0;
+}
+
+/**
+ * Maximal Marginal Relevance (MMR) re-ranking for diversity.
+ *
+ * Greedily selects candidates to balance relevance (score) against
+ * redundancy (similarity to already-selected items).
+ *
+ * MMR score for candidate i:
+ *   mmr(i) = lambda * score(i) - (1 - lambda) * max_sim(i, selected)
+ *
+ * @param candidates - Candidates pre-sorted by score descending.
+ * @param lambda     - Trade-off: 1.0 = pure relevance, 0.0 = pure diversity.
+ *                    Default: {@link DEFAULT_MMR_LAMBDA}.
+ * @returns Re-ranked candidates with diversity applied.
+ */
+export function mmrRerank(candidates: ScoredCandidate[], lambda: number = DEFAULT_MMR_LAMBDA): ScoredCandidate[] {
+	if (candidates.length <= 1) return candidates;
+
+	const selected: ScoredCandidate[] = [];
+	const remaining = new Set<number>();
+	for (let i = 0; i < candidates.length; i++) remaining.add(i);
+
+	// First pick is always the highest-scoring candidate
+	selected.push(candidates[0]);
+	remaining.delete(0);
+
+	while (remaining.size > 0) {
+		let bestIdx = -1;
+		let bestMmrScore = -Infinity;
+
+		for (const idx of remaining) {
+			const candidate = candidates[idx];
+			const relevance = candidate.score;
+
+			// Max similarity to any already-selected candidate
+			let maxSim = 0;
+			for (const sel of selected) {
+				const sim = candidateSimilarity(candidate.locator, sel.locator);
+				if (sim > maxSim) maxSim = sim;
+			}
+
+			const mmrScore = lambda * relevance - (1 - lambda) * maxSim;
+			if (mmrScore > bestMmrScore) {
+				bestMmrScore = mmrScore;
+				bestIdx = idx;
+			}
+		}
+
+		if (bestIdx === -1) break;
+		selected.push(candidates[bestIdx]);
+		remaining.delete(bestIdx);
+	}
+
+	return selected;
 }

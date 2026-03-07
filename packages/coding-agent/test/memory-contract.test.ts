@@ -22,6 +22,7 @@ describe("MemoryContractV1", () => {
 			"stale",
 			"invalidated",
 			"low_score",
+			"retrieval_timeout",
 		]);
 		expect(new Set(MEMORY_TIER_NAMES).size).toBe(MEMORY_TIER_NAMES.length);
 		expect(new Set(MEMORY_LOCATOR_TRUST_LEVELS).size).toBe(MEMORY_LOCATOR_TRUST_LEVELS.length);

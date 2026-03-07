@@ -33,6 +33,7 @@ import {
 	estimateMessageTokens,
 	estimateToolDefinitionTokens,
 	formatAssembledContext,
+	transformMessages,
 } from "./context/assembler";
 import { ToolResultBridge } from "./context/bridge";
 import {
@@ -1394,15 +1395,22 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 						const currentModel = agent?.state.model;
 						const currentSystemPrompt = agent?.state.systemPrompt ?? "";
 						const currentTools = agent?.state.tools ?? [];
+
+						// Step 1: Apply message transform (hot window + content replacement).
+						// This strips tool_result content from older turns before budget derivation
+						// so the budget reflects actual post-transform message costs.
+						const transformedMessages = transformMessages(messages);
+
 						const budget = currentModel
 							? deriveBudget({
 									contextWindow: currentModel.contextWindow,
 									systemPromptTokens: Math.ceil(currentSystemPrompt.length / 4),
 									toolDefinitionTokens: estimateToolDefinitionTokens(currentTools),
-									currentTurnTokens: estimateMessageTokens(messages),
+									currentTurnTokens: estimateMessageTokens(transformedMessages),
 								})
 							: undefined;
 
+						// Step 2: Run assembly (hydrate fragments within budget).
 						const stm = assemblerBridge.contract.shortTerm[0];
 						const turn: AssemblerTurnInput = {
 							turnId: `turn-${Date.now()}`,
@@ -1423,6 +1431,17 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 							usage: packet.usage,
 							budgetMaxTokens: packet.budget.maxTokens,
 						});
+
+						// Step 3: Apply budget bounding to fit messages + assembled context
+						// within the available budget.
+						const assembledContextTokens = packet.usage.consumedTokens;
+						const maxMessageTokens = budget ? Math.max(0, budget.maxTokens - assembledContextTokens) : undefined;
+						const boundedMessages =
+							maxMessageTokens !== undefined
+								? transformMessages(messages, { maxTokens: maxMessageTokens })
+								: transformedMessages;
+
+						// Step 4: Prepend assembled context if available.
 						const text = formatAssembledContext(packet);
 						if (text) {
 							const contextMessage: AgentMessage = {
@@ -1431,9 +1450,9 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 								attribution: "agent" as const,
 								timestamp: Date.now(),
 							};
-							return [contextMessage, ...messages];
+							return [contextMessage, ...boundedMessages];
 						}
-						return messages;
+						return boundedMessages;
 					}
 				: undefined;
 

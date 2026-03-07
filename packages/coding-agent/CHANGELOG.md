@@ -13,6 +13,7 @@
 ### Changed
 
 - Assembler budget is now derived from model context window instead of hardcoded 4096 tokens. Formula: `available = (contextWindow - systemPromptTokens - toolDefinitionTokens - currentTurnTokens) * 0.9`. Reserved tokens for unpopulated fields (objective, codeContext, executionState) are zero. ([#15](https://github.com/durch/oh-my-pi/issues/15))
+- Working memory (`contract.working`) is now rebuilt each turn from STM state before assembly. The kernel uses WM's budget, active paths, and active symbols for scoring instead of falling back to `DEFAULT_BUDGET`. Objective is extracted from the last user message. ([#17](https://github.com/durch/oh-my-pi/issues/17))
 
 ### Added
 

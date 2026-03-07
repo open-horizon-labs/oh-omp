@@ -3,6 +3,7 @@ import {
 	type AssemblerTurnInput,
 	assemble,
 	createBudgetTracker,
+	DEFAULT_BUDGET,
 	DEFAULT_MIN_SCORE,
 	DEFAULT_SCORING_WEIGHTS,
 	deriveBudget,
@@ -1003,5 +1004,77 @@ describe("assemble budget priority", () => {
 		});
 		expect(packet.dropped).toHaveLength(1);
 		expect(packet.dropped[0].reason).toBe("token_budget");
+	});
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Working memory integration
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe("working memory integration", () => {
+	test("WM budget is used when no config.budget provided", async () => {
+		const wmBudget: MemoryAssemblyBudget = {
+			maxTokens: 12_000,
+			maxLatencyMs: 1500,
+			reservedTokens: { objective: 200, codeContext: 500, executionState: 100 },
+		};
+
+		const contract = makeContract({
+			locatorMap: [makeLocator({ key: "entry" })],
+			working: {
+				turnId: "turn-1",
+				subgoal: "test",
+				hypotheses: [],
+				nextActions: [],
+				activePaths: [],
+				activeSymbols: [],
+				unresolvedLoops: [],
+				locatorKeys: [],
+				budget: wmBudget,
+				updatedAt: NOW,
+			},
+		});
+
+		// No config.budget — should fall back to WM budget
+		const packet = await assemble(contract, makeTurnInput(), { now: NOW });
+		expect(packet.budget).toEqual(wmBudget);
+	});
+
+	test("DEFAULT_BUDGET is exported and matches expected shape", () => {
+		expect(DEFAULT_BUDGET.maxTokens).toBe(40_000);
+		expect(DEFAULT_BUDGET.reservedTokens.objective).toBe(0);
+		expect(DEFAULT_BUDGET.reservedTokens.codeContext).toBe(0);
+		expect(DEFAULT_BUDGET.reservedTokens.executionState).toBe(0);
+	});
+
+	test("WM active paths boost scoring for matching locators", async () => {
+		const contract = makeContract({
+			locatorMap: [
+				makeLocator({ key: "wm-match", where: "src/wm-tracked.ts" }),
+				makeLocator({ key: "no-match", where: "src/unrelated.ts" }),
+			],
+			working: {
+				turnId: "turn-1",
+				subgoal: "test",
+				hypotheses: [],
+				nextActions: [],
+				activePaths: ["src/wm-tracked.ts"],
+				activeSymbols: [],
+				unresolvedLoops: [],
+				locatorKeys: [],
+				budget: DEFAULT_BUDGET,
+				updatedAt: NOW,
+			},
+		});
+
+		// Turn input has no active paths — only WM contributes the path signal
+		const turn = makeTurnInput({ activePaths: [] });
+		const packet = await assemble(contract, turn, { now: NOW });
+
+		const wmMatch = packet.fragments.find(f => f.id === "wm-match");
+		const noMatch = packet.fragments.find(f => f.id === "no-match");
+		expect(wmMatch).toBeDefined();
+		expect(noMatch).toBeDefined();
+		expect(wmMatch!.score).toBeGreaterThan(noMatch!.score);
 	});
 });

@@ -110,14 +110,17 @@ export function estimateToolDefinitionTokens(
  *
  * Extracts text content from messages and sums via chars/4 heuristic.
  * Non-text content (images, tool calls) is approximated by JSON stringification.
+ * Messages without a content field are skipped gracefully.
  */
-export function estimateMessageTokens(messages: Array<{ content: unknown }>): number {
+export function estimateMessageTokens(messages: unknown[]): number {
 	let chars = 0;
 	for (const msg of messages) {
-		if (typeof msg.content === "string") {
-			chars += msg.content.length;
-		} else if (Array.isArray(msg.content)) {
-			for (const block of msg.content) {
+		if (!msg || typeof msg !== "object") continue;
+		const content = (msg as Record<string, unknown>).content;
+		if (typeof content === "string") {
+			chars += content.length;
+		} else if (Array.isArray(content)) {
+			for (const block of content) {
 				if (typeof block === "string") {
 					chars += block.length;
 				} else if (block && typeof block === "object" && "text" in block && typeof block.text === "string") {
@@ -126,8 +129,8 @@ export function estimateMessageTokens(messages: Array<{ content: unknown }>): nu
 					chars += JSON.stringify(block).length;
 				}
 			}
-		} else if (msg.content != null) {
-			chars += JSON.stringify(msg.content).length;
+		} else if (content != null) {
+			chars += JSON.stringify(content).length;
 		}
 	}
 	return estimateTokensFromCharCount(chars);

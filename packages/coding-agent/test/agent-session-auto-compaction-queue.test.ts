@@ -115,7 +115,6 @@ describe("AgentSession auto-compaction queue resume", () => {
 			agent,
 			sessionManager,
 			settings: Settings.isolated({
-				"compaction.autoContinue": false,
 				"todo.reminders": true,
 				"todo.reminders.max": 3,
 			}),

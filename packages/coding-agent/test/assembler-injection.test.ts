@@ -145,29 +145,15 @@ describe("single-manager invariant", () => {
 				Settings.isolated({
 					"contextManager.mode": "assembler",
 					"memories.enabled": true,
-					"compaction.enabled": false,
 				}),
 			),
 		).toThrow(/conflicts/);
-
-		// compaction enabled → conflict
-		expect(() =>
-			validateContextManagerConfig(
-				Settings.isolated({
-					"contextManager.mode": "assembler",
-					"memories.enabled": false,
-					"compaction.enabled": true,
-				}),
-			),
-		).toThrow(/conflicts/);
-
 		// both disabled → valid
 		expect(() =>
 			validateContextManagerConfig(
 				Settings.isolated({
 					"contextManager.mode": "assembler",
 					"memories.enabled": false,
-					"compaction.enabled": false,
 				}),
 			),
 		).not.toThrow();
@@ -254,7 +240,6 @@ describe("legacy injection gating", () => {
 		const assemblerSettings = Settings.isolated({
 			"contextManager.mode": "assembler",
 			"memories.enabled": false,
-			"compaction.enabled": false,
 		});
 		expect(isLegacyActive(assemblerSettings)).toBe(false);
 

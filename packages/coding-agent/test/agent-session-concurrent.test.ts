@@ -704,7 +704,7 @@ describe("AgentSession TTSR resume gate", () => {
 		session = new AgentSession({
 			agent,
 			sessionManager: SessionManager.inMemory(),
-			settings: Settings.isolated({ "compaction.enabled": false, "contextPromotion.enabled": true }),
+			settings: Settings.isolated({ "contextPromotion.enabled": true }),
 			modelRegistry,
 		});
 

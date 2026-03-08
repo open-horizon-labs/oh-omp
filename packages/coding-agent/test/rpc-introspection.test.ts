@@ -22,7 +22,6 @@ function shadowSettings(): Settings {
 	return Settings.isolated({
 		"contextManager.mode": "shadow",
 		"memories.enabled": true,
-		"compaction.enabled": true,
 	});
 }
 
@@ -30,7 +29,6 @@ function assemblerSettings(): Settings {
 	return Settings.isolated({
 		"contextManager.mode": "assembler",
 		"memories.enabled": false,
-		"compaction.enabled": false,
 	});
 }
 

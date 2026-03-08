@@ -47,7 +47,7 @@ describe("AgentSession user shortcut hooks", () => {
 		session = new AgentSession({
 			agent,
 			sessionManager: SessionManager.inMemory(),
-			settings: Settings.isolated({ "compaction.enabled": false }),
+			settings: Settings.isolated(),
 			modelRegistry,
 			extensionRunner,
 		});

@@ -98,7 +98,6 @@ describe("AgentSession context promotion", () => {
 		}
 
 		const settings = Settings.isolated({
-			"compaction.enabled": false,
 			"contextPromotion.enabled": true,
 		});
 
@@ -143,7 +142,6 @@ describe("AgentSession context promotion", () => {
 		}
 
 		const settings = Settings.isolated({
-			"compaction.enabled": false,
 			"contextPromotion.enabled": true,
 		});
 
@@ -195,7 +193,7 @@ describe("AgentSession context promotion", () => {
 		session = new AgentSession({
 			agent,
 			sessionManager: SessionManager.inMemory(),
-			settings: Settings.isolated({ "compaction.enabled": false }),
+		settings: Settings.isolated(),
 			modelRegistry,
 		});
 
@@ -232,7 +230,7 @@ describe("AgentSession context promotion", () => {
 		session = new AgentSession({
 			agent,
 			sessionManager: SessionManager.inMemory(),
-			settings: Settings.isolated({ "compaction.enabled": false }),
+		settings: Settings.isolated(),
 			modelRegistry,
 		});
 
@@ -267,7 +265,7 @@ describe("AgentSession context promotion", () => {
 		session = new AgentSession({
 			agent,
 			sessionManager: SessionManager.inMemory(),
-			settings: Settings.isolated({ "compaction.enabled": false }),
+		settings: Settings.isolated(),
 			modelRegistry,
 		});
 
@@ -308,7 +306,7 @@ describe("AgentSession context promotion", () => {
 		session = new AgentSession({
 			agent,
 			sessionManager: SessionManager.inMemory(),
-			settings: Settings.isolated({ "compaction.enabled": false }),
+		settings: Settings.isolated(),
 			modelRegistry,
 		});
 
@@ -338,7 +336,6 @@ describe("AgentSession context promotion", () => {
 		}
 
 		const settings = Settings.isolated({
-			"compaction.enabled": false,
 			"contextPromotion.enabled": false,
 		});
 

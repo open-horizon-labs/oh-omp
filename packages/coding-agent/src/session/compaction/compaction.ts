@@ -121,23 +121,15 @@ export interface CompactionResult<T = unknown> {
 // ============================================================================
 
 export interface CompactionSettings {
-	enabled: boolean;
-	strategy?: "context-full" | "handoff" | "off";
-	thresholdPercent?: number;
 	reserveTokens: number;
 	keepRecentTokens: number;
-	autoContinue?: boolean;
 	remoteEnabled?: boolean;
 	remoteEndpoint?: string;
 }
 
 export const DEFAULT_COMPACTION_SETTINGS: CompactionSettings = {
-	enabled: true,
-	strategy: "context-full",
-	thresholdPercent: -1,
 	reserveTokens: 16384,
 	keepRecentTokens: 20000,
-	autoContinue: true,
 	remoteEnabled: true,
 };
 
@@ -189,30 +181,6 @@ export function getLastAssistantUsage(entries: SessionEntry[]): Usage | undefine
 	return undefined;
 }
 
-/**
- * Effective reserve: at least 15% of context window or the configured floor, whichever is larger.
- */
-export function effectiveReserveTokens(contextWindow: number, settings: CompactionSettings): number {
-	return Math.max(Math.floor(contextWindow * 0.15), settings.reserveTokens);
-}
-
-/**
- * Check if compaction should trigger based on context usage.
- */
-export function shouldCompact(contextTokens: number, contextWindow: number, settings: CompactionSettings): boolean {
-	if (!settings.enabled || settings.strategy === "off" || contextWindow <= 0) return false;
-	const thresholdTokens = resolveThresholdTokens(contextWindow, settings);
-	return contextTokens > thresholdTokens;
-}
-
-function resolveThresholdTokens(contextWindow: number, settings: CompactionSettings): number {
-	const thresholdPercent = settings.thresholdPercent;
-	if (typeof thresholdPercent !== "number" || !Number.isFinite(thresholdPercent) || thresholdPercent <= 0) {
-		return contextWindow - effectiveReserveTokens(contextWindow, settings);
-	}
-	const clampedThresholdPercent = Math.min(99, Math.max(1, thresholdPercent));
-	return Math.floor(contextWindow * (clampedThresholdPercent / 100));
-}
 
 // ============================================================================
 // Cut point detection

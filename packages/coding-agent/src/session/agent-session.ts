@@ -114,7 +114,6 @@ import {
 	estimateTokens,
 	generateBranchSummary,
 	prepareCompaction,
-	shouldCompact,
 } from "./compaction";
 import { DEFAULT_PRUNE_CONFIG, pruneToolOutputs } from "./compaction/pruning";
 import {

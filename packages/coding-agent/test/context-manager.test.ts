@@ -36,7 +36,6 @@ describe("context-manager", () => {
 			const settings = Settings.isolated({
 				"contextManager.mode": "legacy",
 				"memories.enabled": true,
-				"compaction.enabled": true,
 			});
 			expect(() => validateContextManagerConfig(settings)).not.toThrow();
 		});
@@ -45,7 +44,6 @@ describe("context-manager", () => {
 			const settings = Settings.isolated({
 				"contextManager.mode": "legacy",
 				"memories.enabled": false,
-				"compaction.enabled": false,
 			});
 			expect(() => validateContextManagerConfig(settings)).not.toThrow();
 		});
@@ -54,7 +52,6 @@ describe("context-manager", () => {
 			const settings = Settings.isolated({
 				"contextManager.mode": "shadow",
 				"memories.enabled": true,
-				"compaction.enabled": true,
 			});
 			expect(() => validateContextManagerConfig(settings)).not.toThrow();
 		});
@@ -63,7 +60,6 @@ describe("context-manager", () => {
 			const settings = Settings.isolated({
 				"contextManager.mode": "shadow",
 				"memories.enabled": false,
-				"compaction.enabled": false,
 			});
 			expect(() => validateContextManagerConfig(settings)).not.toThrow();
 		});
@@ -74,38 +70,26 @@ describe("context-manager", () => {
 	// ─────────────────────────────────────────────────────────────────────────
 
 	describe("fail-closed behavior", () => {
-		it("rejects assembler mode with conflicting legacy subsystems", () => {
-			// compaction.enabled defaults to true, which conflicts with assembler
+		it("accepts assembler mode with default settings (memories disabled by default)", () => {
 			const settings = Settings.isolated({
 				"contextManager.mode": "assembler",
 			});
-			expect(() => validateContextManagerConfig(settings)).toThrow(ContextManagerConfigError);
-			expect(() => validateContextManagerConfig(settings)).toThrow(/conflicts with active legacy subsystems/);
+			expect(() => validateContextManagerConfig(settings)).not.toThrow();
 		});
 
 		it("rejects assembler mode with memories enabled", () => {
 			const settings = Settings.isolated({
 				"contextManager.mode": "assembler",
 				"memories.enabled": true,
-				"compaction.enabled": false,
 			});
 			expect(() => validateContextManagerConfig(settings)).toThrow(/memories\.enabled/);
 		});
 
-		it("rejects assembler mode with compaction enabled", () => {
-			const settings = Settings.isolated({
-				"contextManager.mode": "assembler",
-				"memories.enabled": false,
-				"compaction.enabled": true,
-			});
-			expect(() => validateContextManagerConfig(settings)).toThrow(/compaction\.enabled/);
-		});
 
 		it("accepts assembler mode when legacy subsystems are disabled", () => {
 			const settings = Settings.isolated({
 				"contextManager.mode": "assembler",
 				"memories.enabled": false,
-				"compaction.enabled": false,
 			});
 			expect(() => validateContextManagerConfig(settings)).not.toThrow();
 		});

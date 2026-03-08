@@ -182,8 +182,16 @@ describe("segmentIntoTurns", () => {
 // ═══════════════════════════════════════════════════════════════════════════
 
 describe("transformMessages — hot window", () => {
-	test("empty messages → empty result", () => {
-		expect(transformMessages([])).toEqual([]);
+	test("empty messages → empty result with empty metadata", () => {
+		const result = transformMessages([]);
+		expect(result.messages).toEqual([]);
+		expect(result.metadata.totalTurns).toBe(0);
+		expect(result.metadata.decisions).toEqual([]);
+		expect(result.metadata.keptCount).toBe(0);
+		expect(result.metadata.stubbedCount).toBe(0);
+		expect(result.metadata.droppedCount).toBe(0);
+		expect(result.metadata.tokensBefore).toBe(0);
+		expect(result.metadata.tokensAfter).toBe(0);
 	});
 
 	test("messages within hot window are kept verbatim", () => {
@@ -194,7 +202,7 @@ describe("transformMessages — hot window", () => {
 		];
 		// Default hot window = 3 turns, we have 2 turns → all in hot window
 		const result = transformMessages(messages);
-		expect(result).toEqual(messages);
+		expect(result.messages).toEqual(messages);
 	});
 
 	test("tool_result content replaced beyond hot window", () => {
@@ -217,7 +225,7 @@ describe("transformMessages — hot window", () => {
 			makeUser("continue"),
 		];
 
-		const result = transformMessages(messages, { hotWindowTurns: 3 });
+		const { messages: result } = transformMessages(messages, { hotWindowTurns: 3 });
 
 		// Find the old tool_result messages (turns 1 and 2)
 		const toolResults = result.filter((m): m is ToolResultMessage => m.role === "toolResult");
@@ -241,7 +249,7 @@ describe("transformMessages — hot window", () => {
 			makeToolResult("tc-2", "content B"),
 		];
 
-		const result = transformMessages(messages, { hotWindowTurns: 1 });
+		const { messages: result } = transformMessages(messages, { hotWindowTurns: 1 });
 		const toolResults = result.filter((m): m is ToolResultMessage => m.role === "toolResult");
 
 		// Only the last tool_result should be verbatim
@@ -253,7 +261,7 @@ describe("transformMessages — hot window", () => {
 		const assistant = makeAssistant();
 		const messages: AgentMessage[] = [makeUser("hello"), assistant, makeUser("follow-up")];
 
-		const result = transformMessages(messages, { hotWindowTurns: 1 });
+		const { messages: result } = transformMessages(messages, { hotWindowTurns: 1 });
 
 		// All messages kept as-is since no tool_results to replace
 		expect(result).toEqual(messages);
@@ -280,7 +288,7 @@ describe("transformMessages — hot window", () => {
 			makeUser("c"),
 		];
 
-		const result = transformMessages(messages, { hotWindowTurns: 3 });
+		const { messages: result } = transformMessages(messages, { hotWindowTurns: 3 });
 		const replacedTr = result.find(
 			(m): m is ToolResultMessage => m.role === "toolResult" && m.toolCallId === "tc-1",
 		)!;
@@ -304,7 +312,7 @@ describe("transformMessages — hot window", () => {
 			makeUser("c"),
 		];
 
-		const result = transformMessages(messages, { hotWindowTurns: 3 });
+		const { messages: result } = transformMessages(messages, { hotWindowTurns: 3 });
 
 		// Find the assistant message and its tool_results
 		const assistantIdx = result.findIndex(m => m.role === "assistant");
@@ -331,7 +339,7 @@ describe("transformMessages — budget bounding", () => {
 			makeUser("b".repeat(1000)),
 			makeUser("c".repeat(1000)),
 		];
-		const result = transformMessages(messages);
+		const { messages: result } = transformMessages(messages);
 		expect(result).toHaveLength(3);
 	});
 
@@ -345,7 +353,7 @@ describe("transformMessages — budget bounding", () => {
 
 		// Budget of 600 tokens with hotWindowTurns=1 → only last turn protected
 		// Drops oldest until fits: drops 'a' (250), total 500 ≤ 600
-		const result = transformMessages(messages, { maxTokens: 600, hotWindowTurns: 1 });
+		const { messages: result } = transformMessages(messages, { maxTokens: 600, hotWindowTurns: 1 });
 		expect(result).toHaveLength(2);
 		// First message dropped
 		expect((result[0] as UserMessage).content).toBe("b".repeat(1000));
@@ -359,7 +367,7 @@ describe("transformMessages — budget bounding", () => {
 		];
 
 		// Budget of 100 tokens but hot window = 3 → all messages kept
-		const result = transformMessages(messages, { maxTokens: 100, hotWindowTurns: 3 });
+		const { messages: result } = transformMessages(messages, { maxTokens: 100, hotWindowTurns: 3 });
 		expect(result).toHaveLength(3);
 	});
 
@@ -374,7 +382,7 @@ describe("transformMessages — budget bounding", () => {
 		];
 
 		// Budget that fits last 3 turns but not first 3
-		const result = transformMessages(messages, { maxTokens: 500, hotWindowTurns: 3 });
+		const { messages: result } = transformMessages(messages, { maxTokens: 500, hotWindowTurns: 3 });
 
 		// First 3 turns (user, assistant+tr, assistant+tr) get evaluated
 		// The hot window (last 3 turns) is preserved
@@ -402,7 +410,7 @@ describe("transformMessages — budget bounding", () => {
 		// Beyond window: user(start), assistant+tr(tc-1) → tc-1 content replaced
 		// After replacement, large tool_result is stubbed (~15 tokens).
 		// Budget of 2000 should now fit everything.
-		const result = transformMessages(messages, { maxTokens: 2000, hotWindowTurns: 3 });
+		const { messages: result } = transformMessages(messages, { maxTokens: 2000, hotWindowTurns: 3 });
 
 		// All messages kept because the replaced stub is small
 		expect(result).toHaveLength(messages.length);
@@ -420,12 +428,12 @@ describe("transformMessages — budget bounding", () => {
 describe("transformMessages — edge cases", () => {
 	test("single message is kept", () => {
 		const messages: AgentMessage[] = [makeUser("hello")];
-		expect(transformMessages(messages)).toEqual(messages);
+		expect(transformMessages(messages).messages).toEqual(messages);
 	});
 
 	test("only assistant messages (no tool calls)", () => {
 		const messages: AgentMessage[] = [makeAssistant(), makeAssistant()];
-		const result = transformMessages(messages, { hotWindowTurns: 1 });
+		const { messages: result } = transformMessages(messages, { hotWindowTurns: 1 });
 		expect(result).toHaveLength(2);
 		// No tool_results to replace, all kept
 	});
@@ -447,7 +455,7 @@ describe("transformMessages — edge cases", () => {
 			makeUser("c"),
 		];
 
-		const result = transformMessages(messages, { hotWindowTurns: 3 });
+		const { messages: result } = transformMessages(messages, { hotWindowTurns: 3 });
 		const toolResults = result.filter((m): m is ToolResultMessage => m.role === "toolResult");
 
 		// All three should be replaced
@@ -466,7 +474,7 @@ describe("transformMessages — edge cases", () => {
 			makeToolResult("tc-1", "content"),
 		];
 
-		const result = transformMessages(messages, { hotWindowTurns: 0 });
+		const { messages: result } = transformMessages(messages, { hotWindowTurns: 0 });
 		const tr = result.find((m): m is ToolResultMessage => m.role === "toolResult")!;
 		expect(tr.content).toEqual([{ type: "text", text: TOOL_RESULT_STUB_TEXT }]);
 	});
@@ -477,7 +485,7 @@ describe("transformMessages — edge cases", () => {
 		const assistant = makeAssistant();
 
 		const messages: AgentMessage[] = [user, dev, assistant];
-		const result = transformMessages(messages, { hotWindowTurns: 0 });
+		const { messages: result } = transformMessages(messages, { hotWindowTurns: 0 });
 
 		// All messages identical (no tool_results to modify)
 		expect(result).toEqual(messages);
@@ -500,7 +508,7 @@ describe("transformMessages — edge cases", () => {
 			makeUser("a"),
 		];
 
-		const result = transformMessages(messages, { hotWindowTurns: 1 });
+		const { messages: result } = transformMessages(messages, { hotWindowTurns: 1 });
 		const tr = result.find((m): m is ToolResultMessage => m.role === "toolResult")!;
 
 		expect(tr.isError).toBe(true);
@@ -522,7 +530,7 @@ describe("transformMessages — edge cases", () => {
 
 		const messages: AgentMessage[] = [makeAssistant([{ id: "tc-1", name: "read" }]), tr, makeUser("a")];
 
-		const result = transformMessages(messages, { hotWindowTurns: 1 });
+		const { messages: result } = transformMessages(messages, { hotWindowTurns: 1 });
 		const replaced = result.find((m): m is ToolResultMessage => m.role === "toolResult")!;
 		expect(replaced.timestamp).toBe(originalTs);
 	});
@@ -544,10 +552,224 @@ describe("transformMessages — message ordering", () => {
 			makeUser("3"),
 		];
 
-		const result = transformMessages(messages, { hotWindowTurns: 2 });
+		const { messages: result } = transformMessages(messages, { hotWindowTurns: 2 });
 
 		// Verify order: user, assistant, toolResult, user, assistant, toolResult, user
 		const roles = result.map(m => m.role);
 		expect(roles).toEqual(["user", "assistant", "toolResult", "user", "assistant", "toolResult", "user"]);
+	});
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// transformMessages — decision metadata
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe("transformMessages — decision metadata", () => {
+	test("all hot-window turns are reported as kept with reason hot-window", () => {
+		const messages: AgentMessage[] = [
+			makeUser("hello"),
+			makeAssistant([{ id: "tc-1", name: "read" }]),
+			makeToolResult("tc-1", "file content"),
+		];
+		// 2 turns, default hot window = 3 → all in hot window
+		const { metadata } = transformMessages(messages);
+
+		expect(metadata.totalTurns).toBe(2);
+		expect(metadata.keptCount).toBe(2);
+		expect(metadata.stubbedCount).toBe(0);
+		expect(metadata.droppedCount).toBe(0);
+
+		for (const decision of metadata.decisions) {
+			expect(decision.action).toBe("kept");
+			expect(decision.reason).toBe("hot-window");
+			expect(decision.tokensBefore).toBeGreaterThan(0);
+			expect(decision.tokensAfter).toBe(decision.tokensBefore);
+		}
+	});
+
+	test("stubbed turns report action=stubbed, reason=beyond-hot-window", () => {
+		const messages: AgentMessage[] = [
+			makeUser("start"),
+			makeAssistant([{ id: "tc-1", name: "read" }]),
+			makeToolResult("tc-1", "a".repeat(2000)), // large content
+			// Hot window (3 turns)
+			makeUser("a"),
+			makeUser("b"),
+			makeUser("c"),
+		];
+
+		const { metadata } = transformMessages(messages, { hotWindowTurns: 3 });
+
+		expect(metadata.totalTurns).toBe(5);
+		// Turn 0: user beyond hot window, no tool results → kept/no-tool-results
+		expect(metadata.decisions[0].action).toBe("kept");
+		expect(metadata.decisions[0].reason).toBe("no-tool-results");
+
+		// Turn 1: assistant+tool_result beyond hot window → stubbed
+		expect(metadata.decisions[1].action).toBe("stubbed");
+		expect(metadata.decisions[1].reason).toBe("beyond-hot-window");
+		expect(metadata.decisions[1].hasToolResults).toBe(true);
+		expect(metadata.decisions[1].tokensAfter).toBeLessThan(metadata.decisions[1].tokensBefore);
+
+		// Turns 2-4: hot window
+		for (let i = 2; i < 5; i++) {
+			expect(metadata.decisions[i].action).toBe("kept");
+			expect(metadata.decisions[i].reason).toBe("hot-window");
+		}
+
+		expect(metadata.stubbedCount).toBe(1);
+		expect(metadata.keptCount).toBe(4);
+	});
+
+	test("dropped turns report action=dropped, reason=budget-exceeded", () => {
+		// Each user message ~250 tokens
+		const messages: AgentMessage[] = [
+			makeUser("a".repeat(1000)), // ~250 tokens
+			makeUser("b".repeat(1000)), // ~250 tokens
+			makeUser("c".repeat(1000)), // ~250 tokens
+		];
+
+		// Budget of 600, hot window = 1 → drop first turn
+		const { metadata } = transformMessages(messages, { maxTokens: 600, hotWindowTurns: 1 });
+
+		expect(metadata.totalTurns).toBe(3);
+		expect(metadata.droppedCount).toBe(1);
+
+		// First turn dropped
+		expect(metadata.decisions[0].action).toBe("dropped");
+		expect(metadata.decisions[0].reason).toBe("budget-exceeded");
+		expect(metadata.decisions[0].tokensAfter).toBe(0);
+		expect(metadata.decisions[0].tokensBefore).toBeGreaterThan(0);
+
+		// Second turn: beyond hot window, no tool results → kept
+		expect(metadata.decisions[1].action).toBe("kept");
+		expect(metadata.decisions[1].reason).toBe("no-tool-results");
+
+		// Third turn: hot window
+		expect(metadata.decisions[2].action).toBe("kept");
+		expect(metadata.decisions[2].reason).toBe("hot-window");
+	});
+
+	test("token estimates before/after are consistent", () => {
+		const messages: AgentMessage[] = [
+			makeUser("start"),
+			makeAssistant([{ id: "tc-1", name: "read" }]),
+			makeLargeToolResult("tc-1", 8000), // ~2000 tokens before stub
+			makeUser("a"),
+			makeUser("b"),
+			makeUser("end"),
+		];
+
+		const { metadata } = transformMessages(messages, { hotWindowTurns: 3 });
+
+		// tokensBefore should be sum of all individual tokensBefore
+		const sumBefore = metadata.decisions.reduce((sum, d) => sum + d.tokensBefore, 0);
+		expect(metadata.tokensBefore).toBe(sumBefore);
+
+		// tokensAfter should be sum of all individual tokensAfter
+		const sumAfter = metadata.decisions.reduce((sum, d) => sum + d.tokensAfter, 0);
+		expect(metadata.tokensAfter).toBe(sumAfter);
+
+		// After stubbing, total tokens should be less than before
+		expect(metadata.tokensAfter).toBeLessThan(metadata.tokensBefore);
+	});
+
+	test("stable turnIndex corresponds to original segmentation order", () => {
+		const messages: AgentMessage[] = [
+			makeUser("first"),
+			makeAssistant([{ id: "tc-1", name: "read" }]),
+			makeToolResult("tc-1", "data"),
+			makeUser("second"),
+			makeUser("third"),
+		];
+
+		const { metadata } = transformMessages(messages, { hotWindowTurns: 2 });
+
+		// Verify indices are sequential and match turn count
+		expect(metadata.decisions).toHaveLength(metadata.totalTurns);
+		for (let i = 0; i < metadata.decisions.length; i++) {
+			expect(metadata.decisions[i].turnIndex).toBe(i);
+		}
+	});
+
+	test("messageCount reflects original turn size", () => {
+		const messages: AgentMessage[] = [
+			makeUser("start"),
+			makeAssistant([
+				{ id: "tc-1", name: "read" },
+				{ id: "tc-2", name: "grep" },
+			]),
+			makeToolResult("tc-1", "r1"),
+			makeToolResult("tc-2", "r2"),
+			makeUser("end"),
+		];
+
+		const { metadata } = transformMessages(messages);
+
+		// Turn 0: single user message
+		expect(metadata.decisions[0].messageCount).toBe(1);
+		// Turn 1: assistant + 2 tool_results = 3 messages
+		expect(metadata.decisions[1].messageCount).toBe(3);
+		// Turn 2: single user message
+		expect(metadata.decisions[2].messageCount).toBe(1);
+	});
+
+	test("counts are consistent: kept + stubbed + dropped = totalTurns", () => {
+		const messages: AgentMessage[] = [
+			makeUser("a".repeat(1000)),
+			makeAssistant([{ id: "tc-1", name: "read" }]),
+			makeLargeToolResult("tc-1", 4000),
+			makeUser("b".repeat(1000)),
+			makeUser("c"),
+		];
+
+		const { metadata } = transformMessages(messages, { maxTokens: 400, hotWindowTurns: 1 });
+
+		expect(metadata.keptCount + metadata.stubbedCount + metadata.droppedCount).toBe(metadata.totalTurns);
+	});
+
+	test("no-tool-results reason for non-tool turns beyond hot window", () => {
+		const messages: AgentMessage[] = [
+			makeUser("old message"),
+			makeDeveloper("dev context"),
+			makeAssistant(),
+			// Hot window
+			makeUser("recent"),
+		];
+
+		const { metadata } = transformMessages(messages, { hotWindowTurns: 1 });
+
+		// Turns 0-2 are beyond hot window; none have tool results
+		expect(metadata.decisions[0].action).toBe("kept");
+		expect(metadata.decisions[0].reason).toBe("no-tool-results");
+		expect(metadata.decisions[1].action).toBe("kept");
+		expect(metadata.decisions[1].reason).toBe("no-tool-results");
+		expect(metadata.decisions[2].action).toBe("kept");
+		expect(metadata.decisions[2].reason).toBe("no-tool-results");
+
+		// Turn 3: hot window
+		expect(metadata.decisions[3].action).toBe("kept");
+		expect(metadata.decisions[3].reason).toBe("hot-window");
+	});
+
+	test("combined stub + budget: turn stubbed then dropped reports dropped", () => {
+		// Build scenario where a turn would be stubbed but then dropped for budget
+		const messages: AgentMessage[] = [
+			makeAssistant([{ id: "tc-1", name: "read" }]),
+			makeLargeToolResult("tc-1", 4000), // big content, will be stubbed
+			makeUser("a".repeat(1000)),
+			makeUser("b".repeat(1000)),
+			makeUser("recent"),
+		];
+
+		// Hot window = 1, tight budget that forces dropping
+		const { metadata } = transformMessages(messages, { maxTokens: 300, hotWindowTurns: 1 });
+
+		// The tool turn (index 0) should be dropped (it would be stubbed first,
+		// but budget bounding drops it entirely — final state is dropped)
+		const toolTurn = metadata.decisions[0];
+		expect(toolTurn.action).toBe("dropped");
+		expect(toolTurn.reason).toBe("budget-exceeded");
+		expect(toolTurn.tokensAfter).toBe(0);
 	});
 });

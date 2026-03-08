@@ -34,9 +34,11 @@ import {
 	estimateMessageTokens,
 	estimateToolDefinitionTokens,
 	formatAssembledContext,
+	type TransformMetadata,
 	transformMessages,
 } from "./context/assembler";
 import { ToolResultBridge } from "./context/bridge";
+import { captureEffectivePromptSnapshot, type EffectivePromptSnapshot } from "./context/effective-prompt-snapshot";
 import {
 	isAssemblerActive,
 	isLegacyActive,
@@ -229,6 +231,7 @@ export interface CreateAgentSessionResult {
 
 export type { PromptTemplate } from "./config/prompt-templates";
 export { Settings, type SkillsSettings } from "./config/settings";
+export type { EffectivePromptSnapshot } from "./context/effective-prompt-snapshot";
 export type { CustomCommand, CustomCommandFactory } from "./extensibility/custom-commands/types";
 export type { CustomTool, CustomToolFactory } from "./extensibility/custom-tools/types";
 export type * from "./extensibility/extensions";
@@ -1410,7 +1413,9 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	// Build per-turn context transformer.
 	// In assembler mode, assembled context fragments are injected as a developer message.
 	// Extensions transform is always composed when available.
+	// All modes capture an effective-prompt snapshot for canonical observability.
 	const assemblerMode = isAssemblerActive(settings);
+	let lastPromptSnapshot: EffectivePromptSnapshot | null = null;
 	const transformContext = (() => {
 		const extensionTransform = extensionRunner
 			? (messages: AgentMessage[]) => extensionRunner.emitContext(messages)
@@ -1428,7 +1433,8 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 						// Step 1: Apply message transform (hot window + content replacement).
 						// This strips tool_result content from older turns before budget derivation
 						// so the budget reflects actual post-transform message costs.
-						const { messages: transformedMessages } = transformMessages(messages);
+						const firstPass = transformMessages(messages);
+						const transformedMessages = firstPass.messages;
 
 						const budget = currentModel
 							? deriveBudget({
@@ -1477,37 +1483,84 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 						// within the available budget.
 						const assembledContextTokens = packet.usage.consumedTokens;
 						const maxMessageTokens = budget ? Math.max(0, budget.maxTokens - assembledContextTokens) : undefined;
-						const boundedMessages =
-							maxMessageTokens !== undefined
-								? transformMessages(messages, { maxTokens: maxMessageTokens }).messages
-								: transformedMessages;
+						let boundedMessages: AgentMessage[];
+						let finalTransformMetadata: TransformMetadata;
+						if (maxMessageTokens !== undefined) {
+							const boundedPass = transformMessages(messages, { maxTokens: maxMessageTokens });
+							boundedMessages = boundedPass.messages;
+							finalTransformMetadata = boundedPass.metadata;
+						} else {
+							boundedMessages = transformedMessages;
+							finalTransformMetadata = firstPass.metadata;
+						}
 
 						// Step 4: Prepend assembled context if available.
 						const text = formatAssembledContext(packet);
-						if (text) {
-							const contextMessage: AgentMessage = {
-								role: "developer" as const,
-								content: text,
-								attribution: "agent" as const,
-								timestamp: Date.now(),
-							};
-							return [contextMessage, ...boundedMessages];
-						}
-						return boundedMessages;
+						const finalMessages = text
+							? [
+									{
+										role: "developer" as const,
+										content: text,
+										attribution: "agent" as const,
+										timestamp: Date.now(),
+									} satisfies AgentMessage,
+									...boundedMessages,
+								]
+							: boundedMessages;
+
+						// Step 5: Capture effective-prompt snapshot.
+						lastPromptSnapshot = captureEffectivePromptSnapshot({
+							turnId,
+							model: currentModel,
+							systemPrompt: currentSystemPrompt,
+							tools: currentTools,
+							finalMessages,
+							transformMetadata: finalTransformMetadata,
+							assemblerPacket: packet,
+							assemblerBudget: budget ?? null,
+						});
+
+						return finalMessages;
 					}
 				: undefined;
 
-		if (!extensionTransform && !assemblerTransform) return undefined;
-		if (extensionTransform && !assemblerTransform) {
-			return async (messages: AgentMessage[]) => extensionTransform(messages);
+		// Compose inner transform (extensions + assembler).
+		let innerTransform: ((msgs: AgentMessage[]) => Promise<AgentMessage[]>) | undefined;
+		if (extensionTransform && assemblerTransform) {
+			// Extensions first, then assembler injection
+			innerTransform = async msgs => assemblerTransform(await extensionTransform(msgs));
+		} else if (assemblerTransform) {
+			innerTransform = assemblerTransform;
+		} else if (extensionTransform) {
+			innerTransform = async msgs => extensionTransform(msgs);
 		}
-		if (!extensionTransform && assemblerTransform) {
-			return assemblerTransform;
-		}
-		// Compose: extensions first, then assembler injection
-		return async (messages: AgentMessage[]) => {
-			const afterExtensions = await extensionTransform!(messages);
-			return assemblerTransform!(afterExtensions);
+
+		// Always return a transform function to capture prompt snapshots.
+		// In assembler mode, the snapshot is captured inside assemblerTransform
+		// with full transform metadata and packet data. In non-assembler mode,
+		// a minimal snapshot is captured here with the passthrough messages.
+		return async (messages: AgentMessage[]): Promise<AgentMessage[]> => {
+			const finalMessages = innerTransform ? await innerTransform(messages) : messages;
+
+			// In non-assembler mode, capture a minimal snapshot.
+			// Assembler mode snapshot is captured inside assemblerTransform above.
+			if (!assemblerTransform) {
+				const currentModel = agent?.state.model;
+				const currentSystemPrompt = agent?.state.systemPrompt ?? "";
+				const currentTools = agent?.state.tools ?? [];
+				lastPromptSnapshot = captureEffectivePromptSnapshot({
+					turnId: `turn-${Date.now()}`,
+					model: currentModel,
+					systemPrompt: currentSystemPrompt,
+					tools: currentTools,
+					finalMessages,
+					transformMetadata: null,
+					assemblerPacket: null,
+					assemblerBudget: null,
+				});
+			}
+
+			return finalMessages;
 		};
 	})();
 
@@ -1602,6 +1655,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		asyncJobManager,
 		pendingActionStore,
 		assemblerBridge,
+		getLastPromptSnapshot: () => lastPromptSnapshot,
 	});
 
 	if (model?.api === "openai-codex-responses") {

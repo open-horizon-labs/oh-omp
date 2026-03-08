@@ -55,6 +55,7 @@ import { extractExplicitThinkingSelector, parseModelString, resolveModelRoleValu
 import { expandPromptTemplate, type PromptTemplate, renderPromptTemplate } from "../config/prompt-templates";
 import type { Settings, SkillsSettings } from "../config/settings";
 import type { ToolResultBridge } from "../context/bridge";
+import type { EffectivePromptSnapshot } from "../context/effective-prompt-snapshot";
 import { type BashResult, executeBash as executeBashCommand } from "../exec/bash-executor";
 import { exportSessionToHtml } from "../export/html";
 import type { TtsrManager, TtsrMatchContext } from "../export/ttsr";
@@ -200,6 +201,8 @@ export interface AgentSessionConfig {
 	pendingActionStore?: PendingActionStore;
 	/** Assembler bridge for introspection (shadow/assembler modes) */
 	assemblerBridge?: ToolResultBridge;
+	/** Getter for the most recent effective-prompt snapshot (captured per turn by transformContext). */
+	getLastPromptSnapshot?: () => EffectivePromptSnapshot | null;
 }
 
 /** Options for AgentSession.prompt() */
@@ -310,6 +313,7 @@ export class AgentSession {
 	readonly sessionManager: SessionManager;
 	readonly settings: Settings;
 	#assemblerBridge: ToolResultBridge | undefined;
+	#getLastPromptSnapshot: (() => EffectivePromptSnapshot | null) | undefined;
 
 	#asyncJobManager: AsyncJobManager | undefined = undefined;
 	#scopedModels: Array<{ model: Model; thinkingLevel?: ThinkingLevel }>;
@@ -432,6 +436,7 @@ export class AgentSession {
 		this.agent.providerSessionState = this.#providerSessionState;
 		this.#pendingActionStore = config.pendingActionStore;
 		this.#assemblerBridge = config.assemblerBridge;
+		this.#getLastPromptSnapshot = config.getLastPromptSnapshot;
 		this.#unsubscribePendingActionPush = this.#pendingActionStore?.subscribePush(action => {
 			const reminderText = [
 				"<system-reminder>",
@@ -463,6 +468,11 @@ export class AgentSession {
 	/** Assembler bridge for introspection (shadow/assembler modes). */
 	get assemblerBridge(): ToolResultBridge | undefined {
 		return this.#assemblerBridge;
+	}
+
+	/** Most recent effective-prompt snapshot captured during composition. */
+	get lastPromptSnapshot(): EffectivePromptSnapshot | null {
+		return this.#getLastPromptSnapshot?.() ?? null;
 	}
 
 	/** Provider-scoped mutable state store for transport/session caches. */

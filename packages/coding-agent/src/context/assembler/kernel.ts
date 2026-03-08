@@ -16,13 +16,16 @@ import {
 	type WorkingContextPacketV1,
 } from "../memory-contract";
 import { createBudgetTracker, estimateTokensFromCharCount, hydrateCandidates, stubRetriever } from "./hydrator";
-import { rankCandidates } from "./scoring";
+import { mmrRerank, rankCandidates } from "./scoring";
 import {
 	type AssemblerConfig,
 	type AssemblerTurnInput,
 	type BudgetDerivationInput,
+	DEFAULT_CONCURRENCY,
 	DEFAULT_MAX_CANDIDATES,
 	DEFAULT_MIN_SCORE,
+	DEFAULT_MMR_LAMBDA,
+	DEFAULT_PER_ENTRY_TIMEOUT_MS,
 	DEFAULT_SCORING_WEIGHTS,
 	type ScoringContext,
 	type ScoringWeights,
@@ -146,9 +149,10 @@ export function estimateMessageTokens(messages: unknown[]): number {
  * 1. Merge locator entries from the contract's locator map.
  * 2. Build scoring context from the turn input and working memory.
  * 3. Score and rank all candidates.
- * 4. Filter by minimum score, cap at maxCandidates.
- * 5. Hydrate within token/latency budget, tracking drops.
- * 6. Return a fully-formed WorkingContextPacketV1.
+ * 4. Apply MMR diversity reranking to prevent degenerate clustering.
+ * 5. Cap at maxCandidates (dynamically scaled for large budgets).
+ * 6. Hydrate in parallel within token/latency budget, truncating oversized content.
+ * 7. Return a fully-formed WorkingContextPacketV1.
  */
 export async function assemble(
 	contract: MemoryContractV1,
@@ -162,7 +166,9 @@ export async function assemble(
 	const weights: ScoringWeights = { ...DEFAULT_SCORING_WEIGHTS, ...config.weights };
 	const retriever = config.retriever ?? stubRetriever;
 	const minScore = config.minScore ?? DEFAULT_MIN_SCORE;
-	const maxCandidates = config.maxCandidates ?? DEFAULT_MAX_CANDIDATES;
+	const mmrLambda = config.mmrLambda ?? DEFAULT_MMR_LAMBDA;
+	const concurrency = config.concurrency ?? DEFAULT_CONCURRENCY;
+	const perEntryTimeoutMs = config.perEntryTimeoutMs ?? DEFAULT_PER_ENTRY_TIMEOUT_MS;
 
 	// Resolve budget: config-derived > working memory > fallback default
 	// config.budget is set by sdk.ts with a model-derived budget.
@@ -175,6 +181,18 @@ export async function assemble(
 		budget.reservedTokens.codeContext -
 		budget.reservedTokens.executionState;
 
+	// Dynamic maxCandidates: scale with budget for large context windows.
+	// At 150K tokens (~100 tokens/fragment avg), we want ~500–1000 candidates.
+	// Capped at 1000 to bound MMR O(n²) cost.
+	const maxCandidates =
+		config.maxCandidates ?? Math.min(1000, Math.max(DEFAULT_MAX_CANDIDATES, Math.floor(availableTokens / 100)));
+
+	// Dynamic maxTokensPerFragment: scale with budget.
+	// Small budget → small fragments (snippets), large budget → full file reads.
+	// Capped at 50K to prevent a single fragment from dominating.
+	const maxTokensPerFragment =
+		config.maxTokensPerFragment ?? Math.min(50_000, Math.max(200, Math.floor(availableTokens * 0.2)));
+
 	// Build scoring context from turn input
 	const scoringCtx: ScoringContext = {
 		activePaths: [...turn.activePaths, ...(contract.working?.activePaths ?? [])],
@@ -186,8 +204,12 @@ export async function assemble(
 	// Score and rank
 	const ranked = rankCandidates(contract.locatorMap, scoringCtx, weights);
 
-	// Cap at maxCandidates
-	const capped = ranked.slice(0, maxCandidates);
+	// MMR diversity reranking: overselect 2× maxCandidates, then MMR selects
+	// the best diverse subset. This prevents degenerate cases where all
+	// fragments come from the same file or the same provenance source.
+	const overselectionPool = ranked.slice(0, maxCandidates * 2);
+	const diversified = mmrRerank(overselectionPool, mmrLambda);
+	const capped = diversified.slice(0, maxCandidates);
 
 	// Invalidation tags: the bridge already evicts stale locators in real-time
 	// when mutations occur (#trackMutation → #invalidateByPaths). Building
@@ -197,7 +219,7 @@ export async function assemble(
 	// the bridge's eager invalidation is the authoritative mechanism.
 	const invalidationTags = new Set<string>();
 
-	// Hydrate within budget
+	// Hydrate within budget (parallel, with truncation)
 	const tracker = createBudgetTracker(Math.max(0, availableTokens), budget.maxLatencyMs);
 	const { fragments, drops } = await hydrateCandidates({
 		candidates: capped,
@@ -206,6 +228,9 @@ export async function assemble(
 		nowMs,
 		invalidationTags,
 		minScore,
+		concurrency,
+		perEntryTimeoutMs,
+		maxTokensPerFragment,
 	});
 
 	// Build usage

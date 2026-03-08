@@ -321,6 +321,8 @@ describe("freshness", () => {
 
 describe("budget drops", () => {
 	test("candidates exceeding token budget are dropped", async () => {
+		// Retriever returns content that exceeds the budget
+		const retriever: LocatorRetriever = async () => "x".repeat(2000); // 500 tokens
 		const entries: ScoredCandidate[] = [
 			{
 				locator: makeLocator({ key: "big", cost: { estimatedTokens: 500, estimatedLatencyMs: 10 } }),
@@ -329,11 +331,11 @@ describe("budget drops", () => {
 			},
 		];
 
-		const budget = createBudgetTracker(100, 10_000); // Only 100 tokens available
+		const budget = createBudgetTracker(10, 10_000); // Only 10 tokens available — too small to truncate
 		const { fragments, drops } = await hydrateCandidates({
 			candidates: entries,
 			budget,
-			retriever: stubRetriever,
+			retriever,
 			nowMs: NOW_MS,
 			minScore: 0,
 		});
@@ -344,26 +346,43 @@ describe("budget drops", () => {
 	});
 
 	test("candidates exceeding latency budget are dropped", async () => {
+		// Retriever that takes longer than the latency budget
+		const retriever: LocatorRetriever = async () => {
+			await Bun.sleep(200);
+			return "content";
+		};
 		const entries: ScoredCandidate[] = [
 			{
-				locator: makeLocator({ key: "slow", cost: { estimatedTokens: 10, estimatedLatencyMs: 5000 } }),
+				locator: makeLocator({ key: "slow", cost: { estimatedTokens: 10, estimatedLatencyMs: 10 } }),
+				score: 0.9,
+				breakdown: { fileOverlap: 1, symbolOverlap: 0, failureRelevance: 0, recency: 1, trust: 1, tier: 1 },
+			},
+			{
+				locator: makeLocator({
+					key: "after-slow",
+					where: "src/after.ts",
+					cost: { estimatedTokens: 10, estimatedLatencyMs: 10 },
+				}),
 				score: 0.8,
 				breakdown: { fileOverlap: 1, symbolOverlap: 0, failureRelevance: 0, recency: 1, trust: 1, tier: 1 },
 			},
 		];
 
-		const budget = createBudgetTracker(10_000, 100); // Only 100ms available
-		const { fragments, drops } = await hydrateCandidates({
+		// Latency budget of 50ms — first batch takes 200ms, second batch is dropped
+		const budget = createBudgetTracker(10_000, 50);
+		const { drops } = await hydrateCandidates({
 			candidates: entries,
 			budget,
-			retriever: stubRetriever,
+			retriever,
 			nowMs: NOW_MS,
 			minScore: 0,
+			concurrency: 1, // Serial to control timing
 		});
 
-		expect(fragments).toHaveLength(0);
-		expect(drops).toHaveLength(1);
-		expect(drops[0].reason).toBe("latency_budget");
+		// First entry may or may not succeed depending on timing,
+		// but at least one should be dropped as latency_budget
+		const latencyDrops = drops.filter(d => d.reason === "latency_budget");
+		expect(latencyDrops.length).toBeGreaterThan(0);
 	});
 
 	test("budget is consumed incrementally across candidates", async () => {
@@ -986,14 +1005,15 @@ describe("assemble budget priority", () => {
 	});
 
 	test("derived budget is used for hydration token limit", async () => {
-		// Create a locator that needs ~500 tokens to hydrate
+		// Retriever returns content that exceeds the tight budget
+		const retriever: LocatorRetriever = async () => "x".repeat(2000); // 500 tokens
 		const contract = makeContract({
 			locatorMap: [makeLocator({ key: "big", cost: { estimatedTokens: 500, estimatedLatencyMs: 10 } })],
 		});
 
-		// Budget with only 100 tokens available -> should drop as token_budget
+		// Budget with only 10 tokens — too small to even truncate meaningfully
 		const tightBudget: MemoryAssemblyBudget = {
-			maxTokens: 100,
+			maxTokens: 10,
 			maxLatencyMs: 10_000,
 			reservedTokens: { objective: 0, codeContext: 0, executionState: 0 },
 		};
@@ -1001,6 +1021,7 @@ describe("assemble budget priority", () => {
 		const packet = await assemble(contract, makeTurnInput(), {
 			now: NOW,
 			budget: tightBudget,
+			retriever,
 		});
 		expect(packet.dropped).toHaveLength(1);
 		expect(packet.dropped[0].reason).toBe("token_budget");

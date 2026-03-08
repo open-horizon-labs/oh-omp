@@ -122,6 +122,21 @@ export interface AssemblerConfig {
 	 * Use `deriveBudget()` from the kernel to compute this.
 	 */
 	budget?: MemoryAssemblyBudget;
+	/**
+	 * MMR lambda for diversity-aware reranking (0–1).
+	 * 1.0 = pure relevance (no diversity), 0.0 = pure diversity.
+	 * Default: {@link DEFAULT_MMR_LAMBDA}.
+	 */
+	mmrLambda?: number;
+	/** Max parallel retrieval requests during hydration. Default: {@link DEFAULT_CONCURRENCY}. */
+	concurrency?: number;
+	/** Timeout (ms) for individual retrieval calls. Default: {@link DEFAULT_PER_ENTRY_TIMEOUT_MS}. */
+	perEntryTimeoutMs?: number;
+	/**
+	 * Max tokens per fragment. Oversized content is truncated to fit.
+	 * When omitted, auto-scaled from budget (20% of available, capped at 50K).
+	 */
+	maxTokensPerFragment?: number;
 }
 
 /**
@@ -182,3 +197,15 @@ export const DEFAULT_MIN_SCORE = 0.05;
 
 /** Default max candidates to hydrate. */
 export const DEFAULT_MAX_CANDIDATES = 50;
+
+/** Default MMR lambda: 0.7 balances relevance and diversity. */
+export const DEFAULT_MMR_LAMBDA = 0.7;
+
+/** Default parallel retrieval concurrency. */
+export const DEFAULT_CONCURRENCY = 10;
+
+/** Default per-entry retrieval timeout (ms). */
+export const DEFAULT_PER_ENTRY_TIMEOUT_MS = 500;
+
+/** Minimum useful fragment size in tokens — fragments below this are not worth truncating to. */
+export const MIN_FRAGMENT_TOKENS = 50;

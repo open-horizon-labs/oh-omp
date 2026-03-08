@@ -56,6 +56,7 @@ export const MEMORY_FRAGMENT_DROP_REASONS = [
 	"stale",
 	"invalidated",
 	"low_score",
+	"retrieval_timeout",
 ] as const;
 
 export type MemoryFragmentDropReason = (typeof MEMORY_FRAGMENT_DROP_REASONS)[number];

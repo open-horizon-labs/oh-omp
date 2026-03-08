@@ -2,12 +2,24 @@
  * Locator-map hydration with token/latency budgeting and freshness checks.
  *
  * Processes scored candidates in rank order, resolving each to content via
- * a pluggable retriever. Tracks budget consumption and drops candidates
- * that exceed limits, are stale, or fail retrieval.
+ * a pluggable retriever. Supports parallel retrieval with concurrency control,
+ * per-entry timeouts, and content truncation for budget-aware filling.
+ *
+ * Tracks budget consumption and drops candidates that exceed limits,
+ * are stale, time out, or fail retrieval.
  */
 
-import type { MemoryContextFragment, MemoryLocatorEntry } from "../memory-contract";
-import type { BudgetTracker, HydrationDrop, HydrationResult, LocatorRetriever, ScoredCandidate } from "./types";
+import type { MemoryContextFragment, MemoryFragmentDropReason, MemoryLocatorEntry } from "../memory-contract";
+import {
+	type BudgetTracker,
+	DEFAULT_CONCURRENCY,
+	DEFAULT_PER_ENTRY_TIMEOUT_MS,
+	type HydrationDrop,
+	type HydrationResult,
+	type LocatorRetriever,
+	MIN_FRAGMENT_TOKENS,
+	type ScoredCandidate,
+} from "./types";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Freshness
@@ -57,14 +69,6 @@ export function createBudgetTracker(maxTokens: number, maxLatencyMs: number): Bu
 	return { maxTokens, maxLatencyMs, consumedTokens: 0, consumedLatencyMs: 0 };
 }
 
-/** Check whether adding a cost would exceed the budget. */
-function wouldExceedBudget(tracker: BudgetTracker, tokens: number, latencyMs: number): boolean {
-	return (
-		tracker.consumedTokens + tokens > tracker.maxTokens ||
-		tracker.consumedLatencyMs + latencyMs > tracker.maxLatencyMs
-	);
-}
-
 // ═══════════════════════════════════════════════════════════════════════════
 // Stub retriever
 // ═══════════════════════════════════════════════════════════════════════════
@@ -96,6 +100,12 @@ export interface HydrateCandidatesOptions {
 	invalidationTags?: ReadonlySet<string>;
 	/** Minimum score threshold. */
 	minScore: number;
+	/** Max parallel retrievals per batch. Default: {@link DEFAULT_CONCURRENCY}. */
+	concurrency?: number;
+	/** Per-entry retrieval timeout (ms). Default: {@link DEFAULT_PER_ENTRY_TIMEOUT_MS}. */
+	perEntryTimeoutMs?: number;
+	/** Max tokens per fragment; oversized content is truncated. */
+	maxTokensPerFragment?: number;
 }
 
 export interface HydrateCandidatesResult {
@@ -105,28 +115,80 @@ export interface HydrateCandidatesResult {
 }
 
 /**
- * Hydrate scored candidates in rank order, respecting budget and freshness.
+ * Truncate content to fit within a token cap.
  *
- * Processing stops early when both token and latency budgets are exhausted.
- * Candidates that fail freshness, budget, score, or retrieval are recorded as drops.
+ * Accounts for the truncation marker length to ensure the result
+ * does not exceed `maxTokens` when re-estimated via chars/4.
  */
-export async function hydrateCandidates(opts: HydrateCandidatesOptions): Promise<HydrateCandidatesResult> {
-	const { candidates, budget, retriever, nowMs, invalidationTags = new Set(), minScore } = opts;
+const TRUNCATION_MARKER = "\n[... truncated]";
+const TRUNCATION_MARKER_CHARS = TRUNCATION_MARKER.length;
 
-	const fragments: MemoryContextFragment[] = [];
+function truncateContent(content: string, maxTokens: number): string {
+	const totalMaxChars = maxTokens * 4;
+	if (content.length <= totalMaxChars) return content;
+
+	// Reserve space for the marker so the final result fits within maxTokens
+	const maxContentChars = totalMaxChars - TRUNCATION_MARKER_CHARS;
+	if (maxContentChars <= 0) return TRUNCATION_MARKER.trimStart();
+
+	// Find a line boundary near the cut point to avoid mid-line truncation
+	let cutAt = content.lastIndexOf("\n", maxContentChars);
+	if (cutAt < maxContentChars * 0.5) cutAt = maxContentChars; // no good line boundary, hard cut
+
+	return content.slice(0, cutAt) + TRUNCATION_MARKER;
+}
+
+/**
+ * Retrieve a single entry with timeout protection.
+ *
+ * Returns null on timeout, allowing the caller to record a retrieval_timeout drop.
+ */
+async function retrieveWithTimeout(
+	retriever: LocatorRetriever,
+	entry: MemoryLocatorEntry,
+	timeoutMs: number,
+): Promise<{ content: string | null; timedOut: boolean }> {
+	const { promise, resolve } = Promise.withResolvers<{ content: string | null; timedOut: boolean }>();
+
+	const timer = setTimeout(() => resolve({ content: null, timedOut: true }), timeoutMs);
+
+	retriever(entry).then(
+		content => {
+			clearTimeout(timer);
+			resolve({ content, timedOut: false });
+		},
+		() => {
+			clearTimeout(timer);
+			resolve({ content: null, timedOut: false });
+		},
+	);
+
+	return promise;
+}
+
+/**
+ * Pre-filter candidates by score and freshness (cheap, no I/O).
+ *
+ * Separates candidates into those eligible for retrieval and those
+ * that should be dropped immediately.
+ */
+function preFilter(
+	candidates: ScoredCandidate[],
+	minScore: number,
+	nowMs: number,
+	invalidationTags: ReadonlySet<string>,
+): { eligible: ScoredCandidate[]; drops: HydrationDrop[] } {
+	const eligible: ScoredCandidate[] = [];
 	const drops: HydrationDrop[] = [];
-	const results: HydrationResult[] = [];
 
 	for (const candidate of candidates) {
 		const { locator, score } = candidate;
 
-		// Low-score filter
 		if (score < minScore) {
 			drops.push({ id: locator.key, reason: "low_score" });
 			continue;
 		}
 
-		// Freshness check
 		if (!isFresh(locator, nowMs, invalidationTags)) {
 			const capturedMs = new Date(locator.provenance.capturedAt).getTime();
 			const isExpired = Number.isNaN(capturedMs) || nowMs - capturedMs > locator.freshness.ttlMs;
@@ -134,49 +196,130 @@ export async function hydrateCandidates(opts: HydrateCandidatesOptions): Promise
 			continue;
 		}
 
-		// Pre-check budget against estimated cost
-		if (wouldExceedBudget(budget, locator.cost.estimatedTokens, locator.cost.estimatedLatencyMs)) {
-			// Determine which budget dimension is exceeded
-			const reason: "token_budget" | "latency_budget" =
-				budget.consumedTokens + locator.cost.estimatedTokens > budget.maxTokens ? "token_budget" : "latency_budget";
-			drops.push({ id: locator.key, reason });
-			continue;
-		}
-
-		// Hydrate via retriever
-		const content = await retriever(locator);
-		if (content === null) {
-			drops.push({ id: locator.key, reason: "invalidated" });
-			continue;
-		}
-
-		const actualTokens = estimateTokens(content);
-		const actualLatencyMs = locator.cost.estimatedLatencyMs; // V1: use estimate as actual
-
-		// Post-hydration budget check (actual content may differ from estimate)
-		if (wouldExceedBudget(budget, actualTokens, actualLatencyMs)) {
-			const reason: "token_budget" | "latency_budget" =
-				budget.consumedTokens + actualTokens > budget.maxTokens ? "token_budget" : "latency_budget";
-			drops.push({ id: locator.key, reason });
-			continue;
-		}
-
-		// Commit to budget
-		budget.consumedTokens += actualTokens;
-		budget.consumedLatencyMs += actualLatencyMs;
-
-		const fragment: MemoryContextFragment = {
-			id: locator.key,
-			tier: locator.tier,
-			content,
-			locatorKey: locator.key,
-			score,
-			provenance: locator.provenance,
-		};
-
-		fragments.push(fragment);
-		results.push({ fragment, consumedTokens: actualTokens, consumedLatencyMs: actualLatencyMs });
+		eligible.push(candidate);
 	}
+
+	return { eligible, drops };
+}
+
+/**
+ * Hydrate scored candidates with parallel retrieval, respecting budget and freshness.
+ *
+ * Processing flow:
+ *   1. Pre-filter all candidates by score and freshness (no I/O).
+ *   2. Process eligible candidates in batches of `concurrency`.
+ *   3. Within each batch, retrieve content in parallel with per-entry timeout.
+ *   4. Process retrieved content in rank order: truncate if oversized, check budget.
+ *   5. Stop when wall-clock latency exceeds budget or all candidates processed.
+ *
+ * Content truncation: when a fragment exceeds `maxTokensPerFragment`, it is
+ * truncated to fit. When remaining budget is tight, fragments are truncated to
+ * fill the remaining space (greedy filling).
+ */
+export async function hydrateCandidates(opts: HydrateCandidatesOptions): Promise<HydrateCandidatesResult> {
+	const {
+		candidates,
+		budget,
+		retriever,
+		nowMs,
+		invalidationTags = new Set(),
+		minScore,
+		concurrency = DEFAULT_CONCURRENCY,
+		perEntryTimeoutMs = DEFAULT_PER_ENTRY_TIMEOUT_MS,
+		maxTokensPerFragment,
+	} = opts;
+
+	const startTime = Date.now();
+	const fragments: MemoryContextFragment[] = [];
+	const drops: HydrationDrop[] = [];
+	const results: HydrationResult[] = [];
+
+	// Step 1: Pre-filter (cheap, no I/O)
+	const { eligible, drops: preDrops } = preFilter(candidates, minScore, nowMs, invalidationTags);
+	drops.push(...preDrops);
+
+	// Step 2: Process eligible candidates in batches
+	for (let batchStart = 0; batchStart < eligible.length; batchStart += concurrency) {
+		// Wall-clock latency check
+		const elapsed = Date.now() - startTime;
+		if (elapsed >= budget.maxLatencyMs) {
+			for (let i = batchStart; i < eligible.length; i++) {
+				drops.push({ id: eligible[i].locator.key, reason: "latency_budget" });
+			}
+			break;
+		}
+
+		// Check if token budget is completely exhausted
+		if (budget.consumedTokens >= budget.maxTokens) {
+			for (let i = batchStart; i < eligible.length; i++) {
+				drops.push({ id: eligible[i].locator.key, reason: "token_budget" });
+			}
+			break;
+		}
+
+		const batch = eligible.slice(batchStart, batchStart + concurrency);
+
+		// Retrieve all entries in the batch in parallel
+		const retrievalResults = await Promise.all(
+			batch.map(candidate => retrieveWithTimeout(retriever, candidate.locator, perEntryTimeoutMs)),
+		);
+
+		// Process results in rank order (batch preserves order from eligible)
+		for (let j = 0; j < batch.length; j++) {
+			const candidate = batch[j];
+			const { content: rawContent, timedOut } = retrievalResults[j];
+
+			if (timedOut) {
+				drops.push({ id: candidate.locator.key, reason: "retrieval_timeout" });
+				continue;
+			}
+
+			if (rawContent === null) {
+				drops.push({ id: candidate.locator.key, reason: "invalidated" });
+				continue;
+			}
+
+			let content = rawContent;
+			let actualTokens = estimateTokens(content);
+
+			// Truncate if exceeds per-fragment cap
+			if (maxTokensPerFragment !== undefined && actualTokens > maxTokensPerFragment) {
+				content = truncateContent(content, maxTokensPerFragment);
+				actualTokens = estimateTokens(content);
+			}
+
+			// Check remaining token budget
+			const remainingTokens = budget.maxTokens - budget.consumedTokens;
+			if (actualTokens > remainingTokens) {
+				// Try truncating to fit remaining budget
+				if (remainingTokens >= MIN_FRAGMENT_TOKENS) {
+					content = truncateContent(content, remainingTokens);
+					actualTokens = estimateTokens(content);
+				} else {
+					drops.push({ id: candidate.locator.key, reason: "token_budget" as MemoryFragmentDropReason });
+					continue;
+				}
+			}
+
+			// Commit to budget
+			budget.consumedTokens += actualTokens;
+
+			const fragment: MemoryContextFragment = {
+				id: candidate.locator.key,
+				tier: candidate.locator.tier,
+				content,
+				locatorKey: candidate.locator.key,
+				score: candidate.score,
+				provenance: candidate.locator.provenance,
+			};
+
+			fragments.push(fragment);
+			results.push({ fragment, consumedTokens: actualTokens, consumedLatencyMs: 0 });
+		}
+	}
+
+	// Record wall-clock latency
+	budget.consumedLatencyMs = Date.now() - startTime;
 
 	return { fragments, drops, results };
 }

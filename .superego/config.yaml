@@ -1,0 +1,19 @@
+# Superego configuration
+
+# Evaluation mode:
+#   always - Automatic evaluation at checkpoints (Stop, large changes, ExitPlanMode)
+#   pull   - Claude decides when to call `sg review` (Codex-style)
+mode: always
+
+# Carryover context settings (for continuity between evaluations)
+# carryover_decision_count: 2    # Number of recent decisions to include
+# carryover_window_minutes: 5    # Minutes of recent messages before current window
+
+# Model and timeout (uncomment to override)
+# model: opus
+# timeout_ms: 30000
+
+# Open Horizons integration (for cross-project visibility)
+# oh_endeavor_id: initiative:abc123  # Endeavor to link this project to
+# oh_api_url: http://localhost:3001  # OH API URL (default: localhost:3001)
+# oh_api_key: your-api-key-here      # OH API key (or set OH_API_KEY env var)

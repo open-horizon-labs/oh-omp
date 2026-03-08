@@ -1,3 +1,77 @@
+# Open Horizons Framework
+
+**The shift:** Action is cheap. Knowing what to do is scarce.
+
+**The sequence:** aim \u2192 problem-space \u2192 problem-statement \u2192 solution-space \u2192 execute \u2192 ship
+
+Each phase runs as an agent with isolated context and scoped tools. Dispatch via
+the `task` tool \u2014 each agent reads/writes `.oh/<session>.md` to pass context
+between phases.
+
+**Where to start (triggers):**
+- Can't explain why you're building this \u2192 dispatch `oh-aim` agent
+- Keep hitting the same blockers \u2192 dispatch `oh-problem-space` agent
+- Solutions feel forced \u2192 dispatch `oh-problem-statement` agent
+- About to start coding \u2192 dispatch `oh-solution-space` agent
+- Ready to implement \u2192 dispatch `oh-execute` agent
+- Code complete, need to deliver \u2192 dispatch `oh-ship` agent
+- Work is drifting or reversing \u2192 `/salvage`
+
+**Reflection skills (use anytime, in main session):**
+- `/review` - Check alignment before committing
+- `/dissent` - Seek contrary evidence before one-way doors
+- `/salvage` - Extract learning, restart clean
+
+**Key insight:** Enter at the altitude you need. Climb back up when you drift.
+
+---
+
+# Project Context
+
+## Purpose
+
+Constrained fork of [can1357/oh-my-pi](https://github.com/can1357/oh-my-pi) \u2014 a terminal-native AI coding agent. This fork (durch/oh-my-pi) adds a **context-assembly system** to replace legacy compaction-based context management with a tiered memory architecture (LTM/STM/WM) using addressable locator maps and budget-aware just-in-time hydration.
+
+The goal is a **reliable daily-driver harness** for AI-assisted development \u2014 not a research prototype, not a product. It needs to work every day.
+
+## Current Aims
+
+- **Build the assembler pipeline**: Tiered memory (ADR 0003) + tool-result bridge (ADR 0004) + assembler kernel that composes bounded context windows per turn
+- **Dogfood and evaluate**: Issue #6 \u2014 define and pass a success-gate evaluation before hard cutover
+- **Hard cutover**: Issue #7 \u2014 remove legacy context-management stack (compaction, memory summaries) once the assembler proves out
+- **Active assembler work**: Issues #16-20 on durch/oh-my-pi \u2014 conversation bounding, WM rebuild, STM distillation, kernel hydration scaling, LTM promotion
+
+Success = assembler mode is the default, sessions maintain context continuity without legacy compaction, and re-brief time after compaction is eliminated.
+
+## Key Constraints
+
+- **Protocol compatibility is hard**: Preserve event names, lifecycle semantics, and completion signaling (ADR 0001). Downstream orchestrators in ai-omnibus consume these contracts.
+- **RPC contract is locked**: Event protocol and RPC/SSE contract must not break without an explicit migration plan (ADR 0002).
+- **Patch scope is narrow and additive**: Only context-assembly hooks, observability, provenance metadata, and token/latency budget enforcement. No broad runtime rewrites, no renaming core events, no replacing the terminal interaction model.
+- **Upstream sync is active**: Merge upstream regularly. Keep the patch queue small and explicit. Gate syncs with compatibility tests.
+
+## Patterns to Follow
+
+- **ADR-driven decisions**: Architecture changes get an ADR in `docs/adr/`. Follow the existing numbered format.
+- **Single active context manager**: Only one context-management system may be active at runtime (ADR 0003 cutover invariant). No mixed-mode drift.
+- **Locator-first assembly**: Store addresses and retrieval recipes, not payloads. Hydrate just-in-time under budget.
+- **Extension-based integration**: Context assembly hooks wire as extensions (additive layer), not protocol replacements.
+- **Fork issues on durch/oh-my-pi**: Fork-specific work (assembler, context management) is tracked on the fork repo, not upstream.
+
+## Anti-Patterns to Avoid
+
+- **Expanding patch scope**: Don't touch core runtime beyond what the assembler needs. If a change would require deep edits across many core files, stop and re-evaluate (ADR 0001 re-evaluation trigger).
+- **Breaking protocol compat**: Don't change event names, lifecycle semantics, or completion signaling without an explicit migration plan.
+- **Running dual context managers**: Don't run assembler assembly and legacy compaction simultaneously. If configuration would activate both, runtime must fail closed.
+- **Payload retention in memory**: Don't store full tool outputs in memory tiers. Store locator entries (address + retrieval recipe) and hydrate on demand.
+- **Conflating bridge and assembler**: The bridge observes tool events and produces locator entries. The assembler manages the context window. Don't merge their responsibilities.
+
+## Decision Context
+
+Solo maintainer. ADRs for architecture decisions. Issues on durch/oh-my-pi for fork-specific work, upstream issues for bugs/features in the base agent. "Done" = tests pass, `bun check` clean, behavior verified against the change's scope.
+
+---
+
 # Development Rules
 
 ## Default Context
@@ -499,3 +573,17 @@ Use these sections under `## [Unreleased]`:
    ```
 
 The script handles: version bump, CHANGELOG finalization, commit, tag, publish, and adding new `[Unreleased]` sections.
+
+<!-- RNA MCP tool guidance -->
+## Code Exploration (use RNA MCP tools, not grep/Read)
+
+| Instead of... | Use this MCP tool |
+|---|---|
+| `Grep` for symbol names | `search_symbols(query, kind, language, file)` |
+| `Read` to trace function calls | `graph_query(node_id, mode: "neighbors")` |
+| `Grep` for "who calls X" | `graph_query(node_id, mode: "impact")` |
+| `Read` to find .oh/ artifacts | `oh_search_context(query)` |
+| `Bash` with `grep -rn` | `search_symbols` or `oh_search_context` |
+| Recording learnings/signals | `oh_record(type, slug, ...)` |
+| Searching git history | `git_history(query)` or `git_history(file)` |
+<!-- end RNA MCP tool guidance -->

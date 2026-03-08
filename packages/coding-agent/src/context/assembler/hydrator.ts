@@ -9,6 +9,7 @@
  * are stale, time out, or fail retrieval.
  */
 
+import { logger } from "@oh-my-pi/pi-utils";
 import type { MemoryContextFragment, MemoryFragmentDropReason, MemoryLocatorEntry } from "../memory-contract";
 import {
 	type BudgetTracker,
@@ -192,7 +193,19 @@ function preFilter(
 		if (!isFresh(locator, nowMs, invalidationTags)) {
 			const capturedMs = new Date(locator.provenance.capturedAt).getTime();
 			const isExpired = Number.isNaN(capturedMs) || nowMs - capturedMs > locator.freshness.ttlMs;
-			drops.push({ id: locator.key, reason: isExpired ? "stale" : "invalidated" });
+			const reason = isExpired ? "stale" : "invalidated";
+			logger.debug("hydrator:preFilter:drop", {
+				id: locator.key,
+				reason,
+				capturedAt: locator.provenance.capturedAt,
+				capturedMs,
+				nowMs,
+				ttlMs: locator.freshness.ttlMs,
+				ageMs: nowMs - capturedMs,
+				invalidatedBy: locator.freshness.invalidatedBy,
+				invalidationTagsSize: invalidationTags.size,
+			});
+			drops.push({ id: locator.key, reason });
 			continue;
 		}
 
@@ -275,6 +288,11 @@ export async function hydrateCandidates(opts: HydrateCandidatesOptions): Promise
 			}
 
 			if (rawContent === null) {
+				logger.debug("hydrator:retrieval:null", {
+					id: candidate.locator.key,
+					how: candidate.locator.how,
+					where: candidate.locator.where,
+				});
 				drops.push({ id: candidate.locator.key, reason: "invalidated" });
 				continue;
 			}

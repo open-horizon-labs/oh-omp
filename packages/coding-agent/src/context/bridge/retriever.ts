@@ -6,6 +6,8 @@
  * - reReadRetriever: re-reads files for non-artifact-backed entries
  */
 
+import * as os from "node:os";
+
 import type { LocatorRetriever } from "../assembler/types";
 import type { MemoryLocatorEntry } from "../memory-contract";
 
@@ -53,8 +55,9 @@ export function createArtifactRetriever(resolver: ArtifactResolver): LocatorRetr
  */
 export function createReReadRetriever(): LocatorRetriever {
 	return async (entry: MemoryLocatorEntry): Promise<string | null> => {
-		const filePath = entry.how.params?.filePath;
-		if (typeof filePath !== "string") return null;
+		const rawPath = entry.how.params?.filePath;
+		if (typeof rawPath !== "string") return null;
+		const filePath = rawPath.startsWith("~/") ? rawPath.replace("~", os.homedir()) : rawPath;
 
 		try {
 			return await Bun.file(filePath).text();

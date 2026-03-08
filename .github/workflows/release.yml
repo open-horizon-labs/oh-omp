@@ -1,0 +1,136 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: namespace-profile-tahoe
+            platform: darwin
+            arch: arm64
+          - os: namespace-profile-default
+            platform: linux
+            arch: x64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - run: bun install
+
+      - run: bun check
+        name: Verify build
+
+      - run: make build
+        name: Build binary
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: oh-omp-${{ matrix.platform }}-${{ matrix.arch }}
+          path: packages/coding-agent/dist/oh-omp
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: namespace-profile-default
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Publish platform packages
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+
+          for dir in artifacts/oh-omp-*/; do
+            # Extract platform-arch from artifact dir name
+            name=$(basename "$dir")
+            platform_arch="${name#oh-omp-}"
+
+            pkg_dir="dist/${name}"
+            mkdir -p "${pkg_dir}"
+
+            cp "${dir}/oh-omp" "${pkg_dir}/oh-omp"
+            chmod +x "${pkg_dir}/oh-omp"
+
+            platform="${platform_arch%-*}"
+            arch="${platform_arch##*-}"
+
+            cat > "${pkg_dir}/package.json" <<EOF
+          {
+            "name": "@oh-labs/${name}",
+            "version": "${VERSION}",
+            "description": "oh-omp binary for ${platform}-${arch}",
+            "license": "MIT",
+            "os": ["${platform}"],
+            "cpu": ["${arch}"],
+            "bin": {
+              "oh-omp": "oh-omp"
+            },
+            "files": ["oh-omp"]
+          }
+          EOF
+
+            echo "Publishing @oh-labs/${name}@${VERSION}"
+            npm publish "${pkg_dir}" --access public
+          done
+
+      - name: Publish root package
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+
+          cp -r npm/oh-omp dist/oh-omp
+          cd dist/oh-omp
+
+          # Set version in root package and optionalDependencies
+          jq --arg v "$VERSION" '
+            .version = $v |
+            .optionalDependencies |= with_entries(.value = $v)
+          ' package.json > package.json.tmp
+          mv package.json.tmp package.json
+
+          echo "Publishing @oh-labs/oh-omp@${VERSION}"
+          npm publish --access public
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+
+          # Rename artifacts for the release
+          for dir in artifacts/oh-omp-*/; do
+            name=$(basename "$dir")
+            cp "${dir}/oh-omp" "${name}"
+            chmod +x "${name}"
+          done
+
+          gh release create "${GITHUB_REF_NAME}" \
+            --title "v${VERSION}" \
+            --generate-notes \
+            oh-omp-*

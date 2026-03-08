@@ -1,0 +1,13 @@
+{
+	"name": "@oh-labs/oh-omp",
+	"version": "0.0.0",
+	"description": "Coding agent CLI — platform router package",
+	"license": "MIT",
+	"bin": {
+		"oh-omp": "bin/oh-omp"
+	},
+	"optionalDependencies": {
+		"@oh-labs/oh-omp-darwin-arm64": "0.0.0",
+		"@oh-labs/oh-omp-linux-x64": "0.0.0"
+	}
+}

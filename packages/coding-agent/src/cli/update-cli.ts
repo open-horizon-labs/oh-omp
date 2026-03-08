@@ -12,8 +12,8 @@ import { $ } from "bun";
 import chalk from "chalk";
 import { theme } from "../modes/theme/theme";
 
-const REPO = "can1357/oh-my-pi";
-const PACKAGE = "@oh-my-pi/pi-coding-agent";
+const REPO = "open-horizon-labs/oh-omp";
+const PACKAGE = "@oh-labs/oh-omp";
 
 interface ReleaseInfo {
 	tag: string;

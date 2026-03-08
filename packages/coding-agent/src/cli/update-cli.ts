@@ -12,8 +12,7 @@ import { $ } from "bun";
 import chalk from "chalk";
 import { theme } from "../modes/theme/theme";
 
-const REPO = "open-horizon-labs/oh-omp";
-const PACKAGE = "@oh-labs/oh-omp";
+import { RELEASE_PACKAGE, RELEASE_REPO } from "../release-metadata";
 
 interface ReleaseInfo {
 	tag: string;
@@ -90,7 +89,7 @@ async function resolveUpdateTarget(): Promise<UpdateTarget> {
  * Uses npm instead of GitHub API to avoid unauthenticated rate limiting.
  */
 async function getLatestRelease(): Promise<ReleaseInfo> {
-	const response = await fetch(`https://registry.npmjs.org/${PACKAGE}/latest`);
+	const response = await fetch(`https://registry.npmjs.org/${RELEASE_PACKAGE}/latest`);
 	if (!response.ok) {
 		throw new Error(`Failed to fetch release info: ${response.statusText}`);
 	}
@@ -213,7 +212,7 @@ async function printVerification(expectedVersion: string): Promise<void> {
 	}
 	console.log(
 		chalk.yellow(
-			`You may need to reinstall: curl -fsSL https://raw.githubusercontent.com/${REPO}/main/install.sh | bash`,
+			`You may need to reinstall: curl -fsSL https://raw.githubusercontent.com/${RELEASE_REPO}/main/install.sh | bash`,
 		),
 	);
 }
@@ -223,7 +222,7 @@ async function printVerification(expectedVersion: string): Promise<void> {
  */
 async function updateViaBun(expectedVersion: string): Promise<void> {
 	console.log(chalk.dim("Updating via bun..."));
-	const result = await $`bun install -g ${PACKAGE}@${expectedVersion}`.nothrow();
+	const result = await $`bun install -g ${RELEASE_PACKAGE}@${expectedVersion}`.nothrow();
 	if (result.exitCode !== 0) {
 		throw new Error(`bun install failed with exit code ${result.exitCode}`);
 	}
@@ -237,7 +236,7 @@ async function updateViaBun(expectedVersion: string): Promise<void> {
 async function updateViaBinaryAt(targetPath: string, expectedVersion: string): Promise<void> {
 	const binaryName = getBinaryName();
 	const tag = `v${expectedVersion}`;
-	const url = `https://github.com/${REPO}/releases/download/${tag}/${binaryName}`;
+	const url = `https://github.com/${RELEASE_REPO}/releases/download/${tag}/${binaryName}`;
 
 	const tempPath = `${targetPath}.new`;
 	const backupPath = `${targetPath}.bak`;

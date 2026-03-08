@@ -11,7 +11,16 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { createInterface } from "node:readline/promises";
 import type { ImageContent } from "@oh-my-pi/pi-ai";
-import { $env, getProjectDir, logger, postmortem, setProjectDir, VERSION } from "@oh-my-pi/pi-utils";
+import {
+	$env,
+	getProjectDir,
+	logger,
+	postmortem,
+	RELEASE_VERSION,
+	setProjectDir,
+	VERSION,
+	WORKSPACE_VERSION,
+} from "@oh-my-pi/pi-utils";
 import chalk from "chalk";
 import type { Args } from "./cli/args";
 import { processFileArguments } from "./cli/file-processor";
@@ -26,6 +35,7 @@ import { exportFromFile } from "./export/html";
 import type { ExtensionUIContext } from "./extensibility/extensions/types";
 import { InteractiveMode, runPrintMode, runRpcMode } from "./modes";
 import { initTheme, stopThemeWatcher } from "./modes/theme/theme";
+import { RELEASE_PACKAGE } from "./release-metadata";
 import { type CreateAgentSessionOptions, createAgentSession, discoverAuthStorage } from "./sdk";
 import type { AgentSession } from "./session/agent-session";
 import { resolveResumableSession, type SessionInfo, SessionManager } from "./session/session-manager";
@@ -34,7 +44,7 @@ import { getChangelogPath, getNewEntries, parseChangelog } from "./utils/changel
 
 async function checkForNewVersion(currentVersion: string): Promise<string | undefined> {
 	try {
-		const response = await fetch("https://registry.npmjs.org/@oh-my-pi/pi-coding-agent/latest");
+		const response = await fetch(`https://registry.npmjs.org/${RELEASE_PACKAGE}/latest`);
 		if (!response.ok) return undefined;
 
 		const data = (await response.json()) as { version?: string };
@@ -196,13 +206,13 @@ async function getChangelogForDisplay(parsed: Args): Promise<string | undefined>
 
 	if (!lastVersion) {
 		if (entries.length > 0) {
-			settings.set("lastChangelogVersion", VERSION);
+			settings.set("lastChangelogVersion", WORKSPACE_VERSION);
 			return entries.map(e => e.content).join("\n\n");
 		}
 	} else {
 		const newEntries = getNewEntries(entries, lastVersion);
 		if (newEntries.length > 0) {
-			settings.set("lastChangelogVersion", VERSION);
+			settings.set("lastChangelogVersion", WORKSPACE_VERSION);
 			return newEntries.map(e => e.content).join("\n\n");
 		}
 	}
@@ -693,7 +703,7 @@ export async function runRootCommand(parsed: Args, rawArgs: string[]): Promise<v
 	if (mode === "rpc") {
 		await runRpcMode(session);
 	} else if (isInteractive) {
-		const versionCheckPromise = checkForNewVersion(VERSION).catch(() => undefined);
+		const versionCheckPromise = RELEASE_VERSION ? checkForNewVersion(VERSION).catch(() => undefined) : undefined;
 		const changelogMarkdown = await getChangelogForDisplay(parsedArgs);
 
 		const scopedModelsForDisplay = sessionOptions.scopedModels ?? scopedModels;
@@ -717,7 +727,7 @@ export async function runRootCommand(parsed: Args, rawArgs: string[]): Promise<v
 			VERSION,
 			changelogMarkdown,
 			notifs,
-			versionCheckPromise,
+			versionCheckPromise ?? Promise.resolve(undefined),
 			parsedArgs.messages,
 			setToolUIContext,
 			lspServers,

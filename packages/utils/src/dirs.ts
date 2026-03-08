@@ -16,8 +16,15 @@ export const APP_NAME: string = "oh-omp";
 /** Config directory name (e.g. ".oh-omp") */
 export const CONFIG_DIR_NAME: string = ".oh-omp";
 
-/** Version (e.g. "1.0.0") */
-export const VERSION: string = version;
+/** Workspace version from the upstream package lineage (e.g. "13.9.2") */
+export const WORKSPACE_VERSION: string = version;
+const configuredReleaseVersion = process.env.PI_RELEASE_VERSION?.trim();
+export const RELEASE_VERSION: string | undefined = configuredReleaseVersion
+	? configuredReleaseVersion.replace(/^v/, "")
+	: undefined;
+
+/** Distributed app version (e.g. "0.1.0" for published oh-omp binaries) */
+export const VERSION: string = RELEASE_VERSION || WORKSPACE_VERSION;
 
 /** Minimum Bun version */
 export const MIN_BUN_VERSION: string = engines.bun.replace(/[^0-9.]/g, "");

@@ -99,7 +99,7 @@ jobs:
           EOF
 
             echo "Publishing @oh-labs/${name}@${VERSION}"
-            npm publish "${pkg_dir}" --access public
+            npm publish "./${pkg_dir}" --access public
           done
 
       - name: Publish root package

@@ -1428,7 +1428,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 						// Step 1: Apply message transform (hot window + content replacement).
 						// This strips tool_result content from older turns before budget derivation
 						// so the budget reflects actual post-transform message costs.
-						const transformedMessages = transformMessages(messages);
+						const { messages: transformedMessages } = transformMessages(messages);
 
 						const budget = currentModel
 							? deriveBudget({
@@ -1479,7 +1479,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 						const maxMessageTokens = budget ? Math.max(0, budget.maxTokens - assembledContextTokens) : undefined;
 						const boundedMessages =
 							maxMessageTokens !== undefined
-								? transformMessages(messages, { maxTokens: maxMessageTokens })
+								? transformMessages(messages, { maxTokens: maxMessageTokens }).messages
 								: transformedMessages;
 
 						// Step 4: Prepend assembled context if available.

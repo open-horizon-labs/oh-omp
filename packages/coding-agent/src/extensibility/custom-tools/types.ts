@@ -13,7 +13,6 @@ import type { ModelRegistry } from "../../config/model-registry";
 import type { ExecOptions, ExecResult } from "../../exec/exec";
 import type { HookUIContext } from "../../extensibility/hooks/types";
 import type { Theme } from "../../modes/theme/theme";
-import type { CompactionResult } from "../../session/compaction";
 import type { ReadonlySessionManager } from "../../session/session-manager";
 import type { TodoItem } from "../../tools/todo-write";
 
@@ -86,19 +85,6 @@ export type CustomToolSessionEvent =
 			reason: "start" | "switch" | "branch" | "tree" | "shutdown";
 			/** Previous session file path, or undefined for "start" and "shutdown" */
 			previousSessionFile: string | undefined;
-	  }
-	| {
-			reason: "auto_compaction_start";
-			trigger: "threshold" | "overflow";
-			action: "context-full" | "handoff";
-	  }
-	| {
-			reason: "auto_compaction_end";
-			action: "context-full" | "handoff";
-			result: CompactionResult | undefined;
-			aborted: boolean;
-			willRetry: boolean;
-			errorMessage?: string;
 	  }
 	| {
 			reason: "auto_retry_start";

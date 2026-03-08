@@ -391,23 +391,6 @@ export interface TurnEndEvent {
 	toolResults: ToolResultMessage[];
 }
 
-/** Event data for auto_compaction_start event. */
-export interface AutoCompactionStartEvent {
-	type: "auto_compaction_start";
-	reason: "threshold" | "overflow";
-	action: "context-full" | "handoff";
-}
-
-/** Event data for auto_compaction_end event. */
-export interface AutoCompactionEndEvent {
-	type: "auto_compaction_end";
-	action: "context-full" | "handoff";
-	result: CompactionResult | undefined;
-	aborted: boolean;
-	willRetry: boolean;
-	errorMessage?: string;
-}
-
 /** Event data for auto_retry_start event. */
 export interface AutoRetryStartEvent {
 	type: "auto_retry_start";
@@ -535,8 +518,6 @@ export type HookEvent =
 	| AgentEndEvent
 	| TurnStartEvent
 	| TurnEndEvent
-	| AutoCompactionStartEvent
-	| AutoCompactionEndEvent
 	| AutoRetryStartEvent
 	| AutoRetryEndEvent
 	| TtsrTriggeredEvent
@@ -714,8 +695,6 @@ export interface HookAPI {
 	on(event: "agent_end", handler: HookHandler<AgentEndEvent>): void;
 	on(event: "turn_start", handler: HookHandler<TurnStartEvent>): void;
 	on(event: "turn_end", handler: HookHandler<TurnEndEvent>): void;
-	on(event: "auto_compaction_start", handler: HookHandler<AutoCompactionStartEvent>): void;
-	on(event: "auto_compaction_end", handler: HookHandler<AutoCompactionEndEvent>): void;
 	on(event: "auto_retry_start", handler: HookHandler<AutoRetryStartEvent>): void;
 	on(event: "auto_retry_end", handler: HookHandler<AutoRetryEndEvent>): void;
 	on(event: "ttsr_triggered", handler: HookHandler<TtsrTriggeredEvent>): void;

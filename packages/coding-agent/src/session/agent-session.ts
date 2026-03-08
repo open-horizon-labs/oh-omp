@@ -134,15 +134,6 @@ import { getLatestCompactionEntry } from "./session-manager";
 /** Session-specific events that extend the core AgentEvent */
 export type AgentSessionEvent =
 	| AgentEvent
-	| { type: "auto_compaction_start"; reason: "threshold" | "overflow"; action: "context-full" | "handoff" }
-	| {
-			type: "auto_compaction_end";
-			action: "context-full" | "handoff";
-			result: CompactionResult | undefined;
-			aborted: boolean;
-			willRetry: boolean;
-			errorMessage?: string;
-	  }
 	| { type: "auto_retry_start"; attempt: number; maxAttempts: number; delayMs: number; errorMessage: string }
 	| { type: "auto_retry_end"; success: boolean; attempt: number; finalError?: string }
 	| { type: "ttsr_triggered"; rules: Rule[] }
@@ -216,8 +207,6 @@ export interface PromptOptions {
 	toolChoice?: ToolChoice;
 	/** Send as developer/system message instead of user. Providers that support it use the developer role; others fall back to user. */
 	synthetic?: boolean;
-	/** Skip pre-send compaction checks for this prompt (internal use for maintenance flows). */
-	skipCompactionCheck?: boolean;
 }
 
 /** Result from cycleModel() */
@@ -453,7 +442,7 @@ export class AgentSession {
 		this.#syncTodoPhasesFromBranch();
 
 		// Always subscribe to agent events for internal handling
-		// (session persistence, hooks, auto-compaction, retry logic)
+		// (session persistence, hooks, retry logic)
 		this.#unsubscribeAgent = this.agent.subscribe(this.#handleAgentEvent);
 	}
 
@@ -524,8 +513,6 @@ export class AgentSession {
 		this.#emit(event);
 	}
 
-	// Track last assistant message for auto-compaction check
-	#lastAssistantMessage: AssistantMessage | undefined = undefined;
 
 	/** Internal handler for agent events - shared by subscribe and reconnect */
 	#handleAgentEvent = async (event: AgentEvent): Promise<void> => {
@@ -696,9 +683,7 @@ export class AgentSession {
 			}
 			// Other message types (bashExecution, compactionSummary, branchSummary) are persisted elsewhere
 
-			// Track assistant message for auto-compaction (checked on agent_end)
 			if (event.message.role === "assistant") {
-				this.#lastAssistantMessage = event.message;
 				const assistantMsg = event.message as AssistantMessage;
 				// Resolve TTSR resume gate before checking for new deferred injections.
 				// Gate on #ttsrAbortPending, not stopReason: a non-TTSR abort (e.g. streaming
@@ -779,13 +764,12 @@ export class AgentSession {
 			}
 		}
 
-		// Check auto-retry and auto-compaction after agent completes
+		// Check auto-retry after agent completes
 		if (event.type === "agent_end") {
 			const fallbackAssistant = [...event.messages]
 				.reverse()
 				.find((message): message is AssistantMessage => message.role === "assistant");
-			const msg = this.#lastAssistantMessage ?? fallbackAssistant;
-			this.#lastAssistantMessage = undefined;
+			const msg = fallbackAssistant;
 			if (!msg) return;
 
 			if (this.#skipPostTurnMaintenanceAssistantTimestamp === msg.timestamp) {
@@ -796,16 +780,13 @@ export class AgentSession {
 			// Check for retryable errors first (overloaded, rate limit, server errors)
 			if (this.#isRetryableError(msg)) {
 				const didRetry = await this.#handleRetryableError(msg);
-				if (didRetry) return; // Retry was initiated, don't proceed to compaction
+				if (didRetry) return;
 			}
 
 			if (msg.stopReason === "aborted" && this.#checkpointState) {
 				this.#checkpointState = undefined;
 				this.#pendingRewindReport = undefined;
 			}
-			const compactionTask = this.#checkCompaction(msg);
-			this.#trackPostPromptTask(compactionTask);
-			await compactionTask;
 			// Check for incomplete todos (unless there was an error or abort)
 			if (msg.stopReason !== "error" && msg.stopReason !== "aborted") {
 				if (this.#enforceRewindBeforeYield()) {
@@ -1429,21 +1410,6 @@ export class AgentSession {
 				isError: event.isError ?? false,
 			};
 			await this.#extensionRunner.emit(extensionEvent);
-		} else if (event.type === "auto_compaction_start") {
-			await this.#extensionRunner.emit({
-				type: "auto_compaction_start",
-				reason: event.reason,
-				action: event.action,
-			});
-		} else if (event.type === "auto_compaction_end") {
-			await this.#extensionRunner.emit({
-				type: "auto_compaction_end",
-				action: event.action,
-				result: event.result,
-				aborted: event.aborted,
-				willRetry: event.willRetry,
-				errorMessage: event.errorMessage,
-			});
 		} else if (event.type === "auto_retry_start") {
 			await this.#extensionRunner.emit({
 				type: "auto_retry_start",
@@ -2011,7 +1977,7 @@ export class AgentSession {
 	async #promptWithMessage(
 		message: AgentMessage,
 		expandedText: string,
-		options?: Pick<PromptOptions, "toolChoice" | "images" | "skipCompactionCheck"> & {
+		options?: Pick<PromptOptions, "toolChoice" | "images"> & {
 			skipPostPromptRecoveryWait?: boolean;
 		},
 	): Promise<void> {
@@ -2041,12 +2007,6 @@ export class AgentSession {
 					`No API key found for ${this.model.provider}.\n\n` +
 						`Use /login, set an API key environment variable, or create ${getAgentDbPath()}`,
 				);
-			}
-
-			// Check if we need to compact before sending (catches aborted responses)
-			const lastAssistant = this.#findLastAssistantMessage();
-			if (lastAssistant && !options?.skipCompactionCheck) {
-				await this.#checkCompaction(lastAssistant, false);
 			}
 
 			// Build messages array (custom messages if any, then user message)
@@ -3291,7 +3251,6 @@ Be thorough - include exact file paths, function names, error messages, and tech
 			await this.prompt(handoffPrompt, {
 				expandPromptTemplates: false,
 				synthetic: true,
-				skipCompactionCheck: true,
 			});
 			await completionPromise;
 
@@ -3333,54 +3292,6 @@ Be thorough - include exact file paths, function names, error messages, and tech
 		}
 	}
 
-	/**
-	 * Check if context maintenance or promotion is needed and run it.
-	 * Called after agent_end and before prompt submission.
-	 *
-	 * Three cases (in order):
-	 * 1. Overflow + promotion: promote to larger model, retry without maintenance
-	 * 2. Overflow + no promotion target: run context maintenance, auto-retry on same model
-	 * 3. Threshold: Context over threshold, run context maintenance (no auto-retry)
-	 *
-	 * @param assistantMessage The assistant message to check
-	 * @param skipAbortedCheck If false, include aborted messages (for pre-prompt check). Default: true
-	 */
-	async #checkCompaction(assistantMessage: AssistantMessage, skipAbortedCheck = true): Promise<void> {
-		// Skip if message was aborted (user cancelled) - unless skipAbortedCheck is false
-		if (skipAbortedCheck && assistantMessage.stopReason === "aborted") return;
-		const contextWindow = this.model?.contextWindow ?? 0;
-		const generation = this.#promptGeneration;
-		// Skip overflow check if the message came from a different model.
-		// This handles the case where user switched from a smaller-context model (e.g. opus)
-		// to a larger-context model (e.g. codex) - the overflow error from the old model
-		// shouldn't trigger compaction for the new model.
-		const sameModel =
-			this.model && assistantMessage.provider === this.model.provider && assistantMessage.model === this.model.id;
-		// This handles the case where an error was kept after compaction (in the "kept" region).
-		// The error shouldn't trigger another compaction since we already compacted.
-		// Example: opus fails -> switch to codex -> compact -> switch back to opus -> opus error
-		// is still in context but shouldn't trigger compaction again.
-		const compactionEntry = getLatestCompactionEntry(this.sessionManager.getBranch());
-		const errorIsFromBeforeCompaction =
-			compactionEntry !== null && assistantMessage.timestamp < new Date(compactionEntry.timestamp).getTime();
-		if (sameModel && !errorIsFromBeforeCompaction && isContextOverflow(assistantMessage, contextWindow)) {
-			// Remove the error message from agent state (it IS saved to session for history,
-			// but we don't want it in context for the retry)
-			const messages = this.agent.state.messages;
-			if (messages.length > 0 && messages[messages.length - 1].role === "assistant") {
-				this.agent.replaceMessages(messages.slice(0, -1));
-			}
-
-			// Try context promotion first - switch to a larger model and retry without compacting
-			const promoted = await this.#tryContextPromotion(assistantMessage);
-			if (promoted) {
-				// Retry on the promoted (larger) model without compacting
-				this.#scheduleAgentContinue({ delayMs: 100, generation });
-				return;
-			}
-			return;
-		}
-	}
 	#enforceRewindBeforeYield(): boolean {
 		if (!this.#checkpointState || this.#pendingRewindReport) {
 			return false;

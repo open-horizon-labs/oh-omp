@@ -533,23 +533,6 @@ export interface ToolExecutionEndEvent {
 	isError: boolean;
 }
 
-/** Fired when auto-compaction starts */
-export interface AutoCompactionStartEvent {
-	type: "auto_compaction_start";
-	reason: "threshold" | "overflow";
-	action: "context-full" | "handoff";
-}
-
-/** Fired when auto-compaction ends */
-export interface AutoCompactionEndEvent {
-	type: "auto_compaction_end";
-	action: "context-full" | "handoff";
-	result: CompactionResult | undefined;
-	aborted: boolean;
-	willRetry: boolean;
-	errorMessage?: string;
-}
-
 /** Fired when auto-retry starts */
 export interface AutoRetryStartEvent {
 	type: "auto_retry_start";
@@ -780,8 +763,6 @@ export type ExtensionEvent =
 	| ToolExecutionStartEvent
 	| ToolExecutionUpdateEvent
 	| ToolExecutionEndEvent
-	| AutoCompactionStartEvent
-	| AutoCompactionEndEvent
 	| AutoRetryStartEvent
 	| AutoRetryEndEvent
 	| TtsrTriggeredEvent
@@ -954,8 +935,6 @@ export interface ExtensionAPI {
 	on(event: "tool_execution_start", handler: ExtensionHandler<ToolExecutionStartEvent>): void;
 	on(event: "tool_execution_update", handler: ExtensionHandler<ToolExecutionUpdateEvent>): void;
 	on(event: "tool_execution_end", handler: ExtensionHandler<ToolExecutionEndEvent>): void;
-	on(event: "auto_compaction_start", handler: ExtensionHandler<AutoCompactionStartEvent>): void;
-	on(event: "auto_compaction_end", handler: ExtensionHandler<AutoCompactionEndEvent>): void;
 	on(event: "auto_retry_start", handler: ExtensionHandler<AutoRetryStartEvent>): void;
 	on(event: "auto_retry_end", handler: ExtensionHandler<AutoRetryEndEvent>): void;
 	on(event: "ttsr_triggered", handler: ExtensionHandler<TtsrTriggeredEvent>): void;

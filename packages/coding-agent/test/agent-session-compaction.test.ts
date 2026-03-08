@@ -187,7 +187,7 @@ describe.skipIf(!e2eApiKey("ANTHROPIC_API_KEY"))("AgentSession compaction e2e", 
 		expect(compactionEntries.length).toBe(1);
 	}, 120000);
 
-	it("should emit correct events during auto-compaction", async () => {
+	it("should emit correct events during manual compaction", async () => {
 		await createSession();
 
 		// Build some history
@@ -196,13 +196,6 @@ describe.skipIf(!e2eApiKey("ANTHROPIC_API_KEY"))("AgentSession compaction e2e", 
 
 		// Manually trigger compaction and check events
 		await session.compact();
-
-		// Check that no auto_compaction events were emitted for manual compaction
-		const autoCompactionEvents = events.filter(
-			e => e.type === "auto_compaction_start" || e.type === "auto_compaction_end",
-		);
-		// Manual compaction doesn't emit auto_compaction events
-		expect(autoCompactionEvents.length).toBe(0);
 
 		// Regular events should have been emitted
 		const messageEndEvents = events.filter(e => e.type === "message_end");

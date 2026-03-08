@@ -60,20 +60,6 @@ export interface TurnRecord extends TraceEnvelope {
 		tool_result_count?: number;
 	};
 }
-
-/** Auto-compaction lifecycle record. */
-export interface CompactionRecord extends TraceEnvelope {
-	event: "compaction";
-	data: {
-		phase: "start" | "end";
-		reason?: string;
-		action?: string;
-		aborted?: boolean;
-		will_retry?: boolean;
-		error?: string;
-	};
-}
-
 /** Auto-retry lifecycle record (unresolved loops). */
 export interface RetryRecord extends TraceEnvelope {
 	event: "retry";
@@ -110,7 +96,6 @@ export type TelemetryRecord =
 	| TouchedPathRecord
 	| ToolExecRecord
 	| TurnRecord
-	| CompactionRecord
 	| RetryRecord
 	| ContextRecord
 	| AgentLifecycleRecord;
@@ -360,32 +345,6 @@ export class ShadowTelemetry {
 				}
 				break;
 			}
-
-			// ── Compaction ──────────────────────────────────────────────────
-			case "auto_compaction_start":
-				this.#record({
-					...this.#envelope(),
-					event: "compaction",
-					data: {
-						phase: "start",
-						reason: event.reason,
-						action: event.action,
-					},
-				});
-				break;
-
-			case "auto_compaction_end":
-				this.#record({
-					...this.#envelope(),
-					event: "compaction",
-					data: {
-						phase: "end",
-						aborted: event.aborted,
-						will_retry: event.willRetry,
-						error: event.errorMessage,
-					},
-				});
-				break;
 
 			// ── Retry loops ─────────────────────────────────────────────────
 			case "auto_retry_start":

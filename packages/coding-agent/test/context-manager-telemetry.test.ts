@@ -4,7 +4,6 @@ import * as os from "node:os";
 import * as path from "node:path";
 import {
 	type AgentLifecycleRecord,
-	type CompactionRecord,
 	type ContextManagerMode,
 	type RetryRecord,
 	ShadowTelemetry,
@@ -85,14 +84,6 @@ describe("telemetry serialization", () => {
 				event: "turn_boundary",
 				data: { phase: "start" },
 			} satisfies TurnRecord,
-			{
-				trace_id: "t",
-				turn_id: 0,
-				mode: "shadow",
-				ts: 0,
-				event: "compaction",
-				data: { phase: "start", reason: "threshold", action: "context-full" },
-			} satisfies CompactionRecord,
 			{
 				trace_id: "t",
 				turn_id: 0,
@@ -284,35 +275,6 @@ describe("ShadowTelemetry", () => {
 		expect(telemetry.turnId).toBe(2);
 
 		await telemetry.close();
-	});
-
-	it("records compaction events", async () => {
-		const filePath = path.join(tmpDir, "trace.ndjson");
-		const writer = new TelemetryWriter(filePath);
-		const telemetry = new ShadowTelemetry({ traceId: "test-id", mode: "shadow", writer });
-
-		telemetry.observer({
-			type: "auto_compaction_start",
-			reason: "threshold",
-			action: "context-full",
-		});
-		telemetry.observer({
-			type: "auto_compaction_end",
-			action: "context-full",
-			result: undefined,
-			aborted: false,
-			willRetry: false,
-		});
-
-		await telemetry.close();
-
-		const lines = fs.readFileSync(filePath, "utf-8").trim().split("\n");
-		const records = lines.map(l => JSON.parse(l));
-		const compactionRecords = records.filter((r: TelemetryRecord) => r.event === "compaction");
-		expect(compactionRecords).toHaveLength(2);
-		expect(compactionRecords[0].data.phase).toBe("start");
-		expect(compactionRecords[0].data.reason).toBe("threshold");
-		expect(compactionRecords[1].data.phase).toBe("end");
 	});
 
 	it("records retry events (unresolved loops)", async () => {

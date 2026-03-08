@@ -266,16 +266,16 @@ function estimateTurnTokens(turn: Turn): number {
  *
  * Returns the number of turns dropped from the front.
  */
-function computeBudgetDropCount(turns: Turn[], maxTokens: number, hotWindowSize: number): number {
-	if (turns.length === 0) return 0;
+function computeBudgetDropCount(tokenCounts: number[], maxTokens: number, hotWindowSize: number): number {
+	if (tokenCounts.length === 0) return 0;
 
 	// The hot window is always preserved
-	const hotWindowStart = Math.max(0, turns.length - hotWindowSize);
+	const hotWindowStart = Math.max(0, tokenCounts.length - hotWindowSize);
 
-	// Estimate total tokens
+	// Sum total tokens from precomputed counts
 	let totalTokens = 0;
-	for (const turn of turns) {
-		totalTokens += estimateTurnTokens(turn);
+	for (const count of tokenCounts) {
+		totalTokens += count;
 	}
 
 	if (totalTokens <= maxTokens) return 0;
@@ -283,7 +283,7 @@ function computeBudgetDropCount(turns: Turn[], maxTokens: number, hotWindowSize:
 	// Drop oldest turns until we fit
 	let dropUntil = 0;
 	while (dropUntil < hotWindowStart && totalTokens > maxTokens) {
-		totalTokens -= estimateTurnTokens(turns[dropUntil]);
+		totalTokens -= tokenCounts[dropUntil];
 		dropUntil++;
 	}
 
@@ -327,7 +327,7 @@ export function transformMessages(messages: AgentMessage[], options: MessageTran
 		};
 	}
 
-	const hotWindowTurns = options.hotWindowTurns ?? DEFAULT_HOT_WINDOW_TURNS;
+	const hotWindowTurns = Math.max(0, Math.floor(options.hotWindowTurns ?? DEFAULT_HOT_WINDOW_TURNS));
 
 	// 1. Segment into turns
 	const originalTurns = segmentIntoTurns(messages);
@@ -344,10 +344,15 @@ export function transformMessages(messages: AgentMessage[], options: MessageTran
 		return replaceToolResultContent(turn);
 	});
 
+	// Pre-compute transformed token costs (only differs from original for stubbed turns)
+	const transformedTokens = transformedTurns.map(estimateTurnTokens);
+
 	// 3. Apply budget bounding if configured
+	const maxTokens = options.maxTokens;
+	const hasBudget = maxTokens !== undefined && Number.isFinite(maxTokens) && maxTokens >= 0;
 	let dropCount = 0;
-	if (options.maxTokens !== undefined) {
-		dropCount = computeBudgetDropCount(transformedTurns, options.maxTokens, hotWindowTurns);
+	if (hasBudget) {
+		dropCount = computeBudgetDropCount(transformedTokens, maxTokens, hotWindowTurns);
 	}
 
 	// 4. Build per-turn decision records
@@ -389,7 +394,7 @@ export function transformMessages(messages: AgentMessage[], options: MessageTran
 			keptCount++;
 		} else if (originalTurns[i].hasToolResults) {
 			// Beyond hot window with tool results: stubbed
-			const tokensAfter = estimateTurnTokens(transformedTurns[i]);
+			const tokensAfter = transformedTokens[i];
 			decisions.push({
 				turnIndex: i,
 				action: "stubbed",

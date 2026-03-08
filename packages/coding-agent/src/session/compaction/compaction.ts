@@ -181,7 +181,6 @@ export function getLastAssistantUsage(entries: SessionEntry[]): Usage | undefine
 	return undefined;
 }
 
-
 // ============================================================================
 // Cut point detection
 // ============================================================================

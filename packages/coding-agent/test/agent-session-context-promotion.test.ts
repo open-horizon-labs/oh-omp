@@ -193,7 +193,7 @@ describe("AgentSession context promotion", () => {
 		session = new AgentSession({
 			agent,
 			sessionManager: SessionManager.inMemory(),
-		settings: Settings.isolated(),
+			settings: Settings.isolated(),
 			modelRegistry,
 		});
 
@@ -230,7 +230,7 @@ describe("AgentSession context promotion", () => {
 		session = new AgentSession({
 			agent,
 			sessionManager: SessionManager.inMemory(),
-		settings: Settings.isolated(),
+			settings: Settings.isolated(),
 			modelRegistry,
 		});
 
@@ -265,7 +265,7 @@ describe("AgentSession context promotion", () => {
 		session = new AgentSession({
 			agent,
 			sessionManager: SessionManager.inMemory(),
-		settings: Settings.isolated(),
+			settings: Settings.isolated(),
 			modelRegistry,
 		});
 
@@ -306,7 +306,7 @@ describe("AgentSession context promotion", () => {
 		session = new AgentSession({
 			agent,
 			sessionManager: SessionManager.inMemory(),
-		settings: Settings.isolated(),
+			settings: Settings.isolated(),
 			modelRegistry,
 		});
 

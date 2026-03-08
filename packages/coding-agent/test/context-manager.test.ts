@@ -85,7 +85,6 @@ describe("context-manager", () => {
 			expect(() => validateContextManagerConfig(settings)).toThrow(/memories\.enabled/);
 		});
 
-
 		it("accepts assembler mode when legacy subsystems are disabled", () => {
 			const settings = Settings.isolated({
 				"contextManager.mode": "assembler",

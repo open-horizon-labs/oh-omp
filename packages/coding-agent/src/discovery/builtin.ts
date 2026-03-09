@@ -36,7 +36,7 @@ import {
 
 const PROVIDER_ID = "native";
 const DISPLAY_NAME = "OMP";
-const DESCRIPTION = "Native OMP configuration from ~/.omp and .omp/";
+const DESCRIPTION = "Native OMP configuration from ~/.oh-omp and .omp/";
 const PRIORITY = 100;
 
 const PATHS = SOURCE_PATHS.native;
@@ -257,7 +257,7 @@ async function loadSkills(ctx: LoadContext): Promise<LoadResult<Skill>> {
 		}),
 	);
 
-	// User-level scan from ~/.omp/agent/skills/
+	// User-level scan from ~/.oh-omp/agent/skills/
 	const userScan = scanSkillsFromDir(ctx, {
 		dir: path.join(ctx.home, PATHS.userAgent, "skills"),
 		providerId: PROVIDER_ID,

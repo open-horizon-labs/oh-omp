@@ -8,7 +8,7 @@ version = "13.9.11"
 edition = "2024"
 license = "MIT"
 authors = ["Can Boluk"]
-repository = "https://github.com/can1357/oh-my-pi"
+repository = "https://github.com/open-horizon-labs/oh-omp"
 
 [patch.crates-io]
 brush-core = { path = "crates/brush-core-vendored" }

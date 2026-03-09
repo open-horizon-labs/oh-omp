@@ -601,7 +601,7 @@ function encodeSessionDirName(cwd: string): string {
 }
 /**
  * Compute the default session directory for a cwd.
- * Encodes cwd into a safe directory name under ~/.omp/agent/sessions/.
+ * Encodes cwd into a safe directory name under ~/.oh-omp/agent/sessions/.
  */
 function getDefaultSessionDir(cwd: string, storage: SessionStorage): string {
 	migrateHomeSessionDirs();
@@ -2324,7 +2324,7 @@ export class SessionManager {
 	/**
 	 * Create a new session.
 	 * @param cwd Working directory (stored in session header)
-	 * @param sessionDir Optional session directory. If omitted, uses default (~/.omp/agent/sessions/<encoded-cwd>/).
+	 * @param sessionDir Optional session directory. If omitted, uses default (~/.oh-omp/agent/sessions/<encoded-cwd>/).
 	 */
 	static create(cwd: string, sessionDir?: string, storage: SessionStorage = new FileSessionStorage()): SessionManager {
 		const dir = sessionDir ?? getDefaultSessionDir(cwd, storage);
@@ -2384,7 +2384,7 @@ export class SessionManager {
 	/**
 	 * Continue the most recent session, or create new if none.
 	 * @param cwd Working directory
-	 * @param sessionDir Optional session directory. If omitted, uses default (~/.omp/agent/sessions/<encoded-cwd>/).
+	 * @param sessionDir Optional session directory. If omitted, uses default (~/.oh-omp/agent/sessions/<encoded-cwd>/).
 	 */
 	static async continueRecent(
 		cwd: string,
@@ -2417,7 +2417,7 @@ export class SessionManager {
 	/**
 	 * List all sessions.
 	 * @param cwd Working directory (used to compute default session directory)
-	 * @param sessionDir Optional session directory. If omitted, uses default (~/.omp/agent/sessions/<encoded-cwd>/).
+	 * @param sessionDir Optional session directory. If omitted, uses default (~/.oh-omp/agent/sessions/<encoded-cwd>/).
 	 */
 	static async list(
 		cwd: string,

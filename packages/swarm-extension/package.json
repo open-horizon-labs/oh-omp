@@ -3,16 +3,16 @@
 	"name": "@oh-my-pi/swarm-extension",
 	"version": "13.9.11",
 	"description": "Swarm orchestration extension for omp",
-	"homepage": "https://github.com/can1357/oh-my-pi",
+	"homepage": "https://github.com/open-horizon-labs/oh-omp",
 	"author": "Derek Rynd",
 	"license": "MIT",
 	"repository": {
 		"type": "git",
-		"url": "git+https://github.com/can1357/oh-my-pi.git",
+		"url": "git+https://github.com/open-horizon-labs/oh-omp.git",
 		"directory": "packages/swarm-extension"
 	},
 	"bugs": {
-		"url": "https://github.com/can1357/oh-my-pi/issues"
+		"url": "https://github.com/open-horizon-labs/oh-omp/issues"
 	},
 	"keywords": [
 		"swarm",

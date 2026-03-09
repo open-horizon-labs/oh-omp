@@ -117,96 +117,96 @@ function getAgentSubdir(userAgentDir: string | undefined, subdir: string): strin
 }
 
 // =============================================================================
-// Config-root subdirectories (~/.omp/*)
+// Config-root subdirectories (~/.oh-omp/*)
 // =============================================================================
 
-/** Get the reports directory (~/.omp/reports). */
+/** Get the reports directory (~/.oh-omp/reports). */
 export function getReportsDir(): string {
 	return getRootSubdir("reports");
 }
 
-/** Get the logs directory (~/.omp/logs). */
+/** Get the logs directory (~/.oh-omp/logs). */
 export function getLogsDir(): string {
 	return getRootSubdir("logs");
 }
 
-/** Get the path to a dated log file (~/.omp/logs/omp.YYYY-MM-DD.log). */
+/** Get the path to a dated log file (~/.oh-omp/logs/oh-omp.YYYY-MM-DD.log). */
 export function getLogPath(date = new Date()): string {
 	return path.join(getLogsDir(), `${APP_NAME}.${date.toISOString().slice(0, 10)}.log`);
 }
 
-/** Get the plugins directory (~/.omp/plugins). */
+/** Get the plugins directory (~/.oh-omp/plugins). */
 export function getPluginsDir(): string {
 	return getRootSubdir("plugins");
 }
 
-/** Where npm installs packages (~/.omp/plugins/node_modules). */
+/** Where npm installs packages (~/.oh-omp/plugins/node_modules). */
 export function getPluginsNodeModules(): string {
 	return getRootSubdir("plugins/node_modules");
 }
 
-/** Plugin manifest (~/.omp/plugins/package.json). */
+/** Plugin manifest (~/.oh-omp/plugins/package.json). */
 export function getPluginsPackageJson(): string {
 	return getRootSubdir("plugins/package.json");
 }
 
-/** Plugin lock file (~/.omp/plugins/omp-plugins.lock.json). */
+/** Plugin lock file (~/.oh-omp/plugins/omp-plugins.lock.json). */
 export function getPluginsLockfile(): string {
 	return getRootSubdir("plugins/omp-plugins.lock.json");
 }
 
-/** Get the remote mount directory (~/.omp/remote). */
+/** Get the remote mount directory (~/.oh-omp/remote). */
 export function getRemoteDir(): string {
 	return getRootSubdir("remote");
 }
 
-/** Get the SSH control socket directory (~/.omp/ssh-control). */
+/** Get the SSH control socket directory (~/.oh-omp/ssh-control). */
 export function getSshControlDir(): string {
 	return getRootSubdir("ssh-control");
 }
 
-/** Get the remote host info directory (~/.omp/remote-host). */
+/** Get the remote host info directory (~/.oh-omp/remote-host). */
 export function getRemoteHostDir(): string {
 	return getRootSubdir("remote-host");
 }
 
-/** Get the managed Python venv directory (~/.omp/python-env). */
+/** Get the managed Python venv directory (~/.oh-omp/python-env). */
 export function getPythonEnvDir(): string {
 	return getRootSubdir("python-env");
 }
 
-/** Get the puppeteer sandbox directory (~/.omp/puppeteer). */
+/** Get the puppeteer sandbox directory (~/.oh-omp/puppeteer). */
 export function getPuppeteerDir(): string {
 	return getRootSubdir("puppeteer");
 }
 
-/** Get the worktree base directory (~/.omp/wt). */
+/** Get the worktree base directory (~/.oh-omp/wt). */
 export function getWorktreeBaseDir(): string {
 	return getRootSubdir("wt");
 }
 
-/** Get the path to a worktree directory (~/.omp/wt/<project>/<id>). */
+/** Get the path to a worktree directory (~/.oh-omp/wt/<project>/<id>). */
 export function getWorktreeDir(encodedProject: string, id: string): string {
 	return path.join(getWorktreeBaseDir(), encodedProject, id);
 }
 
-/** Get the GPU cache path (~/.omp/gpu_cache.json). */
+/** Get the GPU cache path (~/.oh-omp/gpu_cache.json). */
 export function getGpuCachePath(): string {
 	return getRootSubdir("gpu_cache.json");
 }
 
-/** Get the natives directory (~/.omp/natives). */
+/** Get the natives directory (~/.oh-omp/natives). */
 export function getNativesDir(): string {
 	return getRootSubdir("natives");
 }
 
-/** Get the stats database path (~/.omp/stats.db). */
+/** Get the stats database path (~/.oh-omp/stats.db). */
 export function getStatsDbPath(): string {
 	return getRootSubdir("stats.db");
 }
 
 // =============================================================================
-// Agent subdirectories (~/.omp/agent/*)
+// Agent subdirectories (~/.oh-omp/agent/*)
 // =============================================================================
 
 /** Get the path to agent.db (SQLite database for settings and auth storage). */
@@ -214,52 +214,52 @@ export function getAgentDbPath(agentDir?: string): string {
 	return getAgentSubdir(agentDir, "agent.db");
 }
 
-/** Get the sessions directory (~/.omp/agent/sessions). */
+/** Get the sessions directory (~/.oh-omp/agent/sessions). */
 export function getSessionsDir(agentDir?: string): string {
 	return getAgentSubdir(agentDir, "sessions");
 }
 
-/** Get the content-addressed blob store directory (~/.omp/agent/blobs). */
+/** Get the content-addressed blob store directory (~/.oh-omp/agent/blobs). */
 export function getBlobsDir(agentDir?: string): string {
 	return getAgentSubdir(agentDir, "blobs");
 }
 
-/** Get the custom themes directory (~/.omp/agent/themes). */
+/** Get the custom themes directory (~/.oh-omp/agent/themes). */
 export function getCustomThemesDir(agentDir?: string): string {
 	return getAgentSubdir(agentDir, "themes");
 }
 
-/** Get the tools directory (~/.omp/agent/tools). */
+/** Get the tools directory (~/.oh-omp/agent/tools). */
 export function getToolsDir(agentDir?: string): string {
 	return getAgentSubdir(agentDir, "tools");
 }
 
-/** Get the slash commands directory (~/.omp/agent/commands). */
+/** Get the slash commands directory (~/.oh-omp/agent/commands). */
 export function getCommandsDir(agentDir?: string): string {
 	return getAgentSubdir(agentDir, "commands");
 }
 
-/** Get the prompts directory (~/.omp/agent/prompts). */
+/** Get the prompts directory (~/.oh-omp/agent/prompts). */
 export function getPromptsDir(agentDir?: string): string {
 	return getAgentSubdir(agentDir, "prompts");
 }
 
-/** Get the user-level Python modules directory (~/.omp/agent/modules). */
+/** Get the user-level Python modules directory (~/.oh-omp/agent/modules). */
 export function getAgentModulesDir(agentDir?: string): string {
 	return getAgentSubdir(agentDir, "modules");
 }
 
-/** Get the test auth database path (~/.omp/agent/testauth.db). */
+/** Get the test auth database path (~/.oh-omp/agent/testauth.db). */
 export function getTestAuthPath(agentDir?: string): string {
 	return getAgentSubdir(agentDir, "testauth.db");
 }
 
-/** Get the crash log path (~/.omp/agent/omp-crash.log). */
+/** Get the crash log path (~/.oh-omp/agent/omp-crash.log). */
 export function getCrashLogPath(agentDir?: string): string {
 	return getAgentSubdir(agentDir, "omp-crash.log");
 }
 
-/** Get the debug log path (~/.omp/agent/omp-debug.log). */
+/** Get the debug log path (~/.oh-omp/agent/oh-omp-debug.log). */
 export function getDebugLogPath(agentDir?: string): string {
 	return getAgentSubdir(agentDir, `${APP_NAME}-debug.log`);
 }

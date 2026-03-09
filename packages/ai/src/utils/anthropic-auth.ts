@@ -3,7 +3,7 @@
  *
  * 3-tier auth resolution:
  *   1. ANTHROPIC_SEARCH_API_KEY / ANTHROPIC_SEARCH_BASE_URL env vars
- *   2. OAuth credentials in ~/.omp/agent/agent.db (with expiry check)
+ *   2. OAuth credentials in ~/.oh-omp/agent/agent.db (with expiry check)
  *   3. Generic Anthropic fallback (Foundry-aware key/base URL resolution)
  */
 import { $env, getAgentDbPath } from "@oh-my-pi/pi-utils";

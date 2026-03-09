@@ -77,7 +77,7 @@ Avoid ports that depend on JS-only state or dynamic imports. N-API exports shoul
 
 ### 1) Stale `pi_natives.node` prevents new exports
 
-The loader prefers the platform-tagged binary in `packages/natives/native` (`pi_natives.<platform>-<arch>.node`). When `PI_DEV=1`, it will load `pi_natives.dev.node` instead. There is also a fallback `pi_natives.node`. Compiled binaries extract to `~/.omp/natives/<version>/pi_natives.<platform>-<arch>.node`. If any of these are stale, exports won’t update.
+The loader prefers the platform-tagged binary in `packages/natives/native` (`pi_natives.<platform>-<arch>.node`). When `PI_DEV=1`, it will load `pi_natives.dev.node` instead. There is also a fallback `pi_natives.node`. Compiled binaries extract to `~/.oh-omp/natives/<version>/pi_natives.<platform>-<arch>.node`. If any of these are stale, exports won’t update.
 
 **Fix:** remove the stale file before rebuilding.
 
@@ -90,7 +90,7 @@ bun --cwd=packages/natives run build:native
 If you’re running a compiled binary, delete the cached addon directory:
 
 ```bash
-rm -rf ~/.omp/natives/<version>
+rm -rf ~/.oh-omp/natives/<version>
 ```
 
 Then verify the export exists in the binary:

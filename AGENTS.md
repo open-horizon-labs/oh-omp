@@ -30,7 +30,7 @@ between phases.
 
 ## Purpose
 
-Constrained fork of [can1357/oh-my-pi](https://github.com/can1357/oh-my-pi) \u2014 a terminal-native AI coding agent. This fork (durch/oh-my-pi) adds a **context-assembly system** to replace legacy compaction-based context management with a tiered memory architecture (LTM/STM/WM) using addressable locator maps and budget-aware just-in-time hydration.
+Constrained fork of [open-horizon-labs/oh-omp](https://github.com/open-horizon-labs/oh-omp) — a terminal-native AI coding agent. This fork adds a **context-assembly system** to replace legacy compaction-based context management with a tiered memory architecture (LTM/STM/WM) using addressable locator maps and budget-aware just-in-time hydration.
 
 The goal is a **reliable daily-driver harness** for AI-assisted development \u2014 not a research prototype, not a product. It needs to work every day.
 
@@ -39,7 +39,7 @@ The goal is a **reliable daily-driver harness** for AI-assisted development \u20
 - **Build the assembler pipeline**: Tiered memory (ADR 0003) + tool-result bridge (ADR 0004) + assembler kernel that composes bounded context windows per turn
 - **Dogfood and evaluate**: Issue #6 \u2014 define and pass a success-gate evaluation before hard cutover
 - **Hard cutover**: Issue #7 \u2014 remove legacy context-management stack (compaction, memory summaries) once the assembler proves out
-- **Active assembler work**: Issues #16-20 on durch/oh-my-pi \u2014 conversation bounding, WM rebuild, STM distillation, kernel hydration scaling, LTM promotion
+- **Active assembler work**: Issues #16-20 on open-horizon-labs/oh-omp — conversation bounding, WM rebuild, STM distillation, kernel hydration scaling, LTM promotion
 
 Success = assembler mode is the default, sessions maintain context continuity without legacy compaction, and re-brief time after compaction is eliminated.
 
@@ -56,7 +56,7 @@ Success = assembler mode is the default, sessions maintain context continuity wi
 - **Single active context manager**: Only one context-management system may be active at runtime (ADR 0003 cutover invariant). No mixed-mode drift.
 - **Locator-first assembly**: Store addresses and retrieval recipes, not payloads. Hydrate just-in-time under budget.
 - **Extension-based integration**: Context assembly hooks wire as extensions (additive layer), not protocol replacements.
-- **Fork issues on durch/oh-my-pi**: Fork-specific work (assembler, context management) is tracked on the fork repo, not upstream.
+- **Fork issues on open-horizon-labs/oh-omp**: Fork-specific work (assembler, context management) is tracked on the fork repo, not upstream.
 
 ## Anti-Patterns to Avoid
 
@@ -68,7 +68,7 @@ Success = assembler mode is the default, sessions maintain context continuity wi
 
 ## Decision Context
 
-Solo maintainer. ADRs for architecture decisions. Issues on durch/oh-my-pi for fork-specific work, upstream issues for bugs/features in the base agent. "Done" = tests pass, `bun check` clean, behavior verified against the change's scope.
+Solo maintainer. ADRs for architecture decisions. Issues on open-horizon-labs/oh-omp for fork-specific work, upstream issues for bugs/features in the base agent. "Done" = tests pass, `bun check` clean, behavior verified against the change's scope.
 
 ---
 
@@ -89,7 +89,7 @@ This repo contains multiple packages, but **`packages/coding-agent/`** is the pr
 | `packages/coding-agent` | Main CLI application (primary focus)                 |
 | `packages/tui`          | Terminal UI library with differential rendering      |
 | `packages/natives`      | bindings for native text/image/grep operations       |
-| `packages/stats`        | Local observability dashboard (`omp stats`)          |
+| `packages/stats`        | Local observability dashboard (`oh-omp stats`)       |
 | `packages/utils`        | Shared utilities (logger, streams, temp files)       |
 | `crates/pi-natives`     | Rust crate for performance-critical text/grep ops    |
 
@@ -464,7 +464,7 @@ logger.warn("Theme file invalid, using fallback", { path });
 logger.debug("LSP fallback triggered", { reason });
 ```
 
-Logs go to `~/.omp/logs/omp.YYYY-MM-DD.log` with automatic rotation.
+Logs go to `~/.oh-omp/logs/oh-omp.YYYY-MM-DD.log` with automatic rotation.
 
 ## TUI Rendering Sanitization
 
@@ -538,7 +538,7 @@ When closing issues via commit:
 
 ### Git Remotes
 
-This is a fork (`durch/oh-my-pi`). Two remotes exist: `origin` (the fork) and `upstream` (can1357/oh-my-pi).
+This is a fork (`open-horizon-labs/oh-omp`). Two remotes exist: `origin` (the fork) and `upstream`.
 
 - **ALL work targets `origin`** — branches, PRs, pushes, and fetches default to `origin`
 - **NEVER push to `upstream`** — upstream is read-only, used only for syncing changes into the fork
@@ -579,8 +579,8 @@ Use these sections under `## [Unreleased]`:
 
 ### Attribution
 
-- **Internal changes (from issues)**: `Fixed foo bar ([#123](https://github.com/can1357/oh-my-pi/issues/123))`
-- **External contributions**: `Added feature X ([#456](https://github.com/can1357/oh-my-pi/pull/456) by [@username](https://github.com/username))`
+- **Internal changes (from issues)**: `Fixed foo bar ([#123](https://github.com/open-horizon-labs/oh-omp/issues/123))`
+- **External contributions**: `Added feature X ([#456](https://github.com/open-horizon-labs/oh-omp/pull/456) by [@username](https://github.com/username))`
 
 ## Releasing
 

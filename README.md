@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://github.com/can1357/oh-my-pi/blob/main/assets/hero.png?raw=true" alt="Pi Monorepo">
+  <img src="https://github.com/open-horizon-labs/oh-omp/blob/main/assets/hero.png?raw=true" alt="Pi Monorepo">
 </p>
 
 <p align="center">
@@ -8,9 +8,9 @@
 
 <p align="center">
   <a href="https://www.npmjs.com/package/@oh-my-pi/pi-coding-agent"><img src="https://img.shields.io/npm/v/@oh-my-pi/pi-coding-agent?style=flat&colorA=222222&colorB=CB3837" alt="npm version"></a>
-  <a href="https://github.com/can1357/oh-my-pi/blob/main/packages/coding-agent/CHANGELOG.md"><img src="https://img.shields.io/badge/changelog-keep-E05735?style=flat&colorA=222222" alt="Changelog"></a>
-  <a href="https://github.com/can1357/oh-my-pi/actions"><img src="https://img.shields.io/github/actions/workflow/status/can1357/oh-my-pi/ci.yml?style=flat&colorA=222222&colorB=3FB950" alt="CI"></a>
-  <a href="https://github.com/can1357/oh-my-pi/blob/main/LICENSE"><img src="https://img.shields.io/github/license/can1357/oh-my-pi?style=flat&colorA=222222&colorB=58A6FF" alt="License"></a>
+  <a href="https://github.com/open-horizon-labs/oh-omp/blob/main/packages/coding-agent/CHANGELOG.md"><img src="https://img.shields.io/badge/changelog-keep-E05735?style=flat&colorA=222222" alt="Changelog"></a>
+  <a href="https://github.com/open-horizon-labs/oh-omp/actions"><img src="https://img.shields.io/github/actions/workflow/status/open-horizon-labs/oh-omp/ci.yml?style=flat&colorA=222222&colorB=3FB950" alt="CI"></a>
+  <a href="https://github.com/open-horizon-labs/oh-omp/blob/main/LICENSE"><img src="https://img.shields.io/github/license/open-horizon-labs/oh-omp?style=flat&colorA=222222&colorB=58A6FF" alt="License"></a>
   <a href="https://www.typescriptlang.org"><img src="https://img.shields.io/badge/TypeScript-3178C6?style=flat&colorA=222222&logo=typescript&logoColor=white" alt="TypeScript"></a>
   <a href="https://www.rust-lang.org"><img src="https://img.shields.io/badge/Rust-DEA584?style=flat&colorA=222222&logo=rust&logoColor=white" alt="Rust"></a>
   <a href="https://bun.sh"><img src="https://img.shields.io/badge/runtime-Bun-f472b6?style=flat&colorA=222222" alt="Bun"></a>
@@ -81,7 +81,7 @@ AI-powered conventional commit generation with intelligent change analysis:
 ### + Python Tool (IPython Kernel)
 
 <p align="center">
-  <img src="https://github.com/can1357/oh-my-pi/blob/main/assets/python.webp?raw=true" alt="python">
+  <img src="https://github.com/open-horizon-labs/oh-omp/blob/main/assets/python.webp?raw=true" alt="python">
 </p>
 
 Execute Python code with a persistent IPython kernel and rich helper prelude:
@@ -90,7 +90,7 @@ Execute Python code with a persistent IPython kernel and rich helper prelude:
 - **Prelude helpers**: File I/O, search, find/replace, line operations, shell, and text utilities built into the kernel
 - **Line operations**: `lines()`, `insert_at()`, `delete_lines()`, `delete_matching()` and related helpers for precise edits
 - **Shared gateway**: Resource-efficient kernel reuse across sessions (`python.sharedGateway` setting)
-- **Custom modules**: Load extensions from `.omp/modules/` and `~/.omp/agent/modules/`
+- **Custom modules**: Load extensions from `.omp/modules/` and `~/.oh-omp/agent/modules/`
 - **Rich output**: Supports `display()` for HTML, Markdown, images, and interactive JSON trees
 - **Markdown rendering**: Python cell output with Markdown content renders inline
 - **Mermaid diagrams**: Renders mermaid code blocks as inline graphics in iTerm2/Kitty terminals
@@ -99,7 +99,7 @@ Execute Python code with a persistent IPython kernel and rich helper prelude:
 ### + LSP Integration (Language Server Protocol)
 
 <p align="center">
-  <img src="https://github.com/can1357/oh-my-pi/blob/main/assets/lspv.webp?raw=true" alt="lsp">
+  <img src="https://github.com/open-horizon-labs/oh-omp/blob/main/assets/lspv.webp?raw=true" alt="lsp">
 </p>
 
 Full IDE-like code intelligence with automatic formatting and diagnostics:
@@ -115,7 +115,7 @@ Full IDE-like code intelligence with automatic formatting and diagnostics:
 ### + Time Traveling Streamed Rules (TTSR)
 
 <p align="center">
-  <img src="https://github.com/can1357/oh-my-pi/blob/main/assets/ttsr.webp?raw=true" alt="ttsr">
+  <img src="https://github.com/open-horizon-labs/oh-omp/blob/main/assets/ttsr.webp?raw=true" alt="ttsr">
 </p>
 
 Zero context-use rules that inject themselves only when needed:
@@ -131,7 +131,7 @@ Example: A "don't use deprecated API" rule only activates when the model starts 
 ### + Interactive Code Review
 
 <p align="center">
-  <img src="https://github.com/can1357/oh-my-pi/blob/main/assets/review.webp?raw=true" alt="review">
+  <img src="https://github.com/open-horizon-labs/oh-omp/blob/main/assets/review.webp?raw=true" alt="review">
 </p>
 
 Structured code review with priority-based findings:
@@ -144,7 +144,7 @@ Structured code review with priority-based findings:
 ### + Task Tool (Subagent System)
 
 <p align="center">
-  <img src="https://github.com/can1357/oh-my-pi/blob/main/assets/task.webp?raw=true" alt="task">
+  <img src="https://github.com/open-horizon-labs/oh-omp/blob/main/assets/task.webp?raw=true" alt="task">
 </p>
 
 Parallel execution framework with specialized agents and real-time streaming:
@@ -158,12 +158,12 @@ Parallel execution framework with specialized agents and real-time streaming:
 - **Agent Control Center**: `/agents` dashboard for managing and creating custom agents
 - **AI-powered agent creation**: Generate custom agent definitions with the architect model
 - **Per-agent model overrides**: Assign specific models to individual agents via swarm extension
-- User-level (`~/.omp/agent/agents/`) and project-level (`.omp/agents/`) custom agents
+- User-level (`~/.oh-omp/agent/agents/`) and project-level (`.omp/agents/`) custom agents
 
 ### + Model Roles
 
 <p align="center">
-  <img src="https://github.com/can1357/oh-my-pi/blob/main/assets/models.webp?raw=true" alt="models">
+  <img src="https://github.com/open-horizon-labs/oh-omp/blob/main/assets/models.webp?raw=true" alt="models">
 </p>
 
 Configure different models for different purposes with automatic discovery:
@@ -189,7 +189,7 @@ Structured task management with phased progress tracking:
 ### + Ask Tool (Interactive Questioning)
 
 <p align="center">
-  <img src="https://github.com/can1357/oh-my-pi/blob/main/assets/ask.webp?raw=true" alt="ask">
+  <img src="https://github.com/open-horizon-labs/oh-omp/blob/main/assets/ask.webp?raw=true" alt="ask">
 </p>
 
 Structured user interaction with typed options:
@@ -201,12 +201,12 @@ Structured user interaction with typed options:
 ### + Custom TypeScript Slash Commands
 
 <p align="center">
-  <img src="https://github.com/can1357/oh-my-pi/blob/main/assets/slash.webp?raw=true" alt="slash">
+  <img src="https://github.com/open-horizon-labs/oh-omp/blob/main/assets/slash.webp?raw=true" alt="slash">
 </p>
 
 Programmable commands with full API access:
 
-- Create at `~/.omp/agent/commands/[name]/index.ts` or `.omp/commands/[name]/index.ts`
+- Create at `~/.oh-omp/agent/commands/[name]/index.ts` or `.omp/commands/[name]/index.ts`
 - Export factory returning `{ name, description, execute(args, ctx) }`
 - Full access to `HookCommandContext` for UI dialogs, session control, shell execution
 - Return string to send as LLM prompt, or void for fire-and-forget actions
@@ -215,7 +215,7 @@ Programmable commands with full API access:
 ### + Universal Config Discovery
 
 <p align="center">
-  <img src="https://github.com/can1357/oh-my-pi/blob/main/assets/discovery.webp?raw=true" alt="discovery">
+  <img src="https://github.com/open-horizon-labs/oh-omp/blob/main/assets/discovery.webp?raw=true" alt="discovery">
 </p>
 
 Unified capability-based discovery that loads configuration from 8 AI coding tools:
@@ -230,7 +230,7 @@ Unified capability-based discovery that loads configuration from 8 AI coding too
 ### + MCP & Plugin System
 
 <p align="center">
-  <img src="https://github.com/can1357/oh-my-pi/blob/main/assets/perplexity.webp?raw=true" alt="perplexity">
+  <img src="https://github.com/open-horizon-labs/oh-omp/blob/main/assets/perplexity.webp?raw=true" alt="perplexity">
 </p>
 
 Full Model Context Protocol support with external tool integration:
@@ -239,14 +239,14 @@ Full Model Context Protocol support with external tool integration:
 - **OAuth support**: Explicit `clientId` and `callbackPort` in MCP server config, manual OAuth callbacks via slash commands
 - **Browser server filtering**: Automatically filters browser-type MCP servers to prevent conflicts with built-in browser tool
 - Plugin CLI (`omp plugin install/enable/configure/doctor`)
-- Hot-loadable plugins from `~/.omp/plugins/` with npm/bun integration
+- Hot-loadable plugins from `~/.oh-omp/plugins/` with npm/bun integration
 - Automatic Exa MCP server filtering with API key extraction
 - `disabledServers` works on both project-level and user-level third-party servers
 
 ### + Web Search & Fetch
 
 <p align="center">
-  <img src="https://github.com/can1357/oh-my-pi/blob/main/assets/arxiv.webp?raw=true" alt="arxiv">
+  <img src="https://github.com/open-horizon-labs/oh-omp/blob/main/assets/arxiv.webp?raw=true" alt="arxiv">
 </p>
 
 Multi-provider search and full-page scraping with specialized handlers:
@@ -370,7 +370,7 @@ Supported platforms: `linux-x64`, `linux-arm64`, `darwin-x64`, `darwin-arm64`, `
 - **Auto environment detection**: OS, distro, kernel, CPU, GPU, shell, terminal, DE in system prompt
 - **Git context**: System prompt includes branch, status, recent commits
 - **Bun runtime**: Native TypeScript execution, faster startup, all packages migrated
-- **Centralized file logging**: Debug logs with daily rotation to `~/.omp/logs/`
+- **Centralized file logging**: Debug logs with daily rotation to `~/.oh-omp/logs/`
 - **Bash interceptor**: Optionally block shell commands that have dedicated tools
 - **Per-command PTY control**: Bash tool supports `pty: true` for commands requiring a real terminal (sudo, ssh)
 - **@file auto-read**: Type `@path/to/file` in prompts to inject file contents inline
@@ -394,13 +394,13 @@ bun install -g @oh-my-pi/pi-coding-agent
 **Linux / macOS:**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/can1357/oh-my-pi/main/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/open-horizon-labs/oh-omp/main/scripts/install.sh | sh
 ```
 
 **Windows (PowerShell):**
 
 ```powershell
-irm https://raw.githubusercontent.com/can1357/oh-my-pi/main/scripts/install.ps1 | iex
+irm https://raw.githubusercontent.com/open-horizon-labs/oh-omp/main/scripts/install.ps1 | iex
 ```
 
 By default, the installer uses Bun when available (and compatible), otherwise installs the prebuilt binary.
@@ -417,31 +417,31 @@ Examples:
 
 ```bash
 # Source install (Bun)
-curl -fsSL https://raw.githubusercontent.com/can1357/oh-my-pi/main/scripts/install.sh | sh -s -- --source
+curl -fsSL https://raw.githubusercontent.com/open-horizon-labs/oh-omp/main/scripts/install.sh | sh -s -- --source
 
 # Install release tag via binary
-curl -fsSL https://raw.githubusercontent.com/can1357/oh-my-pi/main/scripts/install.sh | sh -s -- --binary --ref v3.20.1
+curl -fsSL https://raw.githubusercontent.com/open-horizon-labs/oh-omp/main/scripts/install.sh | sh -s -- --binary --ref v3.20.1
 
 # Install branch/commit via source
-curl -fsSL https://raw.githubusercontent.com/can1357/oh-my-pi/main/scripts/install.sh | sh -s -- --source --ref main
+curl -fsSL https://raw.githubusercontent.com/open-horizon-labs/oh-omp/main/scripts/install.sh | sh -s -- --source --ref main
 ```
 
 ```powershell
 # Install release tag via binary
-& ([scriptblock]::Create((irm https://raw.githubusercontent.com/can1357/oh-my-pi/main/scripts/install.ps1))) -Binary -Ref v3.20.1
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/open-horizon-labs/oh-omp/main/scripts/install.ps1))) -Binary -Ref v3.20.1
 # Install branch/commit via source
-& ([scriptblock]::Create((irm https://raw.githubusercontent.com/can1357/oh-my-pi/main/scripts/install.ps1))) -Source -Ref main
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/open-horizon-labs/oh-omp/main/scripts/install.ps1))) -Source -Ref main
 ```
 
 ### Via [mise](https://mise.jdx.dev)
 
 ```bash
-mise use -g github:can1357/oh-my-pi
+mise use -g github:open-horizon-labs/oh-omp
 ```
 
 ### Manual download
 
-Download binaries directly from [GitHub Releases](https://github.com/can1357/oh-my-pi/releases/latest).
+Download binaries directly from [GitHub Releases](https://github.com/open-horizon-labs/oh-omp/releases/latest).
 
 ---
 
@@ -547,7 +547,7 @@ For `vllm`, paste your key in `/login` (or use `VLLM_API_KEY`). For local no-aut
 For `nanogpt`, `/login nanogpt` opens `https://nano-gpt.com/api` and prompts for your `sk-...` key (or set `NANO_GPT_API_KEY`). Login validates the key via NanoGPT's models endpoint (not a fixed model entitlement).
 For `cloudflare-ai-gateway`, set provider base URL to
 `https://gateway.ai.cloudflare.com/v1/<account_id>/<gateway_id>/anthropic`
-(for example in `~/.omp/agent/models.yml`).
+(for example in `~/.oh-omp/agent/models.yml`).
 
 ```bash
 omp
@@ -558,7 +558,7 @@ omp
 
 - `/login` appends credentials for the provider (it does not wipe existing entries)
 - `/logout` clears saved credentials for the selected provider
-- Credentials are stored in `~/.omp/agent/agent.db`
+- Credentials are stored in `~/.oh-omp/agent/agent.db`
 - For the same provider, saved API key credentials are selected before OAuth credentials
 
 ### First 15 Minutes (Recommended)
@@ -736,7 +736,7 @@ See [docs/session.md](docs/session.md) for the file format and API.
 
 ### Session Management
 
-Sessions auto-save to `~/.omp/agent/sessions/` (grouped by working directory).
+Sessions auto-save to `~/.oh-omp/agent/sessions/` (grouped by working directory).
 
 ```bash
 omp --continue             # Continue most recent session
@@ -764,7 +764,7 @@ Long sessions can exhaust context windows. Compaction summarizes older messages 
 - **Overflow recovery**: model returns context overflow; compact and retry.
 - **Threshold maintenance**: context exceeds configured headroom after a successful turn.
 
-**Configuration** (`~/.omp/agent/config.yml`):
+**Configuration** (`~/.oh-omp/agent/config.yml`):
 
 ```yaml
 compaction:
@@ -790,7 +790,7 @@ See [docs/compaction.md](docs/compaction.md) for internals and hook integration.
 
 When enabled, the agent extracts durable knowledge from past sessions and injects it at startup. The pipeline runs in the background and never blocks the active session.
 
-Memory is isolated per project (working directory) and stored under `~/.omp/agent/memories/`. At session start, a compact summary is injected into the system prompt. The agent can read deeper context via `memory://root/MEMORY.md` and `memory://root/skills/<name>/SKILL.md`.
+Memory is isolated per project (working directory) and stored under `~/.oh-omp/agent/memories/`. At session start, a compact summary is injected into the system prompt. The agent can read deeper context via `memory://root/MEMORY.md` and `memory://root/skills/<name>/SKILL.md`.
 
 Manage via the `/memory` slash command:
 
@@ -825,12 +825,12 @@ Use these for:
 Replace the default system prompt by creating `SYSTEM.md`:
 
 1. **Project-local:** `.omp/SYSTEM.md` (takes precedence)
-2. **Global:** `~/.omp/agent/SYSTEM.md` (fallback)
+2. **Global:** `~/.oh-omp/agent/SYSTEM.md` (fallback)
    `--system-prompt` overrides both files. Use `--append-system-prompt` to append additional instructions.
 
 ### Custom Models and Providers
 
-Add custom providers/models via `~/.omp/agent/models.yml`.
+Add custom providers/models via `~/.oh-omp/agent/models.yml`.
 
 `models.json` is still supported for legacy configs, but `models.yml` is the modern format.
 
@@ -862,7 +862,7 @@ providers:
 
 Global settings are stored in:
 
-- `~/.omp/agent/config.yml`
+- `~/.oh-omp/agent/config.yml`
 
 Project overrides are loaded from discovered project settings files (commonly `.omp/settings.json`).
 
@@ -944,7 +944,7 @@ Built-in themes include `dark`, `light`, and many bundled variants.
 
 **Automatic dark/light switching**: omp detects terminal appearance via Mode 2031, native macOS CoreFoundation FFI, or `COLORFGBG` fallback, and switches between `theme.dark` and `theme.light` automatically.
 
-Select theme via `/settings` or set in `~/.omp/agent/config.yml`:
+Select theme via `/settings` or set in `~/.oh-omp/agent/config.yml`:
 
 ```yaml
 theme:
@@ -952,7 +952,7 @@ theme:
   light: light
 ```
 
-**Custom themes:** create `~/.omp/agent/themes/*.json`.
+**Custom themes:** create `~/.oh-omp/agent/themes/*.json`.
 
 > See [Theme Documentation](docs/theme.md).
 
@@ -960,7 +960,7 @@ theme:
 
 Define reusable prompt commands as Markdown files:
 
-- Global: `~/.omp/agent/commands/*.md`
+- Global: `~/.oh-omp/agent/commands/*.md`
 - Project: `.omp/commands/*.md`
 
 ```markdown
@@ -984,7 +984,7 @@ Argument placeholders:
 
 TypeScript custom commands are also supported:
 
-- `~/.omp/agent/commands/<name>/index.ts`
+- `~/.oh-omp/agent/commands/<name>/index.ts`
 - `.omp/commands/<name>/index.ts`
 
 Bundled TypeScript command: `/review`.
@@ -995,7 +995,7 @@ Skills are capability packages loaded on-demand.
 
 Common locations:
 
-- `~/.omp/agent/skills/*/SKILL.md`
+- `~/.oh-omp/agent/skills/*/SKILL.md`
 - `.omp/skills/*/SKILL.md`
 - `~/.claude/skills/*/SKILL.md`, `.claude/skills/*/SKILL.md`
 - `~/.codex/skills/*/SKILL.md`, `.codex/skills/*/SKILL.md`
@@ -1021,7 +1021,7 @@ Hooks are TypeScript modules that subscribe to lifecycle events.
 
 Hook locations:
 
-- Global: `~/.omp/agent/hooks/pre/*.ts`, `~/.omp/agent/hooks/post/*.ts`
+- Global: `~/.oh-omp/agent/hooks/pre/*.ts`, `~/.oh-omp/agent/hooks/post/*.ts`
 - Project: `.omp/hooks/pre/*.ts`, `.omp/hooks/post/*.ts`
 - CLI: `--hook <path>`
 
@@ -1059,7 +1059,7 @@ Custom tools extend the built-in toolset and are callable by the model.
 
 Auto-discovered locations:
 
-- Global: `~/.omp/agent/tools/*/index.ts`
+- Global: `~/.oh-omp/agent/tools/*/index.ts`
 - Project: `.omp/tools/*/index.ts`
 
 ```typescript
@@ -1182,7 +1182,7 @@ omp --export session.jsonl output.html
 | Variable                                          | Description                                             |
 | ------------------------------------------------- | ------------------------------------------------------- |
 | `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, etc.       | Provider credentials                                    |
-| `PI_CODING_AGENT_DIR`                             | Override agent data directory (default: `~/.omp/agent`) |
+| `PI_CODING_AGENT_DIR`                             | Override agent data directory (default: `~/.oh-omp/agent`) |
 | `PI_PACKAGE_DIR`                                  | Override package directory resolution                   |
 | `PI_SMOL_MODEL`, `PI_SLOW_MODEL`, `PI_PLAN_MODEL` | Role-model overrides                                    |
 | `PI_NO_PTY`                                       | Disable PTY-based bash execution                        |

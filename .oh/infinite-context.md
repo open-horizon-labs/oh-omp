@@ -105,7 +105,7 @@ Assumptions from the aim were verified against the actual codebase. Here's what'
 - No MCP tool coverage — only builtin tools are classified. MCP tools hit the default fallback (`execution`/`heuristic`).
 
 **2. Artifact persistence: PARTIALLY WORKING.**
-- `ArtifactManager` (`session/artifacts.ts`) exists and persists tool results to `~/.omp/sessions/<id>/artifacts/<artifact-id>.txt`.
+- `ArtifactManager` (`session/artifacts.ts`) exists and persists tool results to `~/.oh-omp/sessions/<id>/artifacts/<artifact-id>.txt`.
 - `allocateOutputArtifact()` is called by bash, fetch, python, render_mermaid, ssh — tools that produce large/truncated output.
 - Bridge extracts `artifact://<id>` references from result strings and stores them in locator params.
 - The composite retriever can resolve artifacts via `ArtifactResolver`.

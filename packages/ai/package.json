@@ -3,7 +3,7 @@
 	"name": "@oh-my-pi/pi-ai",
 	"version": "13.9.11",
 	"description": "Unified LLM API with automatic model discovery and provider configuration",
-	"homepage": "https://github.com/can1357/oh-my-pi",
+	"homepage": "https://github.com/open-horizon-labs/oh-omp",
 	"author": "Can Boluk",
 	"contributors": [
 		"Mario Zechner"
@@ -11,11 +11,11 @@
 	"license": "MIT",
 	"repository": {
 		"type": "git",
-		"url": "git+https://github.com/can1357/oh-my-pi.git",
+		"url": "git+https://github.com/open-horizon-labs/oh-omp.git",
 		"directory": "packages/ai"
 	},
 	"bugs": {
-		"url": "https://github.com/can1357/oh-my-pi/issues"
+		"url": "https://github.com/open-horizon-labs/oh-omp/issues"
 	},
 	"keywords": [
 		"ai",

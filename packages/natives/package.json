@@ -34,7 +34,7 @@
 		"embed:native": "bun scripts/embed-native.ts",
 		"check": "biome check . && tsgo -p tsconfig.json",
 		"fix": "biome check --write --unsafe .",
-		"test": "bun run build:native && bun test",
+		"test": "bun test",
 		"bench": "bun bench/grep.ts"
 	},
 	"dependencies": {

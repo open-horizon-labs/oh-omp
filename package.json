@@ -30,7 +30,6 @@
 		"prepare": "bun --cwd=packages/coding-agent run generate-docs-index",
 		"publish": "bun run prepublishOnly && npm publish -ws --access public",
 		"publish:dry": "bun run prepublishOnly && npm publish -ws --access public --dry-run",
-		"release": "bun scripts/release.ts",
 		"generate-models": "bun --cwd=packages/ai scripts/generate-models.ts",
 		"generate-docs-index": "bun --cwd=packages/coding-agent run generate-docs-index",
 		"generate-template": "bun --cwd=packages/coding-agent run generate-template",

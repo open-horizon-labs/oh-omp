@@ -1,5 +1,5 @@
-import { connect, type Connection, type Table } from "@lancedb/lancedb";
 import * as path from "node:path";
+import { type Connection, connect, type Table } from "@lancedb/lancedb";
 import { logger } from "@oh-my-pi/pi-utils";
 import type { RecallRow, RecallSearchResult } from "./types";
 import { EMBEDDING_DIM } from "./types";

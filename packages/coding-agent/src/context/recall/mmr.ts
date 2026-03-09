@@ -1,5 +1,5 @@
-import { DEFAULT_RECALL_MMR_LAMBDA } from "./types";
 import type { MmrCandidate } from "./types";
+import { DEFAULT_RECALL_MMR_LAMBDA } from "./types";
 
 /**
  * Cosine similarity between two vectors. Returns 0 for zero-magnitude vectors.

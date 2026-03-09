@@ -3,14 +3,14 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import {
-	type MmrCandidate,
-	type RecallRow,
+	cosineSimilarity,
 	DEFAULT_RECALL_MMR_LAMBDA,
 	EMBEDDING_DIM,
-	cosineSimilarity,
+	type MmrCandidate,
 	mmrRerank,
-	resolveMemexLicense,
+	type RecallRow,
 	RecallStore,
+	resolveMemexLicense,
 } from "@oh-my-pi/pi-coding-agent/context/recall";
 
 // ═══════════════════════════════════════════════════════════════════════════

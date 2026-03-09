@@ -36,7 +36,7 @@ import {
 
 const PROVIDER_ID = "native";
 const DISPLAY_NAME = "OMP";
-const DESCRIPTION = "Native OMP configuration from ~/.omp and .omp/";
+const DESCRIPTION = "Native OMP configuration from ~/.oh-omp and .omp/";
 const PRIORITY = 100;
 
 const PATHS = SOURCE_PATHS.native;

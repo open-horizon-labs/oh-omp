@@ -1,6 +1,6 @@
 # Plugin manager and installer plumbing
 
-This document describes how `omp plugin` operations mutate plugin state on disk and how installed plugins become runtime capabilities (tools today, hooks/commands path resolution available).
+This document describes how `oh-omp plugin` operations mutate plugin state on disk and how installed plugins become runtime capabilities (tools today, hooks/commands path resolution available).
 
 ## Scope and architecture
 
@@ -9,14 +9,14 @@ There are two plugin-management implementations in the codebase:
 1. **Active path used by CLI commands**: `PluginManager` (`src/extensibility/plugins/manager.ts`)
 2. **Legacy helper module**: installer functions (`src/extensibility/plugins/installer.ts`)
 
-`omp plugin ...` command execution goes through `PluginManager`.
+`oh-omp plugin ...` command execution goes through `PluginManager`.
 
 `installer.ts` still documents important safety checks and filesystem behavior, but it is not the path used by `src/commands/plugin.ts` + `src/cli/plugin-cli.ts`.
 
 ## Lifecycle: from CLI invocation to runtime availability
 
 ```text
-omp plugin <action> ...
+oh-omp plugin <action> ...
   -> src/commands/plugin.ts
   -> runPluginCommand(...) in src/cli/plugin-cli.ts
   -> PluginManager method (install/list/uninstall/link/...) 
@@ -99,7 +99,7 @@ Malformed `package.json` JSON is a hard failure at read time; malformed manifest
 
 Because update is install-driven:
 
-- `omp plugin install pkg@newVersion` updates dependency and lockfile version.
+- `oh-omp plugin install pkg@newVersion` updates dependency and lockfile version.
 - Existing settings are preserved; state entry is overwritten for version/features/enabled.
 - No separate “check updates” or transactional migration logic exists.
 

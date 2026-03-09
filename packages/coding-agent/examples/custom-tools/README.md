@@ -1,6 +1,6 @@
 # Custom Tools Examples
 
-Example custom tools for omp-coding-agent.
+Example custom tools for oh-omp coding-agent.
 
 ## Examples
 
@@ -23,13 +23,13 @@ Full-featured example demonstrating:
 
 ```bash
 # Test directly (can point to any .ts file)
-omp --tool examples/custom-tools/todo/index.ts
+oh-omp --tool examples/custom-tools/todo/index.ts
 
 # Or copy entire folder to tools directory for persistent use
 cp -r todo ~/.oh-omp/agent/tools/
 ```
 
-Then in omp:
+Then in oh-omp:
 
 ```
 > add a todo "test custom tools"

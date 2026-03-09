@@ -1,12 +1,12 @@
 # Hooks Examples
 
-Example hooks for omp-coding-agent.
+Example hooks for oh-omp coding-agent.
 
 ## Usage
 
 ```bash
 # Load a hook with --hook flag
-omp --hook examples/hooks/permission-gate.ts
+oh-omp --hook examples/hooks/permission-gate.ts
 
 # Or copy to hooks directory for auto-discovery
 cp permission-gate.ts ~/.oh-omp/agent/hooks/

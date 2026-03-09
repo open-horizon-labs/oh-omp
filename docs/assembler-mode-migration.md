@@ -11,9 +11,9 @@ The assembler mode requires the tool-result bridge (issue #11) and assembler ker
 To activate assembler mode, update your configuration:
 
 ```bash
-omp config set contextManager.mode assembler
-omp config set memories.enabled false
-omp config set compaction.enabled false
+oh-omp config set contextManager.mode assembler
+oh-omp config set memories.enabled false
+oh-omp config set compaction.enabled false
 ```
 
 All three settings must be applied. The runtime validates the configuration at startup and will reject conflicting combinations with a clear error.
@@ -56,9 +56,9 @@ All three settings must be applied. The runtime validates the configuration at s
 To revert to legacy mode:
 
 ```bash
-omp config set contextManager.mode legacy
-omp config set memories.enabled true
-omp config set compaction.enabled true
+oh-omp config set contextManager.mode legacy
+oh-omp config set memories.enabled true
+oh-omp config set compaction.enabled true
 ```
 
 ## Known Limitations

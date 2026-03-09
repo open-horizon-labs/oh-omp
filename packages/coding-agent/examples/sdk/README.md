@@ -1,6 +1,6 @@
 # SDK Examples
 
-Programmatic usage of omp-coding-agent via `createAgentSession()`.
+Programmatic usage of oh-omp coding-agent via `createAgentSession()`.
 
 ## Examples
 

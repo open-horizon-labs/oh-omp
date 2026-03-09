@@ -55,7 +55,7 @@ await session.dispose();
 If omitted, it resolves:
 
 - `cwd`: `getProjectDir()`
-- `agentDir`: `~/.omp/agent` (via `getAgentDir()`)
+- `agentDir`: `~/.oh-omp/agent` (via `getAgentDir()`)
 - `authStorage`: `discoverAuthStorage(agentDir)`
 - `modelRegistry`: `new ModelRegistry(authStorage)` + `await refresh()`
 - `settings`: `await Settings.init({ cwd, agentDir })`

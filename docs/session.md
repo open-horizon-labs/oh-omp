@@ -28,7 +28,7 @@ Does not cover `/tree` UI rendering behavior beyond semantics that affect sessio
 Default session file location:
 
 ```text
-~/.omp/agent/sessions/--<cwd-encoded>--/<timestamp>_<sessionId>.jsonl
+~/.oh-omp/agent/sessions/--<cwd-encoded>--/<timestamp>_<sessionId>.jsonl
 ```
 
 `<cwd-encoded>` is derived from the working directory by stripping leading slash and replacing `/`, `\\`, and `:` with `-`.
@@ -36,13 +36,13 @@ Default session file location:
 Blob store location:
 
 ```text
-~/.omp/agent/blobs/<sha256>
+~/.oh-omp/agent/blobs/<sha256>
 ```
 
 Terminal breadcrumb files are written under:
 
 ```text
-~/.omp/agent/terminal-sessions/<terminal-id>
+~/.oh-omp/agent/terminal-sessions/<terminal-id>
 ```
 
 Breadcrumb content is two lines: original cwd, then session file path. `continueRecent()` prefers this terminal-scoped pointer before scanning most-recent mtime.
@@ -420,7 +420,7 @@ Defined in `session-manager.ts`:
 - `getRecentSessions(sessionDir, limit)` -> lightweight metadata for UI/session picker
 - `findMostRecentSession(sessionDir)` -> newest by mtime
 - `list(cwd, sessionDir?)` -> sessions in one project scope
-- `listAll()` -> sessions across all project scopes under `~/.omp/agent/sessions`
+- `listAll()` -> sessions across all project scopes under `~/.oh-omp/agent/sessions`
 
 Metadata extraction reads only a prefix (`readTextPrefix(..., 4096)`) where possible.
 
@@ -428,7 +428,7 @@ Metadata extraction reads only a prefix (`readTextPrefix(..., 4096)`) where poss
 
 `HistoryStorage` (`history-storage.ts`) is a separate SQLite subsystem for prompt recall/search, not session replay.
 
-- DB: `~/.omp/agent/history.db`
+- DB: `~/.oh-omp/agent/history.db`
 - Table: `history(id, prompt, created_at, cwd)`
 - FTS5 index: `history_fts` with trigger-maintained sync
 - Deduplicates consecutive identical prompts using in-memory last-prompt cache

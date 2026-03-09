@@ -28,7 +28,7 @@ Key integration points:
 ```text
          Config roots (ordered)
 ┌───────────────────────────────────────┐
-│ 1) ~/.omp/agent + <cwd>/.omp          │
+│ 1) ~/.oh-omp/agent + <cwd>/.omp          │
 │ 2) ~/.claude   + <cwd>/.claude        │
 │ 3) ~/.codex    + <cwd>/.codex         │
 │ 4) ~/.gemini   + <cwd>/.gemini        │
@@ -64,7 +64,7 @@ Key integration points:
 
 User-level bases:
 
-- `~/.omp/agent`
+- `~/.oh-omp/agent`
 - `~/.claude`
 - `~/.codex`
 - `~/.gemini`
@@ -142,7 +142,7 @@ Legacy migration still supported:
 
 The runtime settings model is layered:
 
-1. Global settings: `~/.omp/agent/config.yml`
+1. Global settings: `~/.oh-omp/agent/config.yml`
 2. Project settings: discovered via settings capability (`settings.json` from providers)
 3. Runtime overrides: in-memory, non-persistent
 4. Schema defaults: from `SETTINGS_SCHEMA`
@@ -160,7 +160,7 @@ Write behavior:
 
 On startup, if `config.yml` is missing:
 
-1. Migrate from `~/.omp/agent/settings.json` (renamed to `.bak` on success)
+1. Migrate from `~/.oh-omp/agent/settings.json` (renamed to `.bak` on success)
 2. Merge with legacy DB settings from `agent.db`
 3. Write merged result to `config.yml`
 
@@ -217,7 +217,7 @@ Relevant keys:
 Native provider (`id: native`) reads from:
 
 - project: `<cwd>/.omp/...`
-- user: `~/.omp/agent/...`
+- user: `~/.oh-omp/agent/...`
 
 ### Directory admission rule
 

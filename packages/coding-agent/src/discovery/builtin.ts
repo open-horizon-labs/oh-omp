@@ -257,7 +257,7 @@ async function loadSkills(ctx: LoadContext): Promise<LoadResult<Skill>> {
 		}),
 	);
 
-	// User-level scan from ~/.omp/agent/skills/
+	// User-level scan from ~/.oh-omp/agent/skills/
 	const userScan = scanSkillsFromDir(ctx, {
 		dir: path.join(ctx.home, PATHS.userAgent, "skills"),
 		providerId: PROVIDER_ID,

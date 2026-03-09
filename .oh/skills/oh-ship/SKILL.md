@@ -54,7 +54,7 @@ The fork has its own independent semver starting at `0.1.0`. This is the npm/rel
 The upstream base is tracked in `upstream.json` (repo root):
 ```json
 {
-  "repo": "can1357/oh-my-pi",
+  "repo": "open-horizon-labs/oh-omp",
   "commit": "<full SHA of upstream/main at time of sync>",
   "synced_at": "YYYY-MM-DD"
 }

@@ -1,7 +1,7 @@
 /**
  * Centralized file logger for omp.
  *
- * Logs to ~/.omp/logs/ with size-based rotation, supporting concurrent omp instances.
+ * Logs to ~/.oh-omp/logs/ with size-based rotation, supporting concurrent omp instances.
  * Each log entry includes process.pid for traceability.
  */
 import * as fs from "node:fs";
@@ -61,7 +61,7 @@ const winstonLogger = winston.createLogger({
 /**
  * Centralized logger for omp.
  *
- * Logs to ~/.omp/logs/omp.YYYY-MM-DD.log with size-based rotation.
+ * Logs to ~/.oh-omp/logs/omp.YYYY-MM-DD.log with size-based rotation.
  * Safe for concurrent access from multiple omp instances.
  *
  * @example

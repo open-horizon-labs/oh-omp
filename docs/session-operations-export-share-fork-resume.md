@@ -92,7 +92,7 @@ No session persistence changes are made by dumping.
 
 ### Phase 2: custom share handler (if present)
 
-`loadCustomShare()` checks `~/.omp/agent` for first existing candidate:
+`loadCustomShare()` checks `~/.oh-omp/agent` for first existing candidate:
 
 - `share.ts`
 - `share.js`

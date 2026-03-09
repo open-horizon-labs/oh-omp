@@ -16,7 +16,7 @@ Primary implementation files:
 
 Default config path:
 
-- `~/.omp/agent/models.yml`
+- `~/.oh-omp/agent/models.yml`
 
 Legacy behavior still present:
 
@@ -371,7 +371,7 @@ providers:
 
 Most model configuration now flows through `models.yml` via `ModelRegistry`.
 
-One notable legacy path remains: web-search Anthropic auth resolution still reads `~/.omp/agent/models.json` directly in `src/web/search/auth.ts`.
+One notable legacy path remains: web-search Anthropic auth resolution still reads `~/.oh-omp/agent/models.json` directly in `src/web/search/auth.ts`.
 
 If you rely on that specific path, keep JSON compatibility in mind until that module is migrated.
 

@@ -61,7 +61,7 @@ So hidden files/directories are not loaded, and ignored paths are skipped.
 Search roots come from `.omp` directories:
 
 - project: `<cwd>/.omp/commands/*.md`
-- user: `~/.omp/agent/commands/*.md`
+- user: `~/.oh-omp/agent/commands/*.md`
 
 `getConfigDirs()` returns project first, then user, so **project native commands beat user native commands** when names collide.
 

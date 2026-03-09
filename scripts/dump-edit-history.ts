@@ -346,7 +346,7 @@ Options:
 
 Examples:
   bun scripts/dump-edit-history.ts session.jsonl
-  bun scripts/dump-edit-history.ts ~/.omp/agent/sessions/**/*.jsonl --stats
+  bun scripts/dump-edit-history.ts ~/.oh-omp/agent/sessions/**/*.jsonl --stats
   bun scripts/dump-edit-history.ts session.jsonl --failures --compact`);
 		process.exit(1);
 	}

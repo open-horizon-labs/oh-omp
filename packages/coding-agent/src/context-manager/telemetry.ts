@@ -200,7 +200,7 @@ export interface ShadowTelemetryOptions {
 
 /**
  * Generate the default trace file path for a session.
- * Traces live under `~/.omp/traces/` with date + trace_id scoping.
+ * Traces live under `~/.oh-omp/traces/` with date + trace_id scoping.
  */
 export function getTraceFilePath(traceId: string, date = new Date()): string {
 	const dateStr = date.toISOString().slice(0, 10);

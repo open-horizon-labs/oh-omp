@@ -31,7 +31,7 @@ Extension loading builds a list of module entry files, imports each module with 
 Effective native locations:
 
 - Project: `<cwd>/.omp/extensions`
-- User: `~/.omp/agent/extensions`
+- User: `~/.oh-omp/agent/extensions`
 
 Path roots come from the native provider (`SOURCE_PATHS.native`).
 
@@ -51,7 +51,7 @@ Configured path sources in the main session startup path (`sdk.ts`):
 
 Global settings file:
 
-- `~/.omp/agent/config.yml` (or custom agent dir via `PI_CODING_AGENT_DIR`)
+- `~/.oh-omp/agent/config.yml` (or custom agent dir via `PI_CODING_AGENT_DIR`)
 
 Project settings file:
 
@@ -60,7 +60,7 @@ Project settings file:
 Examples:
 
 ```yaml
-# ~/.omp/agent/config.yml
+# ~/.oh-omp/agent/config.yml
 extensions:
   - ~/my-exts/safety.ts
   - ./local/ext-pack
@@ -212,7 +212,7 @@ When events run through `ExtensionRunner`, handler exceptions are caught and emi
 ### User-level
 
 ```text
-~/.omp/agent/
+~/.oh-omp/agent/
   config.yml
   extensions/
     guardrails.ts

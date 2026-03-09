@@ -3,16 +3,16 @@
 	"name": "@oh-my-pi/omp-stats",
 	"version": "13.9.11",
 	"description": "Local observability dashboard for pi AI usage statistics",
-	"homepage": "https://github.com/can1357/oh-my-pi",
+	"homepage": "https://github.com/open-horizon-labs/oh-omp",
 	"author": "Can Boluk",
 	"license": "MIT",
 	"repository": {
 		"type": "git",
-		"url": "git+https://github.com/can1357/oh-my-pi.git",
+		"url": "git+https://github.com/open-horizon-labs/oh-omp.git",
 		"directory": "packages/stats"
 	},
 	"bugs": {
-		"url": "https://github.com/can1357/oh-my-pi/issues"
+		"url": "https://github.com/open-horizon-labs/oh-omp/issues"
 	},
 	"keywords": [
 		"ai",

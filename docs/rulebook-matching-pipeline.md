@@ -57,7 +57,7 @@ Consequence: precedence and deduplication are **name-based only**. Two different
 Loads `.omp` rules from:
 
 - project: `<cwd>/.omp/rules/*.{md,mdc}`
-- user: `~/.omp/agent/rules/*.{md,mdc}`
+- user: `~/.oh-omp/agent/rules/*.{md,mdc}`
 
 Normalization:
 

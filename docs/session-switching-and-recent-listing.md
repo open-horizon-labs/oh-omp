@@ -22,7 +22,7 @@ It focuses on current implementation behavior, including fallback paths and cave
 
 `SessionManager` stores sessions under a cwd-scoped directory by default:
 
-- `~/.omp/agent/sessions/--<cwd-encoded>--/*.jsonl`
+- `~/.oh-omp/agent/sessions/--<cwd-encoded>--/*.jsonl`
 
 `SessionManager.list(cwd, sessionDir?)` reads only that directory unless an explicit `sessionDir` is provided.
 
@@ -59,7 +59,7 @@ For `SessionInfo` list entries:
 
 `SessionManager.continueRecent(cwd, sessionDir?)` resolves the target in this order:
 
-1. Read terminal-scoped breadcrumb (`~/.omp/agent/terminal-sessions/<terminal-id>`)
+1. Read terminal-scoped breadcrumb (`~/.oh-omp/agent/terminal-sessions/<terminal-id>`)
 2. Validate breadcrumb:
    - current terminal can be identified
    - breadcrumb cwd matches current cwd (resolved path compare)

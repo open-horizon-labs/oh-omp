@@ -77,7 +77,7 @@ function makePacket(overrides?: Partial<WorkingContextPacketV1>): WorkingContext
 				},
 			},
 		],
-		dropped: [{ id: "frag-2", reason: "budget_exceeded" }],
+		dropped: [{ id: "frag-2", reason: "token_budget" }],
 		...overrides,
 	};
 }

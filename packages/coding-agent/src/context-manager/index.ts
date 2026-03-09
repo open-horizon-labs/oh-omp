@@ -3,11 +3,7 @@
  *
  * Enforces the single-active-context-manager invariant (ADR-0003):
  * exactly one context management strategy is active at runtime.
- *
- * Modes:
- *   - legacy:    Current behavior — memory injection, compaction, TTSR all active.
- *   - shadow:    Legacy is primary; assembler observes but never injects (no side effects).
- *   - assembler: Assembler-managed context; legacy injection paths are disabled.
+ * Only assembler mode is supported.
  */
 import { logger } from "@oh-my-pi/pi-utils";
 import type { Settings } from "../config/settings";
@@ -27,58 +23,19 @@ export class ContextManagerConfigError extends Error {
 }
 
 /**
- * Describes which legacy subsystems are enabled alongside the selected mode.
- * Used by validation to detect mixed-manager configurations.
- */
-interface LegacySubsystemState {
-	memoriesEnabled: boolean;
-}
-
-/**
  * Validate context-manager configuration at startup.
  *
- * Fail-closed semantics: if the configuration would activate multiple
- * context managers simultaneously, throw rather than run in mixed mode.
+ * Fail-closed semantics: only assembler mode is accepted.
  *
- * @throws {ContextManagerConfigError} on invalid mode or mixed-manager config
+ * @throws {ContextManagerConfigError} on invalid or unsupported mode
  */
 export function validateContextManagerConfig(settings: Settings): void {
 	const mode = getContextManagerMode(settings);
-
-	const subsystems: LegacySubsystemState = {
-		memoriesEnabled: settings.get("memories.enabled"),
-	};
-
-	switch (mode) {
-		case "legacy":
-			// Legacy mode: all existing subsystems are allowed. No conflict possible.
-			break;
-
-		case "shadow":
-			// Shadow mode: legacy is primary, assembler observes without injection.
-			// No side effects from assembler — always safe.
-			break;
-
-		case "assembler":
-			// Guard: assembler mode must not coexist with legacy subsystems.
-			{
-				const conflicts: string[] = [];
-				if (subsystems.memoriesEnabled) conflicts.push("memories.enabled");
-				if (conflicts.length > 0) {
-					throw new ContextManagerConfigError(
-						`Context manager mode 'assembler' conflicts with active legacy subsystems: ${conflicts.join(", ")}. ` +
-							"Disable them or switch to 'shadow' mode.",
-					);
-				}
-			}
-			break;
-
-		default:
-			throw new ContextManagerConfigError(
-				`Unknown context manager mode: '${mode as string}'. Valid values: legacy, shadow, assembler.`,
-			);
+	if (mode !== "assembler") {
+		throw new ContextManagerConfigError(
+			`Context manager mode '${mode as string}' is no longer supported. Use 'assembler' mode.`,
+		);
 	}
-
 	logger.debug("Context manager validated", { mode });
 }
 
@@ -91,20 +48,9 @@ export function getContextManagerMode(settings: Settings): ContextManagerMode {
 	return settings.get("contextManager.mode");
 }
 
-/** True when legacy context management is the active primary. */
-export function isLegacyActive(settings: Settings): boolean {
-	const mode = getContextManagerMode(settings);
-	return mode === "legacy" || mode === "shadow";
-}
-
-/** True when the assembler should observe (shadow) or drive (assembler) context. */
+/** True when the assembler is driving context. */
 export function isAssemblerActive(settings: Settings): boolean {
 	return getContextManagerMode(settings) === "assembler";
-}
-
-/** True when the assembler should observe without injecting into prompts. */
-export function isShadowMode(settings: Settings): boolean {
-	return getContextManagerMode(settings) === "shadow";
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -123,10 +69,8 @@ export function getContextManagerState(settings: Settings): ContextManagerState 
 	const mode = getContextManagerMode(settings);
 	return {
 		mode,
-		legacyActive: mode === "legacy" || mode === "shadow",
+		legacyActive: false,
 		assemblerActive: mode === "assembler",
-		shadowObserving: mode === "shadow",
+		shadowObserving: false,
 	};
 }
-
-export * from "./telemetry";

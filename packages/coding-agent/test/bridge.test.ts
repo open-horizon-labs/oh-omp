@@ -1,20 +1,13 @@
 import { describe, expect, test } from "bun:test";
-import * as fs from "node:fs/promises";
-import * as os from "node:os";
-import * as path from "node:path";
 import {
-	type ArtifactResolver,
 	type BridgeConfig,
 	CATEGORY_FRESHNESS,
 	classifyResult,
-	createArtifactRetriever,
-	createCompositeRetriever,
-	createReReadRetriever,
 	TOOL_CATEGORY_MAP,
 	TOOL_RESULT_CATEGORIES,
 	ToolResultBridge,
 } from "@oh-my-pi/pi-coding-agent/context/bridge";
-import type { MemoryAssemblyBudget, MemoryLocatorEntry } from "@oh-my-pi/pi-coding-agent/context/memory-contract";
+import type { MemoryAssemblyBudget } from "@oh-my-pi/pi-coding-agent/context/memory-contract";
 import { MEMORY_CONTRACT_VERSION } from "@oh-my-pi/pi-coding-agent/context/memory-contract";
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -551,138 +544,6 @@ describe("ToolResultBridge.rebuildWorkingMemory", () => {
 		expect(wm.locatorKeys).toEqual([]);
 		expect(wm.hypotheses).toEqual([]);
 		expect(wm.nextActions).toEqual([]);
-	});
-});
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Retriever tests
-// ═══════════════════════════════════════════════════════════════════════════
-
-describe("retrievers", () => {
-	const tmpDir = path.join(os.tmpdir(), `bridge-test-${Date.now()}`);
-
-	// Setup and teardown for retriever tests
-	async function setup(): Promise<void> {
-		await fs.mkdir(tmpDir, { recursive: true });
-		await Bun.write(path.join(tmpDir, "42.bash.log"), "artifact content");
-		await Bun.write(path.join(tmpDir, "test-file.ts"), "file content");
-	}
-
-	function makeResolver(dir: string): ArtifactResolver {
-		return {
-			async getPath(id: string): Promise<string | null> {
-				const files = await fs.readdir(dir);
-				const match = files.find(f => f.startsWith(`${id}.`));
-				return match ? path.join(dir, match) : null;
-			},
-		};
-	}
-
-	function makeLocator(overrides: Partial<MemoryLocatorEntry> = {}): MemoryLocatorEntry {
-		return {
-			key: "test-key",
-			tier: "short_term",
-			where: "test",
-			how: { method: "read" },
-			cost: { estimatedTokens: 100, estimatedLatencyMs: 50 },
-			freshness: { ttlMs: 300_000, invalidatedBy: [] },
-			trust: "authoritative",
-			provenance: { source: "test", reason: "test", capturedAt: NOW, confidence: 0.9 },
-			...overrides,
-		};
-	}
-
-	describe("artifactRetriever", () => {
-		test("reads artifact content by ID", async () => {
-			await setup();
-			const retriever = createArtifactRetriever(makeResolver(tmpDir));
-			const entry = makeLocator({ how: { method: "read", params: { artifactId: "42" } } });
-			const content = await retriever(entry);
-			expect(content).toBe("artifact content");
-		});
-
-		test("returns null for missing artifact", async () => {
-			await setup();
-			const retriever = createArtifactRetriever(makeResolver(tmpDir));
-			const entry = makeLocator({ how: { method: "read", params: { artifactId: "999" } } });
-			const content = await retriever(entry);
-			expect(content).toBeNull();
-		});
-
-		test("returns null when no artifactId in params", async () => {
-			await setup();
-			const retriever = createArtifactRetriever(makeResolver(tmpDir));
-			const entry = makeLocator({ how: { method: "read" } });
-			const content = await retriever(entry);
-			expect(content).toBeNull();
-		});
-	});
-
-	describe("reReadRetriever", () => {
-		test("reads file by path", async () => {
-			await setup();
-			const retriever = createReReadRetriever();
-			const entry = makeLocator({
-				how: { method: "read", params: { filePath: path.join(tmpDir, "test-file.ts") } },
-			});
-			const content = await retriever(entry);
-			expect(content).toBe("file content");
-		});
-
-		test("returns null for missing file", async () => {
-			const retriever = createReReadRetriever();
-			const entry = makeLocator({
-				how: { method: "read", params: { filePath: "/nonexistent/file.ts" } },
-			});
-			const content = await retriever(entry);
-			expect(content).toBeNull();
-		});
-
-		test("returns null when no filePath in params", async () => {
-			const retriever = createReReadRetriever();
-			const entry = makeLocator({ how: { method: "read" } });
-			const content = await retriever(entry);
-			expect(content).toBeNull();
-		});
-	});
-
-	describe("compositeRetriever", () => {
-		test("prefers artifact over file re-read", async () => {
-			await setup();
-			const retriever = createCompositeRetriever(makeResolver(tmpDir));
-			const entry = makeLocator({
-				how: {
-					method: "read",
-					params: {
-						artifactId: "42",
-						filePath: path.join(tmpDir, "test-file.ts"),
-					},
-				},
-			});
-			const content = await retriever(entry);
-			expect(content).toBe("artifact content");
-		});
-
-		test("falls back to file re-read when no artifact", async () => {
-			await setup();
-			const retriever = createCompositeRetriever(makeResolver(tmpDir));
-			const entry = makeLocator({
-				how: {
-					method: "read",
-					params: { filePath: path.join(tmpDir, "test-file.ts") },
-				},
-			});
-			const content = await retriever(entry);
-			expect(content).toBe("file content");
-		});
-
-		test("returns null when neither artifact nor file available", async () => {
-			await setup();
-			const retriever = createCompositeRetriever(makeResolver(tmpDir));
-			const entry = makeLocator({ how: { method: "read" } });
-			const content = await retriever(entry);
-			expect(content).toBeNull();
-		});
 	});
 });
 

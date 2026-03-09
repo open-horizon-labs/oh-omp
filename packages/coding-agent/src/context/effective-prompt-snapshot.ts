@@ -12,9 +12,8 @@
 
 import type { AgentMessage, AgentTool } from "@oh-my-pi/pi-agent-core";
 import type { Model } from "@oh-my-pi/pi-ai";
-
-import { estimateMessageTokens, estimateToolDefinitionTokens } from "./assembler/kernel";
-import type { TransformMetadata } from "./assembler/message-transform";
+import type { TransformMetadata } from "./assembler";
+import { estimateMessageTokens, estimateToolDefinitionTokens } from "./assembler";
 import type { MemoryAssemblyBudget, WorkingContextPacketV1 } from "./memory-contract";
 
 // ═══════════════════════════════════════════════════════════════════════════

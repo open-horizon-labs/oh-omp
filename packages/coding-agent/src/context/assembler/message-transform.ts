@@ -17,7 +17,72 @@
 
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { TextContent, ToolResultMessage } from "@oh-my-pi/pi-ai";
-import { estimateMessageTokens } from "./kernel";
+import type { MemoryAssemblyBudget } from "../memory-contract";
+import type { BudgetDerivationInput } from "./types";
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Token estimation & budget derivation
+// ═══════════════════════════════════════════════════════════════════════════
+
+function estimateTokensFromCharCount(chars: number): number {
+	return Math.ceil(chars / 4);
+}
+
+export function estimateMessageTokens(messages: unknown[]): number {
+	let chars = 0;
+	for (const msg of messages) {
+		if (!msg || typeof msg !== "object") continue;
+		const content = (msg as Record<string, unknown>).content;
+		if (typeof content === "string") {
+			chars += content.length;
+		} else if (Array.isArray(content)) {
+			for (const block of content) {
+				if (typeof block === "string") {
+					chars += block.length;
+				} else if (block && typeof block === "object" && "text" in block && typeof block.text === "string") {
+					chars += block.text.length;
+				} else {
+					chars += JSON.stringify(block).length;
+				}
+			}
+		} else if (content != null) {
+			chars += JSON.stringify(content).length;
+		}
+	}
+	return estimateTokensFromCharCount(chars);
+}
+
+export function estimateToolDefinitionTokens(
+	tools: Array<{ name: string; description?: string; parameters?: unknown }>,
+): number {
+	let chars = 0;
+	for (const tool of tools) {
+		chars += tool.name.length;
+		chars += tool.description?.length ?? 0;
+		if (tool.parameters) {
+			chars += JSON.stringify(tool.parameters).length;
+		}
+	}
+	return estimateTokensFromCharCount(chars);
+}
+
+const DEFAULT_MAX_LATENCY_MS = 2000;
+const BUDGET_SAFETY_MARGIN = 0.9;
+
+export function deriveBudget(input: BudgetDerivationInput): MemoryAssemblyBudget {
+	const totalCosts = input.systemPromptTokens + input.toolDefinitionTokens + input.currentTurnTokens;
+	const rawAvailable = input.contextWindow - totalCosts;
+	const available = Math.max(0, Math.floor(rawAvailable * BUDGET_SAFETY_MARGIN));
+	return {
+		maxTokens: available,
+		maxLatencyMs: DEFAULT_MAX_LATENCY_MS,
+		reservedTokens: {
+			objective: 0,
+			codeContext: 0,
+			executionState: 0,
+		},
+	};
+}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Configuration

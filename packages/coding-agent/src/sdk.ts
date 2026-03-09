@@ -45,13 +45,7 @@ import {
 	RecallStore,
 	resolveMemexLicense,
 } from "./context/recall";
-import {
-	isAssemblerActive,
-	isLegacyActive,
-	isShadowMode,
-	ShadowTelemetry,
-	validateContextManagerConfig,
-} from "./context-manager";
+import { validateContextManagerConfig } from "./context-manager";
 import { initializeWithSettings } from "./discovery";
 import { TtsrManager } from "./export/ttsr";
 import {
@@ -91,7 +85,7 @@ import {
 } from "./internal-urls";
 import { disposeAllKernelSessions } from "./ipy/executor";
 import { discoverAndLoadMCPTools, type MCPManager, type MCPToolsLoadResult } from "./mcp";
-import { buildMemoryToolDeveloperInstructions, getMemoryRoot, startMemoryStartupTask } from "./memories";
+import { getMemoryRoot } from "./memories";
 import asyncResultTemplate from "./prompts/tools/async-result.md" with { type: "text" };
 import { collectEnvSecrets, loadSecrets, obfuscateMessages, SecretObfuscator } from "./secrets";
 import { AgentSession } from "./session/agent-session";
@@ -845,23 +839,21 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	// Both the recall tool and ingest pipeline share the same store instance.
 	let recallStore: RecallStore | undefined;
 	let memexLicense: string | undefined;
-	if (isShadowMode(settings) || isAssemblerActive(settings)) {
-		try {
-			memexLicense = await resolveMemexLicense();
-			recallStore = await RecallStore.open({
-				sessionDir: sessionManager.getSessionDir(),
-				sessionId: sessionManager.getSessionId(),
-			});
-			postmortem.register("recall-store-close", () => recallStore!.close());
-			logger.debug("RecallStore initialized for recall tool + ingest pipeline");
-		} catch (err) {
-			// No memex license or LanceDB init failure — recall is optional.
-			logger.debug("Recall infrastructure not available", {
-				error: err instanceof Error ? err.message : String(err),
-			});
-			recallStore = undefined;
-			memexLicense = undefined;
-		}
+	try {
+		memexLicense = await resolveMemexLicense();
+		recallStore = await RecallStore.open({
+			sessionDir: sessionManager.getSessionDir(),
+			sessionId: sessionManager.getSessionId(),
+		});
+		postmortem.register("recall-store-close", () => recallStore!.close());
+		logger.debug("RecallStore initialized for recall tool + ingest pipeline");
+	} catch (err) {
+		// No memex license or LanceDB init failure — recall is optional.
+		logger.debug("Recall infrastructure not available", {
+			error: err instanceof Error ? err.message : String(err),
+		});
+		recallStore = undefined;
+		memexLicense = undefined;
 	}
 
 	const toolSession: ToolSession = {
@@ -1230,14 +1222,9 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	const intentField = settings.get("tools.intentTracing") || $env.PI_INTENT_TRACING === "1" ? INTENT_FIELD : undefined;
 	const rebuildSystemPrompt = async (toolNames: string[], tools: Map<string, AgentTool>): Promise<string> => {
 		toolContextStore.setToolNames(toolNames);
-		// Memory instructions are only injected in legacy/shadow mode (ADR-0003 cutover invariant)
-		const memoryInstructions = isLegacyActive(settings)
-			? await buildMemoryToolDeveloperInstructions(agentDir, settings)
-			: undefined;
-
-		// Build combined append prompt: memory instructions + MCP server instructions
+		// Build combined append prompt: MCP server instructions
 		const serverInstructions = mcpManager?.getServerInstructions();
-		let appendPrompt: string | undefined = memoryInstructions ?? undefined;
+		let appendPrompt: string | undefined;
 		if (serverInstructions && serverInstructions.size > 0) {
 			const MAX_INSTRUCTIONS_LENGTH = 4000;
 			const parts: string[] = [];
@@ -1390,9 +1377,9 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		openaiWebsocketSetting === "on" ? true : openaiWebsocketSetting === "off" ? false : undefined;
 	const serviceTierSetting = settings.get("serviceTier");
 
-	// Pre-create bridge for assembler/shadow modes so it's available to transformContext.
+	// Pre-create bridge so it's available to transformContext.
 	// Event subscription is wired after session creation below.
-	const assemblerBridge = isShadowMode(settings) || isAssemblerActive(settings) ? new ToolResultBridge() : undefined;
+	const assemblerBridge = new ToolResultBridge();
 
 	// Initialize recall ingest pipeline and passive hydrator for assembler/shadow modes.
 	// Reuses the RecallStore + license initialized earlier (before tool creation).
@@ -1415,93 +1402,91 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	// In assembler mode, passively hydrated context is injected as a developer message.
 	// Extensions transform is always composed when available.
 	// All modes capture an effective-prompt snapshot for canonical observability.
-	const assemblerMode = isAssemblerActive(settings);
 	let lastPromptSnapshot: EffectivePromptSnapshot | null = null;
 	const transformContext = (() => {
 		const extensionTransform = extensionRunner
 			? (messages: AgentMessage[]) => extensionRunner.emitContext(messages)
 			: undefined;
 
-		const assemblerTransform =
-			assemblerBridge && assemblerMode
-				? async (messages: AgentMessage[]): Promise<AgentMessage[]> => {
-						// Derive budget from current model context window and measured costs.
-						// agent.state is read each turn to reflect model/tool changes mid-session.
-						const currentModel = agent?.state.model;
-						const currentSystemPrompt = agent?.state.systemPrompt ?? "";
-						const currentTools = agent?.state.tools ?? [];
+		const assemblerTransform = assemblerBridge
+			? async (messages: AgentMessage[]): Promise<AgentMessage[]> => {
+					// Derive budget from current model context window and measured costs.
+					// agent.state is read each turn to reflect model/tool changes mid-session.
+					const currentModel = agent?.state.model;
+					const currentSystemPrompt = agent?.state.systemPrompt ?? "";
+					const currentTools = agent?.state.tools ?? [];
 
-						// Step 1: Apply message transform (hot window + content replacement).
-						// This strips tool_result content from older turns before budget derivation
-						// so the budget reflects actual post-transform message costs.
-						const firstPass = transformMessages(messages);
-						const transformedMessages = firstPass.messages;
+					// Step 1: Apply message transform (hot window + content replacement).
+					// This strips tool_result content from older turns before budget derivation
+					// so the budget reflects actual post-transform message costs.
+					const firstPass = transformMessages(messages);
+					const transformedMessages = firstPass.messages;
 
-						const budget = currentModel
-							? deriveBudget({
-									contextWindow: currentModel.contextWindow,
-									systemPromptTokens: Math.ceil(currentSystemPrompt.length / 4),
-									toolDefinitionTokens: estimateToolDefinitionTokens(currentTools),
-									currentTurnTokens: estimateMessageTokens(transformedMessages),
-								})
-							: undefined;
+					const budget = currentModel
+						? deriveBudget({
+								contextWindow: currentModel.contextWindow,
+								systemPromptTokens: Math.ceil(currentSystemPrompt.length / 4),
+								toolDefinitionTokens: estimateToolDefinitionTokens(currentTools),
+								currentTurnTokens: estimateMessageTokens(transformedMessages),
+							})
+						: undefined;
 
-						// Step 2: Run passive hydration (embed hot window → cache check → search → MMR).
-						const hydration = passiveHydrator
-							? await passiveHydrator.hydrate(messages)
-							: { text: null, results: [], cacheHit: false, durationMs: 0 };
+					// Step 2: Run passive hydration (embed hot window → cache check → search → MMR).
+					const hydration = passiveHydrator
+						? await passiveHydrator.hydrate(messages)
+						: { text: null, results: [], cacheHit: false, durationMs: 0 };
 
-						logger.debug("assembler:passive-hydration", {
-							resultCount: hydration.results.length,
-							cacheHit: hydration.cacheHit,
-							durationMs: Math.round(hydration.durationMs),
-						});
+					logger.debug("assembler:passive-hydration", {
+						resultCount: hydration.results.length,
+						cacheHit: hydration.cacheHit,
+						durationMs: Math.round(hydration.durationMs),
+					});
 
-						// Step 3: Apply budget bounding — account for hydrated context tokens.
-						const hydratedTokens = hydration.text
-							? estimateMessageTokens([{ role: "developer", content: hydration.text }])
-							: 0;
-						const maxMessageTokens = budget ? Math.max(0, budget.maxTokens - hydratedTokens) : undefined;
-						let boundedMessages: AgentMessage[];
-						let finalTransformMetadata: TransformMetadata;
-						if (maxMessageTokens !== undefined) {
-							const boundedPass = transformMessages(messages, { maxTokens: maxMessageTokens });
-							boundedMessages = boundedPass.messages;
-							finalTransformMetadata = boundedPass.metadata;
-						} else {
-							boundedMessages = transformedMessages;
-							finalTransformMetadata = firstPass.metadata;
-						}
-
-						// Step 4: Inject hydrated context as developer message.
-						const finalMessages = hydration.text
-							? [
-									{
-										role: "developer" as const,
-										content: hydration.text,
-										attribution: "agent" as const,
-										timestamp: Date.now(),
-									} satisfies AgentMessage,
-									...boundedMessages,
-								]
-							: boundedMessages;
-
-						// Step 5: Capture effective-prompt snapshot.
-						const turnId = `turn-${Date.now()}`;
-						lastPromptSnapshot = captureEffectivePromptSnapshot({
-							turnId,
-							model: currentModel,
-							systemPrompt: currentSystemPrompt,
-							tools: currentTools,
-							finalMessages,
-							transformMetadata: finalTransformMetadata,
-							assemblerPacket: null,
-							assemblerBudget: budget ?? null,
-						});
-
-						return finalMessages;
+					// Step 3: Apply budget bounding — account for hydrated context tokens.
+					const hydratedTokens = hydration.text
+						? estimateMessageTokens([{ role: "developer", content: hydration.text }])
+						: 0;
+					const maxMessageTokens = budget ? Math.max(0, budget.maxTokens - hydratedTokens) : undefined;
+					let boundedMessages: AgentMessage[];
+					let finalTransformMetadata: TransformMetadata;
+					if (maxMessageTokens !== undefined) {
+						const boundedPass = transformMessages(messages, { maxTokens: maxMessageTokens });
+						boundedMessages = boundedPass.messages;
+						finalTransformMetadata = boundedPass.metadata;
+					} else {
+						boundedMessages = transformedMessages;
+						finalTransformMetadata = firstPass.metadata;
 					}
-				: undefined;
+
+					// Step 4: Inject hydrated context as developer message.
+					const finalMessages = hydration.text
+						? [
+								{
+									role: "developer" as const,
+									content: hydration.text,
+									attribution: "agent" as const,
+									timestamp: Date.now(),
+								} satisfies AgentMessage,
+								...boundedMessages,
+							]
+						: boundedMessages;
+
+					// Step 5: Capture effective-prompt snapshot.
+					const turnId = `turn-${Date.now()}`;
+					lastPromptSnapshot = captureEffectivePromptSnapshot({
+						turnId,
+						model: currentModel,
+						systemPrompt: currentSystemPrompt,
+						tools: currentTools,
+						finalMessages,
+						transformMetadata: finalTransformMetadata,
+						assemblerPacket: null,
+						assemblerBudget: budget ?? null,
+					});
+
+					return finalMessages;
+				}
+			: undefined;
 
 		// Compose inner transform (extensions + assembler).
 		let innerTransform: ((msgs: AgentMessage[]) => Promise<AgentMessage[]>) | undefined;
@@ -1671,17 +1656,6 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		}
 	}
 
-	// Memory startup is a legacy subsystem — skip in assembler mode (ADR-0003)
-	if (isLegacyActive(settings)) {
-		startMemoryStartupTask({
-			session,
-			settings,
-			modelRegistry,
-			agentDir,
-			taskDepth,
-		});
-	}
-
 	// Wire tool-result bridge event subscription for shadow/assembler mode.
 	// The bridge itself was created above (before Agent constructor) so transformContext can use it.
 	// Also wire ingest pipeline to persist + embed all messages into LanceDB.
@@ -1744,7 +1718,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				ingestTurn++;
 			}
 		});
-		logger.debug("Tool-result bridge wired", { mode: isShadowMode(settings) ? "shadow" : "assembler" });
+		logger.debug("Tool-result bridge wired");
 	}
 
 	// Wire MCP manager callbacks to session for reactive tool updates
@@ -1783,14 +1757,6 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				}, debounceMs),
 			);
 		});
-	}
-
-	// ── Shadow-mode context telemetry ──────────────────────────────────────
-	if (isShadowMode(settings)) {
-		const telemetry = new ShadowTelemetry({ traceId: sessionId, mode: "shadow" });
-		session.subscribe(telemetry.observer);
-		postmortem.register("shadow-telemetry-flush", () => telemetry.close());
-		logger.debug("Shadow telemetry attached", { traceId: sessionId, path: telemetry.writer.filePath });
 	}
 
 	return {

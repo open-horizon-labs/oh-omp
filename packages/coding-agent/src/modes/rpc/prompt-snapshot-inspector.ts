@@ -26,9 +26,7 @@ import type {
  * Returns token estimates, section availability indicators, and model info
  * without any raw content (messages, packet payloads, etc.).
  */
-export function buildPromptSnapshotOverview(
-	snapshot: EffectivePromptSnapshot | null,
-): RpcPromptSnapshotOverview {
+export function buildPromptSnapshotOverview(snapshot: EffectivePromptSnapshot | null): RpcPromptSnapshotOverview {
 	if (!snapshot) {
 		return {
 			available: false,

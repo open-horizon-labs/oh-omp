@@ -8,6 +8,7 @@ import type { RecallStore } from "../context/recall/store";
 import type { MmrCandidate, RecallSearchResult } from "../context/recall/types";
 import recallDescription from "../prompts/tools/recall.md" with { type: "text" };
 import type { ToolSession } from ".";
+import { shortenPath } from "./render-utils";
 
 const recallSchema = Type.Object({
 	query: Type.String({
@@ -137,7 +138,7 @@ function formatResult(r: RecallSearchResult): string {
 	header += "]";
 
 	if (r.project_cwd) {
-		header += ` project: ${r.project_cwd}`;
+		header += ` project: ${shortenPath(r.project_cwd)}`;
 	}
 
 	if (r.paths) {

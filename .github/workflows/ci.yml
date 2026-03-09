@@ -12,6 +12,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # ── Rust static analysis ──────────────────────────────────────────────
+  # Owns: cargo fmt, clippy, cargo check. No JS, no native build.
   rust:
     runs-on: namespace-profile-default
     env:
@@ -29,6 +31,9 @@ jobs:
       - name: Check
         run: cargo check --workspace
 
+  # ── Native addon build matrix ────────────────────────────────────────
+  # Owns: compiling Rust → .node for each platform/arch/variant.
+  # Produces upload artifacts consumed by test and contracts jobs.
   native:
     strategy:
       fail-fast: false
@@ -77,11 +82,34 @@ jobs:
           path: packages/natives/native/pi_natives.${{ matrix.platform }}-${{ matrix.arch }}*.node
           if-no-files-found: error
 
-
-  test:
+  # ── TypeScript static analysis ──────────────────────────────────────
+  # Owns: biome lint/format checks and tsgo type checking.
+  # No native build needed — type definitions live in .ts source files.
+  check:
     runs-on: namespace-profile-default
-    env:
-      RUSTFLAGS: -C target-cpu=x86-64-v3
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3"
+      - name: Cache bun dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('**/bun.lock') }}
+      - name: Install system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libcairo2-dev libpango1.0-dev libjpeg-dev libgif-dev librsvg2-dev
+      - run: bun install --frozen-lockfile
+      - run: bun check:ts
+
+  # ── Test suites ──────────────────────────────────────────────────────
+  # Owns: bun test (all workspaces) and CLI smoke tests.
+  # Downloads pre-built native artifacts — does NOT rebuild them.
+  test:
+    needs: [native]
+    runs-on: namespace-profile-default
     steps:
       - uses: actions/checkout@v4
         with:
@@ -101,8 +129,11 @@ jobs:
           sudo ln -s $(which fdfind) /usr/local/bin/fd
           sudo ln -sf /usr/bin/convert /usr/local/bin/magick
       - run: bun install --frozen-lockfile
-      - run: bun --cwd=packages/natives run build:native
-      - run: bun run check
+      - name: Download native addon
+        uses: actions/download-artifact@v4
+        with:
+          name: pi-natives-linux-x64
+          path: packages/natives/native/
       - run: bun run test
       - name: CLI smoke test
         run: |
@@ -110,10 +141,12 @@ jobs:
           bun packages/coding-agent/src/cli.ts --help
           bun packages/coding-agent/src/cli.ts stats --help
 
+  # ── Contract tests ───────────────────────────────────────────────────
+  # Owns: RPC compatibility and memory contract suites.
+  # Downloads pre-built native artifacts — does NOT rebuild them.
   contracts:
+    needs: [native]
     runs-on: namespace-profile-default
-    env:
-      RUSTFLAGS: -C target-cpu=x86-64-v3
     steps:
       - uses: actions/checkout@v4
         with:
@@ -133,13 +166,19 @@ jobs:
           sudo ln -s $(which fdfind) /usr/local/bin/fd
           sudo ln -sf /usr/bin/convert /usr/local/bin/magick
       - run: bun install --frozen-lockfile
-      - run: bun --cwd=packages/natives run build:native
+      - name: Download native addon
+        uses: actions/download-artifact@v4
+        with:
+          name: pi-natives-linux-x64
+          path: packages/natives/native/
       - name: Run contract suites
         run: |
           bun --cwd=packages/coding-agent test test/rpc-compatibility-contract.test.ts
           bun --cwd=packages/coding-agent test test/memory-contract.test.ts
 
 
+  # ── Install method smoke tests ────────────────────────────────────────
+  # Owns: verifying that published install paths work end-to-end.
   install_methods:
     runs-on: namespace-profile-default
     env:

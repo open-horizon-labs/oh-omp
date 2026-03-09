@@ -23,8 +23,8 @@ import {
 } from "@oh-my-pi/pi-tui";
 
 import type { EffectivePromptSnapshot } from "../../../context/effective-prompt-snapshot";
-import { DynamicBorder } from "../dynamic-border";
 import { theme } from "../../theme/theme";
+import { DynamicBorder } from "../dynamic-border";
 import { DetailPanel } from "./detail-panel";
 import { projectSnapshot, renderStatusCounts } from "./projection";
 import type { InspectorSection, InspectorState } from "./types";
@@ -168,14 +168,12 @@ class SectionListPane implements Component {
 			const cursor = isSelected ? theme.fg("accent", "\u25b6 ") : "  ";
 
 			// Label
-			const label = isSelected
-				? theme.bold(theme.fg("accent", section.label))
-				: theme.fg("muted", section.label);
+			const label = isSelected ? theme.bold(theme.fg("accent", section.label)) : theme.fg("muted", section.label);
 
 			// Status counts badge (if applicable)
 			let badge = "";
 			if (section.statusCounts) {
-				badge = " " + renderStatusCounts(section.statusCounts);
+				badge = ` ${renderStatusCounts(section.statusCounts)}`;
 			} else if (section.count !== undefined) {
 				badge = theme.fg("dim", ` (${section.count})`);
 			}

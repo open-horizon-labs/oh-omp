@@ -6,7 +6,7 @@
  * own `renderDetail()` callback.
  */
 
-import { type Component, truncateToWidth } from "@oh-my-pi/pi-tui";
+import type { Component } from "@oh-my-pi/pi-tui";
 
 import { theme } from "../../theme/theme";
 import type { InspectorSection } from "./types";

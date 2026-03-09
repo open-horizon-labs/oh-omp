@@ -23,13 +23,7 @@ export type ContentStatus = "included" | "stubbed" | "dropped";
 /**
  * Identifies the kind of prompt section in the inspector.
  */
-export type SectionKind =
-	| "budget"
-	| "system-prompt"
-	| "tools"
-	| "messages"
-	| "assembled-context"
-	| "dropped-items";
+export type SectionKind = "budget" | "system-prompt" | "tools" | "messages" | "assembled-context" | "dropped-items";
 
 /**
  * A navigable section within the inspector.

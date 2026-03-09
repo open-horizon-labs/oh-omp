@@ -14,9 +14,9 @@ import {
 import {
 	formatTokens,
 	projectSnapshot,
+	renderBudgetBar,
 	renderStatusBadge,
 	renderStatusCounts,
-	renderBudgetBar,
 } from "@oh-my-pi/pi-coding-agent/modes/components/prompt-inspector";
 
 import { getThemeByName, setThemeInstance } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
@@ -268,12 +268,7 @@ describe("projectSnapshot", () => {
 		const sections = projectSnapshot(snapshot);
 
 		expect(sections.length).toBe(4);
-		expect(sections.map(s => s.kind)).toEqual([
-			"budget",
-			"system-prompt",
-			"tools",
-			"messages",
-		]);
+		expect(sections.map(s => s.kind)).toEqual(["budget", "system-prompt", "tools", "messages"]);
 	});
 
 	test("includes assembled-context section when assembler is active", () => {

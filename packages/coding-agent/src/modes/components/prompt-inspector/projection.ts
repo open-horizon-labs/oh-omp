@@ -8,11 +8,10 @@
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import { truncateToWidth } from "@oh-my-pi/pi-tui";
 import { formatNumber } from "@oh-my-pi/pi-utils";
-
-import type { EffectivePromptSnapshot } from "../../../context/effective-prompt-snapshot";
 import type { TurnDecision } from "../../../context/assembler/message-transform";
+import type { EffectivePromptSnapshot } from "../../../context/effective-prompt-snapshot";
 import { theme } from "../../theme/theme";
-import type { ContentStatus, InspectorSection, SectionKind } from "./types";
+import type { ContentStatus, InspectorSection } from "./types";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Token formatting
@@ -147,8 +146,15 @@ function projectBudgetSection(snapshot: EffectivePromptSnapshot): InspectorSecti
 
 			// Headroom
 			const headroomPct = formatPercent(budget.headroom, budget.contextWindow);
-			const headroomColor = budget.headroom < budget.contextWindow * 0.1 ? "error" : budget.headroom < budget.contextWindow * 0.25 ? "warning" : "success";
-			lines.push(`  ${theme.fg("dim", "\u2591")} ${theme.fg(headroomColor, `Headroom: ${formatTokens(budget.headroom)} (${headroomPct})`)}`);
+			const headroomColor =
+				budget.headroom < budget.contextWindow * 0.1
+					? "error"
+					: budget.headroom < budget.contextWindow * 0.25
+						? "warning"
+						: "success";
+			lines.push(
+				`  ${theme.fg("dim", "\u2591")} ${theme.fg(headroomColor, `Headroom: ${formatTokens(budget.headroom)} (${headroomPct})`)}`,
+			);
 
 			return lines;
 		},
@@ -162,7 +168,7 @@ function projectSystemPromptSection(snapshot: EffectivePromptSnapshot): Inspecto
 		kind: "system-prompt",
 		label: "System Prompt",
 		summary: `${formatTokens(sp.tokenEstimate)} \u2502 fingerprint ${sp.fingerprint.slice(0, 8)}`,
-		renderDetail(width: number): string[] {
+		renderDetail(_width: number): string[] {
 			const lines: string[] = [];
 
 			lines.push(theme.bold(theme.fg("accent", "System Prompt")));
@@ -256,8 +262,10 @@ function projectMessagesSection(snapshot: EffectivePromptSnapshot): InspectorSec
 				lines.push("");
 				lines.push(`  ${theme.fg("muted", "Transform:")} ${meta.totalTurns} turns total`);
 				if (meta.keptCount > 0) lines.push(`    ${theme.fg("success", `${meta.keptCount} kept verbatim`)}`);
-				if (meta.stubbedCount > 0) lines.push(`    ${theme.fg("warning", `${meta.stubbedCount} stubbed (tool results replaced)`)}`);
-				if (meta.droppedCount > 0) lines.push(`    ${theme.fg("error", `${meta.droppedCount} dropped (budget exceeded)`)}`);
+				if (meta.stubbedCount > 0)
+					lines.push(`    ${theme.fg("warning", `${meta.stubbedCount} stubbed (tool results replaced)`)}`);
+				if (meta.droppedCount > 0)
+					lines.push(`    ${theme.fg("error", `${meta.droppedCount} dropped (budget exceeded)`)}`);
 
 				if (meta.tokensBefore !== meta.tokensAfter) {
 					lines.push("");
@@ -271,15 +279,16 @@ function projectMessagesSection(snapshot: EffectivePromptSnapshot): InspectorSec
 				if (meta.decisions.length > 0) {
 					lines.push("");
 					lines.push(theme.fg("muted", "  Per-turn decisions:"));
-					lines.push(theme.fg("dim", "  " + "\u2500".repeat(Math.min(width - 4, 50))));
+					lines.push(theme.fg("dim", `  ${"\u2500".repeat(Math.min(width - 4, 50))}`));
 
 					for (const d of meta.decisions) {
 						const badge = renderDecisionBadge(d);
-						const tokInfo = d.action === "dropped"
-							? theme.fg("dim", `(${formatTokens(d.tokensBefore)} removed)`)
-							: d.tokensBefore !== d.tokensAfter
-								? theme.fg("dim", `(${formatTokens(d.tokensBefore)} \u2192 ${formatTokens(d.tokensAfter)})`)
-								: theme.fg("dim", `(${formatTokens(d.tokensAfter)})`);
+						const tokInfo =
+							d.action === "dropped"
+								? theme.fg("dim", `(${formatTokens(d.tokensBefore)} removed)`)
+								: d.tokensBefore !== d.tokensAfter
+									? theme.fg("dim", `(${formatTokens(d.tokensBefore)} \u2192 ${formatTokens(d.tokensAfter)})`)
+									: theme.fg("dim", `(${formatTokens(d.tokensAfter)})`);
 						lines.push(truncateToWidth(`  Turn ${d.turnIndex}: ${badge} ${tokInfo}`, width));
 					}
 				}
@@ -326,14 +335,18 @@ function projectAssembledContextSection(snapshot: EffectivePromptSnapshot): Insp
 			lines.push("");
 
 			// Budget usage
-			lines.push(`  ${theme.fg("muted", "Budget:")} ${formatTokens(packet.usage.consumedTokens)}/${formatTokens(packet.budget.maxTokens)}`);
-			lines.push(`  ${theme.fg("muted", "Latency:")} ${packet.usage.consumedLatencyMs}ms/${packet.budget.maxLatencyMs}ms`);
+			lines.push(
+				`  ${theme.fg("muted", "Budget:")} ${formatTokens(packet.usage.consumedTokens)}/${formatTokens(packet.budget.maxTokens)}`,
+			);
+			lines.push(
+				`  ${theme.fg("muted", "Latency:")} ${packet.usage.consumedLatencyMs}ms/${packet.budget.maxLatencyMs}ms`,
+			);
 			lines.push("");
 
 			// Fragments
 			if (fragmentCount > 0) {
 				lines.push(theme.fg("muted", "  Included fragments:"));
-				lines.push(theme.fg("dim", "  " + "\u2500".repeat(Math.min(width - 4, 50))));
+				lines.push(theme.fg("dim", `  ${"\u2500".repeat(Math.min(width - 4, 50))}`));
 				for (const frag of packet.fragments) {
 					const tierBadge = theme.fg("accent", frag.tier.padEnd(6));
 					const score = theme.fg("dim", `score=${frag.score.toFixed(2)}`);
@@ -348,7 +361,7 @@ function projectAssembledContextSection(snapshot: EffectivePromptSnapshot): Insp
 			if (droppedCount > 0) {
 				lines.push("");
 				lines.push(theme.fg("muted", "  Dropped fragments:"));
-				lines.push(theme.fg("dim", "  " + "\u2500".repeat(Math.min(width - 4, 50))));
+				lines.push(theme.fg("dim", `  ${"\u2500".repeat(Math.min(width - 4, 50))}`));
 				for (const d of packet.dropped) {
 					lines.push(truncateToWidth(`  ${theme.fg("error", d.id)}: ${theme.fg("dim", d.reason)}`, width));
 				}
@@ -399,7 +412,7 @@ function projectDroppedItemsSection(snapshot: EffectivePromptSnapshot): Inspecto
 
 			// Reason breakdown
 			lines.push(theme.fg("muted", "  Exclusion reasons:"));
-			lines.push(theme.fg("dim", "  " + "\u2500".repeat(Math.min(width - 4, 50))));
+			lines.push(theme.fg("dim", `  ${"\u2500".repeat(Math.min(width - 4, 50))}`));
 			for (const [reason, count] of reasonCounts.entries()) {
 				lines.push(`  ${theme.fg("error", String(count).padStart(3))} ${reason}`);
 			}
@@ -409,7 +422,12 @@ function projectDroppedItemsSection(snapshot: EffectivePromptSnapshot): Inspecto
 				lines.push("");
 				lines.push(theme.fg("muted", "  Dropped message turns:"));
 				for (const d of messageDropped) {
-					lines.push(truncateToWidth(`    Turn ${d.turnIndex}: ${d.messageCount} msgs, ${formatTokens(d.tokensBefore)}`, width));
+					lines.push(
+						truncateToWidth(
+							`    Turn ${d.turnIndex}: ${d.messageCount} msgs, ${formatTokens(d.tokensBefore)}`,
+							width,
+						),
+					);
 				}
 			}
 

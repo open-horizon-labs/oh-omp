@@ -85,6 +85,7 @@ export interface ThinkingConfig {
 }
 
 export type KnownProvider =
+	| "alibaba-coding-plan"
 	| "amazon-bedrock"
 	| "anthropic"
 	| "google"
@@ -288,6 +289,7 @@ export type StopReason = "stop" | "length" | "toolUse" | "error" | "aborted";
 
 export interface OpenAIResponsesHistoryPayload {
 	type: "openaiResponsesHistory";
+	dt?: boolean;
 	items: Array<Record<string, unknown>>;
 }
 

@@ -21,6 +21,7 @@ describe("AgentSession handoff", () => {
 	beforeEach(async () => {
 		tempDir = TempDir.createSync("@pi-handoff-");
 		authStorage = await AuthStorage.create(path.join(tempDir.path(), "testauth.db"));
+		authStorage.setRuntimeApiKey("anthropic", "test-key");
 		modelRegistry = new ModelRegistry(authStorage);
 		sessionManager = SessionManager.create(tempDir.path());
 		events = [];
@@ -109,7 +110,7 @@ describe("AgentSession handoff", () => {
 			timestamp: Date.now(),
 		};
 
-		const promptSpy = vi.spyOn(session, "prompt").mockImplementation(async () => {
+		const promptSpy = vi.spyOn(session.agent, "prompt").mockImplementation(async () => {
 			session.agent.replaceMessages([handoffAssistant]);
 			session.agent.emitExternalEvent({ type: "message_end", message: handoffAssistant });
 			session.agent.emitExternalEvent({ type: "agent_end", messages: [handoffAssistant] });
@@ -127,7 +128,7 @@ describe("AgentSession handoff", () => {
 		const controller = new AbortController();
 		controller.abort();
 
-		const promptSpy = vi.spyOn(session, "prompt");
+		const promptSpy = vi.spyOn(session.agent, "prompt");
 		const abortSpy = vi.spyOn(session.agent, "abort");
 
 		await expect(session.handoff(undefined, { signal: controller.signal })).rejects.toThrow("Handoff cancelled");
@@ -138,7 +139,7 @@ describe("AgentSession handoff", () => {
 	it("aborts handoff generation when provided signal is cancelled", async () => {
 		const controller = new AbortController();
 		const { promise: promptPromise, resolve: resolvePrompt } = Promise.withResolvers<void>();
-		const promptSpy = vi.spyOn(session, "prompt").mockImplementation(async () => {
+		const promptSpy = vi.spyOn(session.agent, "prompt").mockImplementation(async () => {
 			await promptPromise;
 		});
 		const abortSpy = vi.spyOn(session.agent, "abort").mockImplementation(() => {

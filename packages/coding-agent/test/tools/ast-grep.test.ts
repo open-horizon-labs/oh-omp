@@ -28,7 +28,7 @@ describe("ast_grep parse errors", () => {
 			expect(tool).toBeDefined();
 
 			const result = await tool!.execute("ast-grep-parse", {
-				patterns: ["someUnlikelyCall($A)", "anotherUnlikelyCall($A)"],
+				pat: ["someUnlikelyCall($A)", "anotherUnlikelyCall($A)"],
 				lang: "typescript",
 				path: filePath,
 			});
@@ -43,6 +43,43 @@ describe("ast_grep parse errors", () => {
 			expect(details?.parseErrors?.[0]).not.toContain("someUnlikelyCall($A):");
 			expect(details?.parseErrors?.[0]).not.toContain("anotherUnlikelyCall($A):");
 			expect(text.match(/parse error \(syntax tree contains error nodes\)/g)?.length ?? 0).toBe(1);
+		} finally {
+			await fs.rm(tempDir, { recursive: true, force: true });
+		}
+	});
+	it("combines globbing from path and glob parameters", async () => {
+		const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "ast-grep-glob-"));
+		try {
+			const packagesDir = path.join(tempDir, "packages");
+			const sourceDir = path.join(packagesDir, "pkg-123", "src");
+			const nestedDir = path.join(sourceDir, "nested");
+			await fs.mkdir(nestedDir, { recursive: true });
+			await Bun.write(path.join(sourceDir, "root.ts"), "const providerOptions = {};\n");
+			await Bun.write(path.join(nestedDir, "child.ts"), "const providerOptions = { nested: true };\n");
+			await Bun.write(path.join(sourceDir, "ignore.js"), "const providerOptions = {};\n");
+			await Bun.write(path.join(tempDir, "outside.ts"), "const providerOptions = {};\n");
+
+			const tools = await createTools(createTestSession(tempDir));
+			const tool = tools.find(entry => entry.name === "ast_grep");
+			expect(tool).toBeDefined();
+
+			const result = await tool!.execute("ast-grep-glob", {
+				pat: ["providerOptions"],
+				sel: "identifier",
+				lang: "typescript",
+				path: `${packagesDir}/pkg-*/src`,
+				glob: "**/*.ts",
+			});
+
+			const text = result.content.find(content => content.type === "text")?.text ?? "";
+			const details = result.details as { matchCount?: number; fileCount?: number } | undefined;
+
+			expect(text).toContain("## └─ root.ts");
+			expect(text).toContain("## └─ child.ts");
+			expect(text).not.toContain("ignore.js");
+			expect(text).not.toContain("outside.ts");
+			expect(details?.matchCount).toBe(2);
+			expect(details?.fileCount).toBe(2);
 		} finally {
 			await fs.rm(tempDir, { recursive: true, force: true });
 		}

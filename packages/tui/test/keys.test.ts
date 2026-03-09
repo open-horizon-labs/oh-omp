@@ -35,6 +35,13 @@ describe("matchesKey", () => {
 		expect(matchesKey(dvorakCtrlSlash, "ctrl+[")).toBe(false);
 		setKittyProtocolActive(false);
 	});
+	it("ignores Kitty release events while still matching repeats", () => {
+		setKittyProtocolActive(true);
+		expect(matchesKey("\x1b[127u", "backspace")).toBe(true);
+		expect(matchesKey("\x1b[127;1:2u", "backspace")).toBe(true);
+		expect(matchesKey("\x1b[127;1:3u", "backspace")).toBe(false);
+		setKittyProtocolActive(false);
+	});
 });
 
 describe("parseKey", () => {
@@ -42,6 +49,14 @@ describe("parseKey", () => {
 		setKittyProtocolActive(true);
 		const dvorakCtrlK = "\x1b[107::118;5u";
 		expect(parseKey(dvorakCtrlK)).toBe("ctrl+k");
+		setKittyProtocolActive(false);
+	});
+
+	it("ignores Kitty release events while still parsing repeats", () => {
+		setKittyProtocolActive(true);
+		expect(parseKey("\x1b[127u")).toBe("backspace");
+		expect(parseKey("\x1b[127;1:2u")).toBe("backspace");
+		expect(parseKey("\x1b[127;1:3u")).toBeUndefined();
 		setKittyProtocolActive(false);
 	});
 

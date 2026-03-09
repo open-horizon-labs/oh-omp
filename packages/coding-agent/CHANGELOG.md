@@ -2,6 +2,63 @@
 
 ## [Unreleased]
 
+## [13.9.10] - 2026-03-08
+### Added
+
+- Added `env` parameter to bash tool to pass environment variables safely without shell re-parsing, preventing quote and special character bugs with multiline or untrusted values
+- Added support for rendering partial `env` assignments in command preview while tool arguments are still streaming
+- Added `env` support to the bash tool so commands can reference safe shell variables without inline quoting bugs for multiline or quote-heavy values
+
+### Changed
+
+- Changed bash tool to display environment variable assignments in command preview when `env` parameter is used
+
+## [13.9.8] - 2026-03-08
+### Added
+
+- Added docs.rs scraper for extracting Rust crate documentation from rustdoc JSON, including support for modules, functions, structs, traits, enums, and other Rust items with caching
+
+## [13.9.7] - 2026-03-08
+
+### Added
+
+- Added `skipPostPromptRecoveryWait` option to handoff operations to defer recovery work until after handoff completion
+- Added deferred auto-compaction scheduling to allow threshold-triggered handoffs to complete while the original prompt is still unwinding
+
+### Changed
+
+- Extracted handoff document template to dedicated prompt file for improved maintainability and template variable support
+- Changed handoff prompt generation to use template rendering with support for custom focus instructions
+- Refactored internal prompt-in-flight tracking from boolean flag to counter to properly handle nested prompt operations
+- Moved llms.txt endpoint discovery to fallback strategy when rendered page content is low quality, prioritizing page-specific content over site-wide files
+- Enhanced llms.txt endpoint detection to scope candidates to the requested URL path, searching section-specific files before site-wide ones
+
+## [13.9.6] - 2026-03-08
+
+### Added
+
+- Added `glob` parameter to `ast_grep` and `ast_edit` tools for additional glob filtering relative to the `path` parameter
+- Added `combineSearchGlobs` utility function to merge glob patterns from `path` and `glob` parameters
+
+### Changed
+
+- Renamed `patterns` parameter to `pat` in `ast_grep` tool for consistency
+- Renamed `selector` parameter to `sel` in `ast_grep` and `ast_edit` tools for brevity
+- Updated tool documentation with expanded guidance on AST pattern syntax, metavariable usage, and contextual matching strategies
+- Updated `grep` tool to combine glob patterns from `path` and `glob` parameters instead of throwing an error when both are provided
+
+## [13.9.4] - 2026-03-07
+### Added
+
+- Automatic detection of Ollama model capabilities including reasoning/thinking support and vision input via the `/api/show` endpoint
+- Improved Kagi API error handling with extraction of detailed error messages from JSON and plain text responses
+
+### Changed
+
+- Updated Kagi provider description to clarify requirement for Kagi Search API beta access
+
+## [13.9.3] - 2026-03-07
+
 ### Breaking Changes
 
 - Changed `ThinkingLevel` type to be imported from `@oh-my-pi/pi-agent-core` instead of `@oh-my-pi/pi-ai`
@@ -42,6 +99,8 @@
 
 ### Changed
 
+- Changed credential deletion to disable credentials with persisted cause instead of permanent deletion
+- Added `disabledCause` parameter to credential deletion methods to track reason for disabling
 - Changed thinking level parsing to use `parseEffort()` from local thinking module instead of `parseThinkingLevel()` from pi-ai
 - Changed model list display to show supported thinking efforts (e.g., "low,medium,high") instead of yes/no reasoning indicator
 - Changed footer and status line to check `model.thinking` instead of `model.reasoning` for thinking level display
@@ -59,10 +118,12 @@
 
 ### Fixed
 
+- Fixed OpenAI remote compaction to correctly append incremental responses instead of replacing entire history
 - Fixed thinking level display logic in main.ts to correctly check for undefined instead of "off"
 - Fixed model registry to preserve explicit thinking configuration on runtime-registered models
 - Fixed usage limit reset time calculation to use absolute `resetsAt` timestamps instead of deprecated `resetInMs` field
 - Fixed compaction summary message creation to no longer be automatically added to chat during compaction (now handled by session manager)
+- Fixed Kagi web search errors to surface the provider's beta-access message and clarified that Kagi search requires Search API beta access
 
 ## [13.9.2] - 2026-03-05
 

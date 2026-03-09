@@ -428,6 +428,33 @@ function b() {
 			expect(result.details).toBeUndefined();
 		});
 
+		it("should expose env values without shell re-parsing", async () => {
+			const mermaid = [
+				"flowchart TD",
+				'N0["attack"]',
+				'N1["[target] cluster"]',
+				'N2["diff-review"]',
+				'N3["extract"]',
+				'N4["report"]',
+				'N5["setup"]',
+				"N3 --> N0",
+				"N0 --> N1",
+				"N2 --> N1",
+				"N3 --> N2",
+				"N5 --> N3",
+				"N1 --> N4",
+			].join("\n");
+			const result = await bashTool.execute("test-call-8-env", {
+				command: "printf '%s' \"$MERMAID\"",
+				env: { MERMAID: mermaid },
+			});
+			const output = getTextOutput(result);
+			expect(output).toContain('N0["attack"]');
+			expect(output).toContain("N1 --> N4");
+			expect(fs.existsSync(path.join(testDir, "N0"))).toBe(false);
+			expect(fs.existsSync(path.join(testDir, "N4"))).toBe(false);
+		});
+
 		it("should resolve local:// destination paths for mv commands", async () => {
 			const sourcePath = path.join(testDir, "move-source.json");
 			const targetPath = path.join(testDir, "session", "local", "moved-via-bash.json");
@@ -545,6 +572,31 @@ function b() {
 			expect(output).not.toContain("schema-other.test.ts");
 			expect(result.details?.fileCount).toBe(2);
 		});
+		it("should combine globbing from path and glob parameters", async () => {
+			const packageDir = path.join(testDir, "node_modules", ".bun");
+			const aiDir = path.join(packageDir, "ai@6.0.119+build123", "node_modules", "ai");
+			const nestedDir = path.join(aiDir, "nested");
+			fs.mkdirSync(nestedDir, { recursive: true });
+			fs.writeFileSync(path.join(aiDir, "root.ts"), "providerOptions\n");
+			fs.writeFileSync(path.join(nestedDir, "child.d.ts"), "providerOptions\n");
+			fs.writeFileSync(path.join(aiDir, "ignore.js"), "providerOptions\n");
+			fs.writeFileSync(path.join(testDir, "outside.ts"), "providerOptions\n");
+
+			const result = await grepTool.execute("test-call-11-path-and-glob", {
+				pattern: "providerOptions",
+				path: `${packageDir}/ai@6.0.119+*/node_modules/ai`,
+				glob: "**/*.{d.ts,ts}",
+				gitignore: false,
+			});
+
+			const output = getTextOutput(result);
+			expect(output).toContain("## └─ root.ts");
+			expect(output).toContain("## └─ child.d.ts");
+			expect(output).not.toContain("ignore.js");
+			expect(output).not.toContain("outside.ts");
+			expect(result.details?.fileCount).toBe(2);
+		});
+
 		it("should respect global limit and include context lines", async () => {
 			const testFile = path.join(testDir, "context.txt");
 			const content = ["before", "match one", "after", "middle", "match two", "after two"].join("\n");

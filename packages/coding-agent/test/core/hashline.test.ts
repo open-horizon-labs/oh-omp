@@ -552,7 +552,7 @@ describe("applyHashlineEdits — heuristics", () => {
 		expect(result.warnings?.[0]).toContain('");"');
 	});
 
-	it("auto-corrects duplicated trailing non-boundary lines", () => {
+	it("auto-corrects duplicated trailing lines when they match the next surviving line", () => {
 		const content = "start\n  oldCall();\nnextCall();\nafter();";
 		const edits: HashlineEdit[] = [
 			{

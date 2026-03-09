@@ -48,6 +48,46 @@ function countCredentialRows(dbPath: string, provider: string): number {
 	}
 }
 
+function readDisabledCauses(dbPath: string, provider: string): string[] {
+	const db = new Database(dbPath, { readonly: true });
+	try {
+		const rows = db
+			.prepare(
+				"SELECT disabled_cause FROM auth_credentials WHERE provider = ? AND disabled_cause IS NOT NULL ORDER BY id ASC",
+			)
+			.all(provider) as Array<{ disabled_cause?: string | null }>;
+		return rows.flatMap(row => (typeof row.disabled_cause === "string" ? [row.disabled_cause] : []));
+	} finally {
+		db.close();
+	}
+}
+
+function readStoredIdentityRows(
+	dbPath: string,
+	provider: string,
+): Array<{ identity_key: string | null; disabled_cause: string | null }> {
+	const db = new Database(dbPath, { readonly: true });
+	try {
+		return db
+			.prepare("SELECT identity_key, disabled_cause FROM auth_credentials WHERE provider = ? ORDER BY id ASC")
+			.all(provider) as Array<{ identity_key: string | null; disabled_cause: string | null }>;
+	} finally {
+		db.close();
+	}
+}
+
+function readAuthSchemaVersion(dbPath: string): number | null {
+	const db = new Database(dbPath, { readonly: true });
+	try {
+		const row = db.prepare("SELECT version FROM auth_schema_version WHERE id = 1").get() as
+			| { version?: number }
+			| undefined;
+		return typeof row?.version === "number" ? row.version : null;
+	} finally {
+		db.close();
+	}
+}
+
 describe("AuthStorage openai-codex email dedupe", () => {
 	let tempDir = "";
 	let dbPath = "";
@@ -72,7 +112,7 @@ describe("AuthStorage openai-codex email dedupe", () => {
 		}
 	});
 
-	it("keeps both openai-codex credentials when accountId matches but emails differ", async () => {
+	it("dedupes openai-codex credentials when accountId matches but emails differ", async () => {
 		if (!authStorage || !store) throw new Error("test setup failed");
 
 		await authStorage.set("openai-codex", [
@@ -81,11 +121,16 @@ describe("AuthStorage openai-codex email dedupe", () => {
 		]);
 
 		const credentials = store.listAuthCredentials("openai-codex");
-		expect(credentials).toHaveLength(2);
+		expect(credentials).toHaveLength(1);
+		const [remaining] = credentials;
+		expect(remaining?.credential.type).toBe("oauth");
+		if (!remaining || remaining.credential.type !== "oauth") throw new Error("expected oauth credential");
+		expect(remaining.credential.accountId).toBe("shared-team");
+		expect(remaining.credential.email).toBe("second.user@example.com");
 	});
 
-	it("dedupes openai-codex credentials when email matches", async () => {
-		if (!authStorage || !store) throw new Error("test setup failed");
+	it("keeps both openai-codex credentials when email matches but accountId differs", async () => {
+		if (!authStorage || !store || !dbPath) throw new Error("test setup failed");
 
 		await authStorage.set("openai-codex", [
 			createCredential({ suffix: "first", accountId: "account-a", email: "shared.user@example.com" }),
@@ -93,15 +138,11 @@ describe("AuthStorage openai-codex email dedupe", () => {
 		]);
 
 		const credentials = store.listAuthCredentials("openai-codex");
-		expect(credentials).toHaveLength(1);
-		const [remaining] = credentials;
-		expect(remaining?.credential.type).toBe("oauth");
-		if (!remaining || remaining.credential.type !== "oauth") throw new Error("expected oauth credential");
-		expect(remaining.credential.email).toBe("shared.user@example.com");
-		expect(remaining.credential.accountId).toBe("account-b");
+		expect(credentials).toHaveLength(2);
+		expect(readDisabledCauses(dbPath, "openai-codex")).toEqual([]);
 	});
 
-	it("dedupes openai-codex credentials when matching email exists only in JWT profile claim", async () => {
+	it("keeps both openai-codex credentials when matching email exists only in JWT profile claim but accountId differs", async () => {
 		if (!authStorage || !store) throw new Error("test setup failed");
 
 		await authStorage.set("openai-codex", [
@@ -110,23 +151,36 @@ describe("AuthStorage openai-codex email dedupe", () => {
 		]);
 
 		const credentials = store.listAuthCredentials("openai-codex");
-		expect(credentials).toHaveLength(1);
-		const [remaining] = credentials;
-		expect(remaining?.credential.type).toBe("oauth");
-		if (!remaining || remaining.credential.type !== "oauth") throw new Error("expected oauth credential");
-		expect(remaining.credential.accountId).toBe("account-b");
+		expect(credentials).toHaveLength(2);
 	});
 
-	it("hard deletes disabled codex rows once a replacement with the same email becomes active", async () => {
+	it("does not soft-disable a different codex account just because the email matches", async () => {
+		if (!store || !dbPath) throw new Error("test setup failed");
+
+		store.replaceAuthCredentialsForProvider("openai-codex", [
+			createJwtOnlyCredential({ suffix: "first", accountId: "account-a", email: "shared.user@example.com" }),
+		]);
+		store.replaceAuthCredentialsForProvider("openai-codex", [
+			createJwtOnlyCredential({ suffix: "first", accountId: "account-a", email: "shared.user@example.com" }),
+			createJwtOnlyCredential({ suffix: "second", accountId: "account-b", email: "shared.user@example.com" }),
+		]);
+
+		expect(countCredentialRows(dbPath, "openai-codex")).toBe(2);
+		const credentials = store.listAuthCredentials("openai-codex");
+		expect(credentials).toHaveLength(2);
+		expect(readDisabledCauses(dbPath, "openai-codex")).toEqual([]);
+	});
+
+	it("hard deletes disabled codex rows once a replacement for the same account becomes active", async () => {
 		if (!authStorage || !store || !dbPath) throw new Error("test setup failed");
 
 		await authStorage.set(
 			"openai-codex",
-			createJwtOnlyCredential({ suffix: "first", accountId: "account-a", email: "shared.user@example.com" }),
+			createCredential({ suffix: "first", accountId: "account-a", email: "first.user@example.com" }),
 		);
 		await authStorage.set(
 			"openai-codex",
-			createJwtOnlyCredential({ suffix: "second", accountId: "account-b", email: "shared.user@example.com" }),
+			createCredential({ suffix: "second", accountId: "account-a", email: "second.user@example.com" }),
 		);
 
 		expect(countCredentialRows(dbPath, "openai-codex")).toBe(1);
@@ -135,15 +189,16 @@ describe("AuthStorage openai-codex email dedupe", () => {
 		const [remaining] = credentials;
 		expect(remaining?.credential.type).toBe("oauth");
 		if (!remaining || remaining.credential.type !== "oauth") throw new Error("expected oauth credential");
-		expect(remaining.credential.accountId).toBe("account-b");
+		expect(remaining.credential.accountId).toBe("account-a");
+		expect(remaining.credential.email).toBe("second.user@example.com");
 	});
 
-	it("prunes existing JWT-only codex duplicates on reload", async () => {
+	it("prunes existing JWT-only codex duplicates on reload when accountId matches", async () => {
 		if (!store) throw new Error("test setup failed");
 
 		store.replaceAuthCredentialsForProvider("openai-codex", [
-			createJwtOnlyCredential({ suffix: "first", accountId: "account-a", email: "shared.user@example.com" }),
-			createJwtOnlyCredential({ suffix: "second", accountId: "account-b", email: "shared.user@example.com" }),
+			createJwtOnlyCredential({ suffix: "first", accountId: "account-a", email: "first.user@example.com" }),
+			createJwtOnlyCredential({ suffix: "second", accountId: "account-a", email: "second.user@example.com" }),
 		]);
 
 		const reloaded = new AuthStorage(store);
@@ -154,10 +209,10 @@ describe("AuthStorage openai-codex email dedupe", () => {
 		const [remaining] = credentials;
 		expect(remaining?.credential.type).toBe("oauth");
 		if (!remaining || remaining.credential.type !== "oauth") throw new Error("expected oauth credential");
-		expect(remaining.credential.accountId).toBe("account-b");
+		expect(remaining.credential.accountId).toBe("account-a");
 	});
 
-	it("keeps both openai-codex credentials after reload when accountId matches but emails differ", async () => {
+	it("dedupes openai-codex credentials after reload when accountId matches even if emails differ", async () => {
 		if (!store) throw new Error("test setup failed");
 
 		store.replaceAuthCredentialsForProvider("openai-codex", [
@@ -169,6 +224,147 @@ describe("AuthStorage openai-codex email dedupe", () => {
 		await reloaded.reload();
 
 		const credentials = store.listAuthCredentials("openai-codex");
-		expect(credentials).toHaveLength(2);
+		expect(credentials).toHaveLength(1);
+		const [remaining] = credentials;
+		expect(remaining?.credential.type).toBe("oauth");
+		if (!remaining || remaining.credential.type !== "oauth") throw new Error("expected oauth credential");
+		expect(remaining.credential.accountId).toBe("shared-team");
+		expect(remaining.credential.email).toBe("second.user@example.com");
+	});
+
+	it("stores the disable cause when a credential is soft-disabled", async () => {
+		if (!store || !dbPath) throw new Error("test setup failed");
+
+		store.replaceAuthCredentialsForProvider("openai-codex", [
+			createCredential({ suffix: "only", accountId: "account-a", email: "only@example.com" }),
+		]);
+
+		const [credential] = store.listAuthCredentials("openai-codex");
+		if (!credential) throw new Error("expected stored credential");
+
+		const disabledCause = "oauth refresh failed: invalid_grant";
+		store.deleteAuthCredential(credential.id, disabledCause);
+
+		expect(store.listAuthCredentials("openai-codex")).toHaveLength(0);
+		expect(readDisabledCauses(dbPath, "openai-codex")).toEqual([disabledCause]);
+	});
+
+	it("preserves newer auth schema versions instead of downgrading them", async () => {
+		if (!tempDir) throw new Error("test setup failed");
+
+		const futureDbPath = path.join(tempDir, "future-schema-agent.db");
+		const futureDb = new Database(futureDbPath);
+		futureDb.exec(`
+			CREATE TABLE auth_schema_version (
+				id INTEGER PRIMARY KEY CHECK (id = 1),
+				version INTEGER NOT NULL
+			);
+			INSERT INTO auth_schema_version(id, version) VALUES (1, 4);
+			CREATE TABLE auth_credentials (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				provider TEXT NOT NULL,
+				credential_type TEXT NOT NULL,
+				data TEXT NOT NULL,
+				disabled_cause TEXT DEFAULT NULL,
+				identity_key TEXT DEFAULT NULL,
+				created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+				updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+			);
+		`);
+		futureDb.close();
+
+		const reopenedStore = await AuthCredentialStore.open(futureDbPath);
+		try {
+			expect(readAuthSchemaVersion(futureDbPath)).toBe(4);
+		} finally {
+			reopenedStore.close();
+		}
+	});
+
+	it("backfills identity_key when migrating v1 auth schema", async () => {
+		if (!tempDir) throw new Error("test setup failed");
+
+		const legacyDbPath = path.join(tempDir, "legacy-v1-agent.db");
+		const legacyDb = new Database(legacyDbPath);
+		legacyDb.exec(`
+			CREATE TABLE auth_schema_version (
+				id INTEGER PRIMARY KEY CHECK (id = 1),
+				version INTEGER NOT NULL
+			);
+			INSERT INTO auth_schema_version(id, version) VALUES (1, 1);
+			CREATE TABLE auth_credentials (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				provider TEXT NOT NULL,
+				credential_type TEXT NOT NULL,
+				data TEXT NOT NULL,
+				disabled_cause TEXT DEFAULT NULL,
+				created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+				updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+			);
+		`);
+		legacyDb
+			.prepare("INSERT INTO auth_credentials (provider, credential_type, data, disabled_cause) VALUES (?, ?, ?, ?)")
+			.run(
+				"openai-codex",
+				"oauth",
+				JSON.stringify(
+					createCredential({
+						suffix: "legacy-v1",
+						accountId: "legacy-v1-account",
+						email: "legacy-v1@example.com",
+					}),
+				),
+				null,
+			);
+		legacyDb.close();
+
+		const migratedStore = await AuthCredentialStore.open(legacyDbPath);
+		try {
+			expect(migratedStore.listAuthCredentials("openai-codex")).toHaveLength(1);
+			expect(readStoredIdentityRows(legacyDbPath, "openai-codex")).toEqual([
+				{ identity_key: "account:legacy-v1-account", disabled_cause: null },
+			]);
+		} finally {
+			migratedStore.close();
+		}
+	});
+
+	it("backfills disabled cause and identity_key when migrating legacy disabled rows", async () => {
+		if (!tempDir) throw new Error("test setup failed");
+
+		const legacyDbPath = path.join(tempDir, "legacy-agent.db");
+		const legacyDb = new Database(legacyDbPath);
+		legacyDb.exec(`
+			CREATE TABLE auth_credentials (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				provider TEXT NOT NULL,
+				credential_type TEXT NOT NULL,
+				data TEXT NOT NULL,
+				disabled INTEGER NOT NULL DEFAULT 0,
+				created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+				updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+			);
+		`);
+		legacyDb
+			.prepare("INSERT INTO auth_credentials (provider, credential_type, data, disabled) VALUES (?, ?, ?, ?)")
+			.run(
+				"openai-codex",
+				"oauth",
+				JSON.stringify(
+					createCredential({ suffix: "legacy", accountId: "legacy-account", email: "legacy@example.com" }),
+				),
+				1,
+			);
+		legacyDb.close();
+
+		const migratedStore = await AuthCredentialStore.open(legacyDbPath);
+		try {
+			expect(migratedStore.listAuthCredentials("openai-codex")).toHaveLength(0);
+			expect(readStoredIdentityRows(legacyDbPath, "openai-codex")).toEqual([
+				{ identity_key: "account:legacy-account", disabled_cause: "disabled" },
+			]);
+		} finally {
+			migratedStore.close();
+		}
 	});
 });

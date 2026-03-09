@@ -91,6 +91,7 @@ import { getCurrentThemeName, theme } from "../modes/theme/theme";
 import { normalizeDiff, normalizeToLF, ParseError, previewPatch, stripBom } from "../patch";
 import type { PlanModeState } from "../plan-mode/state";
 import autoHandoffThresholdFocusPrompt from "../prompts/system/auto-handoff-threshold-focus.md" with { type: "text" };
+import handoffDocumentPrompt from "../prompts/system/handoff-document.md" with { type: "text" };
 import planModeActivePrompt from "../prompts/system/plan-mode-active.md" with { type: "text" };
 import planModeReferencePrompt from "../prompts/system/plan-mode-reference.md" with { type: "text" };
 import planModeToolDecisionReminderPrompt from "../prompts/system/plan-mode-tool-decision-reminder.md" with {
@@ -110,6 +111,7 @@ import { extractFileMentions, generateFileMentionMessages } from "../utils/file-
 import {
 	type CompactionResult,
 	calculateContextTokens,
+	calculatePromptTokens,
 	collectEntriesForBranchSummary,
 	compact,
 	estimateTokens,
@@ -251,6 +253,7 @@ export interface HandoffResult {
 
 interface HandoffOptions {
 	signal?: AbortSignal;
+	skipPostPromptRecoveryWait?: boolean;
 }
 
 /** Internal marker for hook messages queued through the agent loop */
@@ -389,7 +392,7 @@ export class AgentSession {
 	#streamingEditAbortTriggered = false;
 	#streamingEditCheckedLineCounts = new Map<string, number>();
 	#streamingEditFileCache = new Map<string, string>();
-	#promptInFlight = false;
+	#promptInFlightCount = 0;
 	#obfuscator: SecretObfuscator | undefined;
 	#pendingActionStore: PendingActionStore | undefined;
 	#checkpointState: CheckpointState | undefined = undefined;
@@ -1540,7 +1543,7 @@ export class AgentSession {
 
 	/** Whether agent is currently streaming a response */
 	get isStreaming(): boolean {
-		return this.agent.state.isStreaming || this.#promptInFlight;
+		return this.agent.state.isStreaming || this.#promptInFlightCount > 0;
 	}
 
 	/** Wait until streaming and deferred recovery work are fully settled. */
@@ -1979,7 +1982,7 @@ export class AgentSession {
 			skipPostPromptRecoveryWait?: boolean;
 		},
 	): Promise<void> {
-		this.#promptInFlight = true;
+		this.#promptInFlightCount++;
 		const generation = this.#promptGeneration;
 		try {
 			// Flush any pending bash messages before the new prompt
@@ -2083,7 +2086,7 @@ export class AgentSession {
 				await this.#waitForPostPromptRecovery();
 			}
 		} finally {
-			this.#promptInFlight = false;
+			this.#promptInFlightCount = Math.max(0, this.#promptInFlightCount - 1);
 		}
 	}
 
@@ -2482,11 +2485,10 @@ export class AgentSession {
 		this.#cancelPostPromptTasks();
 		this.agent.abort();
 		await this.agent.waitForIdle();
-		// Clear promptInFlight: waitForIdle resolves when the agent loop's finally
-		// block runs (#resolveRunningPrompt), but #promptWithMessage's finally
-		// (#promptInFlight = false) fires on a later microtask. Without this,
-		// isStreaming stays true and a subsequent prompt() throws.
-		this.#promptInFlight = false;
+		// Clear prompt-in-flight state: waitForIdle resolves when the agent loop's finally
+		// block runs, but nested prompt setup/finalizers may still be unwinding. Without this,
+		// a subsequent prompt() can incorrectly observe the session as busy after an abort.
+		this.#promptInFlightCount = 0;
 	}
 
 	/**
@@ -3148,41 +3150,9 @@ export class AgentSession {
 		}
 
 		// Build the handoff prompt
-		let handoffPrompt = `Write a comprehensive handoff document that will allow another instance of yourself to seamlessly continue this work. The document should capture everything needed to resume without access to this conversation.
-
-Use this format:
-
-## Goal
-[What the user is trying to accomplish]
-
-## Constraints & Preferences
-- [Any constraints, preferences, or requirements mentioned]
-
-## Progress
-### Done
-- [x] [Completed tasks with specifics]
-
-### In Progress
-- [ ] [Current work if any]
-
-### Pending
-- [ ] [Tasks mentioned but not started]
-
-## Key Decisions
-- **[Decision]**: [Rationale]
-
-## Critical Context
-- [Code snippets, file paths, error messages, or data essential to continue]
-- [Repository state if relevant]
-
-## Next Steps
-1. [What should happen next]
-
-Be thorough - include exact file paths, function names, error messages, and technical details. Output ONLY the handoff document, no other text.`;
-
-		if (customInstructions) {
-			handoffPrompt += `\n\nAdditional focus: ${customInstructions}`;
-		}
+		const handoffPrompt = renderPromptTemplate(handoffDocumentPrompt, {
+			additionalFocus: customInstructions,
+		});
 
 		// Create a promise that resolves when the agent completes
 		let handoffText: string | undefined;
@@ -3499,8 +3469,6 @@ Be thorough - include exact file paths, function names, error messages, and tech
 			matchPreferences: { usageOrder: this.settings.getStorage()?.getModelUsageOrder() },
 		}).model;
 	}
-
-	/**
 
 	// =========================================================================
 	// Auto-Retry
@@ -4479,7 +4447,7 @@ Be thorough - include exact file paths, function names, error messages, and tech
 			};
 		}
 
-		const usageTokens = calculateContextTokens(lastUsage);
+		const usageTokens = calculatePromptTokens(lastUsage);
 		let trailingTokens = 0;
 		for (let i = lastUsageIndex + 1; i < messages.length; i++) {
 			trailingTokens += estimateTokens(messages[i]);

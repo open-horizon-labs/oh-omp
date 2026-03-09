@@ -111,10 +111,6 @@ function isCodexWebSocketEnvEnabled(): boolean {
 	return $env.PI_CODEX_WEBSOCKET === "1" || $env.PI_CODEX_WEBSOCKET === "true";
 }
 
-function isCodexWebSocketV2Enabled(): boolean {
-	return $env.PI_CODEX_WEBSOCKET_V2 === "1" || $env.PI_CODEX_WEBSOCKET_V2 === "true";
-}
-
 function getCodexWebSocketRetryBudget(): number {
 	return parseCodexNonNegativeInteger($env.PI_CODEX_WEBSOCKET_RETRY_BUDGET, CODEX_WEBSOCKET_RETRY_BUDGET);
 }
@@ -181,6 +177,14 @@ const X_REASONING_INCLUDED_HEADER = "x-reasoning-included";
 
 function createCodexWebSocketTransportError(message: string): Error {
 	return new Error(`${CODEX_WEBSOCKET_TRANSPORT_ERROR_PREFIX}: ${message}`);
+}
+
+/** Connection-level websocket failures that should immediately fall back to SSE without retrying. */
+const CODEX_WEBSOCKET_FATAL_PATTERNS = ["websocket error:", "websocket closed before open", "connection timeout"];
+
+function isCodexWebSocketFatalError(error: Error): boolean {
+	const msg = error.message.toLowerCase();
+	return CODEX_WEBSOCKET_FATAL_PATTERNS.some(p => msg.includes(p.toLowerCase()));
 }
 
 function isCodexWebSocketTransportError(error: unknown): boolean {
@@ -412,10 +416,9 @@ export const streamOpenAICodexResponses: StreamFunction<"openai-codex-responses"
 
 			if (websocketState && shouldUseCodexWebSocket(model, websocketState, options?.preferWebsockets)) {
 				const websocketRetryBudget = getCodexWebSocketRetryBudget();
-				const websocketV2Enabled = isCodexWebSocketV2Enabled();
 				let websocketRetries = 0;
 				while (true) {
-					const websocketRequest = buildCodexWebSocketRequest(transformedBody, websocketState, websocketV2Enabled);
+					const websocketRequest = buildCodexWebSocketRequest(transformedBody, websocketState);
 					const websocketHeaders = createCodexHeaders(
 						requestHeaders,
 						accountId,
@@ -423,7 +426,6 @@ export const streamOpenAICodexResponses: StreamFunction<"openai-codex-responses"
 						options?.sessionId,
 						"websocket",
 						websocketState,
-						websocketV2Enabled,
 					);
 					requestBodyForState = cloneRequestBody(transformedBody);
 					logCodexDebug("codex websocket request", {
@@ -449,13 +451,15 @@ export const streamOpenAICodexResponses: StreamFunction<"openai-codex-responses"
 						break;
 					} catch (error) {
 						const websocketError = error instanceof Error ? error : new Error(String(error));
-						const activateFallback = websocketRetries >= websocketRetryBudget;
+						const isFatal = isCodexWebSocketFatalError(websocketError);
+						const activateFallback = isFatal || websocketRetries >= websocketRetryBudget;
 						recordCodexWebSocketFailure(websocketState, activateFallback);
 						logCodexDebug("codex websocket fallback", {
 							error: websocketError.message,
 							retry: websocketRetries,
 							retryBudget: websocketRetryBudget,
 							activated: activateFallback,
+							fatal: isFatal,
 						});
 						if (!activateFallback) {
 							websocketRetries += 1;
@@ -500,6 +504,7 @@ export const streamOpenAICodexResponses: StreamFunction<"openai-codex-responses"
 			let websocketStreamRetries = 0;
 			let providerRetryAttempt = 0;
 			let sawTerminalEvent = false;
+			let canSafelyReplayWebsocketOverSse = true;
 			while (true) {
 				try {
 					for await (const rawEvent of eventStream) {
@@ -670,6 +675,7 @@ export const streamOpenAICodexResponses: StreamFunction<"openai-codex-responses"
 									name: item.name,
 									arguments: parseStreamingJson(item.arguments || "{}"),
 								};
+								canSafelyReplayWebsocketOverSse = false;
 								stream.push({ type: "toolcall_end", contentIndex: blockIndex(), toolCall, partial: output });
 							}
 						} else if (eventType === "response.created") {
@@ -725,50 +731,71 @@ export const streamOpenAICodexResponses: StreamFunction<"openai-codex-responses"
 
 					break;
 				} catch (error) {
-					if (
+					const canReplayWebsocketFailureOverSse =
 						usingWebsocket &&
 						websocketState &&
 						isCodexWebSocketRetryableStreamError(error) &&
-						output.content.length === 0 &&
-						!options?.signal?.aborted
-					) {
-						const activateFallback = websocketStreamRetries >= getCodexWebSocketRetryBudget();
-						recordCodexWebSocketFailure(websocketState, activateFallback);
+						canSafelyReplayWebsocketOverSse &&
+						!sawTerminalEvent &&
+						!options?.signal?.aborted;
+					if (canReplayWebsocketFailureOverSse) {
+						const state = websocketState!;
+						const streamError = error instanceof Error ? error : new Error(String(error));
+						const replayingBufferedOutputOverSse = output.content.length > 0;
+						const isFatal = isCodexWebSocketFatalError(streamError);
+						const activateFallback =
+							replayingBufferedOutputOverSse ||
+							isFatal ||
+							websocketStreamRetries >= getCodexWebSocketRetryBudget();
+						recordCodexWebSocketFailure(state, activateFallback);
 						logCodexDebug("codex websocket stream fallback", {
-							error: error instanceof Error ? error.message : String(error),
+							error: streamError.message,
 							retry: websocketStreamRetries,
 							retryBudget: getCodexWebSocketRetryBudget(),
 							activated: activateFallback,
+							fatal: isFatal,
+							replayedBufferedOutput: replayingBufferedOutputOverSse,
 						});
 						if (!activateFallback) {
 							websocketStreamRetries += 1;
 							await abortableSleep(getCodexWebSocketRetryDelayMs(websocketStreamRetries), options?.signal);
-							const websocketV2Enabled = isCodexWebSocketV2Enabled();
-							const websocketRequest = buildCodexWebSocketRequest(
-								transformedBody,
-								websocketState,
-								websocketV2Enabled,
-							);
+							const websocketRequest = buildCodexWebSocketRequest(transformedBody, state);
 							const websocketHeaders = createCodexHeaders(
 								requestHeaders,
 								accountId,
 								apiKey,
 								options?.sessionId,
 								"websocket",
-								websocketState,
-								websocketV2Enabled,
+								state,
 							);
 							requestBodyForState = cloneRequestBody(transformedBody);
 							eventStream = await openCodexWebSocketEventStream(
 								toWebSocketUrl(url),
 								websocketHeaders,
 								websocketRequest,
-								websocketState,
+								state,
 								options?.signal,
 							);
 							usingWebsocket = true;
-							websocketState.lastTransport = "websocket";
+							state.lastTransport = "websocket";
 							continue;
+						}
+						if (replayingBufferedOutputOverSse) {
+							canSafelyReplayWebsocketOverSse = true;
+							currentItem = null;
+							currentBlock = null;
+							output.content.length = 0;
+							nativeOutputItems.length = 0;
+							output.usage = {
+								input: 0,
+								output: 0,
+								cacheRead: 0,
+								cacheWrite: 0,
+								totalTokens: 0,
+								cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+							};
+							output.stopReason = "stop";
+							firstTokenTime = undefined;
 						}
 						eventStream = await openCodexSseEventStream(
 							url,
@@ -777,11 +804,11 @@ export const streamOpenAICodexResponses: StreamFunction<"openai-codex-responses"
 							apiKey,
 							options?.sessionId,
 							transformedBody,
-							websocketState,
+							state,
 							options?.signal,
 						);
 						usingWebsocket = false;
-						websocketState.lastTransport = "sse";
+						state.lastTransport = "sse";
 						requestBodyForState = cloneRequestBody(transformedBody);
 						continue;
 					}
@@ -811,12 +838,7 @@ export const streamOpenAICodexResponses: StreamFunction<"openai-codex-responses"
 						firstTokenTime = undefined;
 						await abortableSleep(CODEX_RETRY_DELAY_MS * providerRetryAttempt, options?.signal);
 						if (usingWebsocket && websocketState) {
-							const websocketV2Enabled = isCodexWebSocketV2Enabled();
-							const websocketRequest = buildCodexWebSocketRequest(
-								transformedBody,
-								websocketState,
-								websocketV2Enabled,
-							);
+							const websocketRequest = buildCodexWebSocketRequest(transformedBody, websocketState);
 							const websocketHeaders = createCodexHeaders(
 								requestHeaders,
 								accountId,
@@ -824,7 +846,6 @@ export const streamOpenAICodexResponses: StreamFunction<"openai-codex-responses"
 								options?.sessionId,
 								"websocket",
 								websocketState,
-								websocketV2Enabled,
 							);
 							requestBodyForState = cloneRequestBody(transformedBody);
 							eventStream = await openCodexWebSocketEventStream(
@@ -882,7 +903,8 @@ export const streamOpenAICodexResponses: StreamFunction<"openai-codex-responses"
 
 			output.providerPayload = {
 				type: "openaiResponsesHistory",
-				items: [...(conversationMessages as unknown as Array<Record<string, unknown>>), ...nativeOutputItems],
+				dt: true,
+				items: nativeOutputItems,
 			};
 
 			output.duration = Date.now() - startTime;
@@ -936,7 +958,6 @@ export async function prewarmOpenAICodexResponses(
 		options?.sessionId,
 		"websocket",
 		state,
-		isCodexWebSocketV2Enabled(),
 	);
 	await getOrCreateCodexWebSocketConnection(state, toWebSocketUrl(url), headers, options?.signal);
 	state.prewarmed = true;
@@ -1080,11 +1101,10 @@ function buildAppendInput(previous: RequestBody | undefined, current: RequestBod
 function buildCodexWebSocketRequest(
 	requestBody: RequestBody,
 	state: CodexWebSocketSessionState | undefined,
-	v2Enabled: boolean,
 ): Record<string, unknown> {
 	const appendInput = state?.canAppend ? buildAppendInput(state.lastRequest, requestBody) : null;
 	if (appendInput && appendInput.length > 0) {
-		if (v2Enabled && state?.lastResponseId) {
+		if (state?.lastResponseId) {
 			return {
 				type: "response.create",
 				...requestBody,
@@ -1211,7 +1231,12 @@ class CodexWebSocketConnection {
 			}
 		});
 		socket.addEventListener("error", event => {
-			const error = createCodexWebSocketTransportError(`websocket error: ${String(event.type)}`);
+			const eventRecord = event as unknown as Record<string, unknown>;
+			const detail =
+				(typeof eventRecord.message === "string" && eventRecord.message) ||
+				(eventRecord.error instanceof Error && eventRecord.error.message) ||
+				String(event.type);
+			const error = createCodexWebSocketTransportError(`websocket error: ${detail}`);
 			if (!settled) {
 				settled = true;
 				clearPending();
@@ -1429,7 +1454,6 @@ function createCodexHeaders(
 	promptCacheKey?: string,
 	transport: "sse" | "websocket" = "sse",
 	state?: CodexWebSocketSessionState,
-	websocketV2Enabled = false,
 ): Headers {
 	const headers = new Headers(initHeaders ?? {});
 	headers.delete("x-api-key");
@@ -1437,9 +1461,7 @@ function createCodexHeaders(
 	headers.set(OPENAI_HEADERS.ACCOUNT_ID, accountId);
 	const betaHeader =
 		transport === "websocket"
-			? websocketV2Enabled
-				? OPENAI_HEADER_VALUES.BETA_RESPONSES_WEBSOCKETS_V2
-				: OPENAI_HEADER_VALUES.BETA_RESPONSES_WEBSOCKETS
+			? OPENAI_HEADER_VALUES.BETA_RESPONSES_WEBSOCKETS_V2
 			: OPENAI_HEADER_VALUES.BETA_RESPONSES;
 	headers.set(OPENAI_HEADERS.BETA, betaHeader);
 	headers.set(OPENAI_HEADERS.ORIGINATOR, OPENAI_HEADER_VALUES.ORIGINATOR_CODEX);
@@ -1702,10 +1724,15 @@ function convertMessages(model: Model<"openai-codex-responses">, context: Contex
 				});
 			}
 		} else if (msg.role === "assistant") {
-			const providerPayload = (msg as { providerPayload?: { type?: string; items?: unknown } }).providerPayload;
+			const providerPayload = (msg as { providerPayload?: { type?: string; dt?: boolean; items?: unknown } })
+				.providerPayload;
 			const historyItems = getOpenAIResponsesHistoryItems(providerPayload);
 			if (historyItems) {
-				messages.splice(0, messages.length, ...historyItems);
+				if (providerPayload?.dt) {
+					messages.push(...historyItems);
+				} else {
+					messages.splice(0, messages.length, ...historyItems);
+				}
 				msgIndex++;
 				continue;
 			}

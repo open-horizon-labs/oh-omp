@@ -526,6 +526,15 @@ When closing issues via commit:
 - Include `fixes #<number>` or `closes #<number>` in the commit message
 - This automatically closes the issue when the commit is merged
 
+### Git Remotes
+
+This is a fork (`durch/oh-my-pi`). Two remotes exist: `origin` (the fork) and `upstream` (can1357/oh-my-pi).
+
+- **ALL work targets `origin`** — branches, PRs, pushes, and fetches default to `origin`
+- **NEVER push to `upstream`** — upstream is read-only, used only for syncing changes into the fork
+- When running `gh` commands, they target `origin` by default. Do not pass `--repo` pointing at upstream
+- `git push` without an explicit remote **MUST** push to `origin`
+
 ## Tools
 
 - GitHub CLI for issues/PRs

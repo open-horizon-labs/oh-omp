@@ -16,9 +16,9 @@ describe("context-manager", () => {
 	// ─────────────────────────────────────────────────────────────────────────
 
 	describe("defaults", () => {
-		it("defaults to legacy mode", () => {
+		it("defaults to assembler mode", () => {
 			const settings = Settings.isolated();
-			expect(getContextManagerMode(settings)).toBe("legacy");
+			expect(getContextManagerMode(settings)).toBe("assembler");
 		});
 
 		it("validates without error on default config", () => {

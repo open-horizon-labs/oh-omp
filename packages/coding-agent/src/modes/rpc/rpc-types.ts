@@ -66,7 +66,12 @@ export type RpcCommand =
 	| { id?: string; type: "get_messages" }
 
 	// Introspection
-	| { id?: string; type: "get_introspection" };
+	| { id?: string; type: "get_introspection" }
+
+	// Prompt snapshot inspection
+	| { id?: string; type: "get_prompt_snapshot" }
+	| { id?: string; type: "inspect_prompt_section"; section: RpcPromptSnapshotSectionName }
+	| { id?: string; type: "inspect_prompt_decisions"; filter?: RpcPromptDecisionFilter };
 
 // ============================================================================
 // RPC State
@@ -186,6 +191,29 @@ export type RpcResponse =
 			data: RpcIntrospectionSnapshot;
 	  }
 
+	// Prompt snapshot inspection
+	| {
+			id?: string;
+			type: "response";
+			command: "get_prompt_snapshot";
+			success: true;
+			data: RpcPromptSnapshotOverview;
+	  }
+	| {
+			id?: string;
+			type: "response";
+			command: "inspect_prompt_section";
+			success: true;
+			data: RpcPromptSectionDetail;
+	  }
+	| {
+			id?: string;
+			type: "response";
+			command: "inspect_prompt_decisions";
+			success: true;
+			data: RpcPromptDecisionReport;
+	  }
+
 	// Error response (any command can fail)
 	| { id?: string; type: "response"; command: string; success: false; error: string };
 
@@ -216,6 +244,87 @@ export interface RpcIntrospectionSnapshot {
 	budget: MemoryAssemblyBudget | null;
 }
 
+// ============================================================================
+// Prompt Snapshot Inspection
+// ============================================================================
+
+/** Named sections available for targeted drill-down. */
+export type RpcPromptSnapshotSectionName =
+	| "system_prompt"
+	| "tools"
+	| "messages"
+	| "assembler_context"
+	| "budget"
+	| "transform_metadata";
+
+/** Optional filter for decision inspection queries. */
+export interface RpcPromptDecisionFilter {
+	/** Restrict to a specific action: kept, stubbed, or dropped. */
+	action?: "kept" | "stubbed" | "dropped";
+	/** Restrict to a specific turn index. */
+	turnIndex?: number;
+}
+
+/** Compact overview of the prompt composition snapshot (no raw content). */
+export interface RpcPromptSnapshotOverview {
+	/** Whether a snapshot is available. */
+	available: boolean;
+	/** Turn identifier (null if no snapshot available). */
+	turnId: string | null;
+	/** ISO 8601 timestamp when the snapshot was captured. */
+	capturedAt: string | null;
+	/** Model used for this turn. */
+	model: { provider: string; id: string; contextWindow: number } | null;
+	/** Section summaries with token estimates. */
+	sections: {
+		systemPrompt: { fingerprint: string; tokenEstimate: number } | null;
+		tools: { count: number; totalDefinitionTokenEstimate: number } | null;
+		messages: { count: number; tokenEstimate: number; hasTransformMetadata: boolean } | null;
+		assemblerContext: { fragmentCount: number; droppedCount: number; consumedTokens: number } | null;
+		budget: { contextWindow: number; headroom: number } | null;
+	};
+}
+
+/** Full detail for a specific prompt section. */
+export type RpcPromptSectionDetail =
+	| { section: "system_prompt"; fingerprint: string; tokenEstimate: number }
+	| { section: "tools"; names: string[]; totalDefinitionTokenEstimate: number }
+	| { section: "messages"; messages: AgentMessage[]; tokenEstimate: number; transformMetadata: unknown }
+	| { section: "assembler_context"; packet: unknown }
+	| { section: "budget"; budget: RpcPromptSnapshotBudget }
+	| { section: "transform_metadata"; metadata: unknown };
+
+/** Budget breakdown returned by section inspection. */
+export interface RpcPromptSnapshotBudget {
+	contextWindow: number;
+	systemPromptTokens: number;
+	toolDefinitionTokens: number;
+	messageTokens: number;
+	assembledContextTokens: number;
+	headroom: number;
+}
+
+/** Report on turn-level composition decisions. */
+export interface RpcPromptDecisionReport {
+	available: boolean;
+	summary: {
+		totalTurns: number;
+		keptCount: number;
+		stubbedCount: number;
+		droppedCount: number;
+		tokensBefore: number;
+		tokensAfter: number;
+	} | null;
+	decisions: Array<{
+		turnIndex: number;
+		action: "kept" | "stubbed" | "dropped";
+		reason: string;
+		messageCount: number;
+		hasToolResults: boolean;
+		tokensBefore: number;
+		tokensAfter: number;
+	}>;
+}
 // ============================================================================
 // Extension UI Events (stdout)
 // ============================================================================

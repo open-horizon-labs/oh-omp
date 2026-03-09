@@ -15,6 +15,11 @@ import type { ExtensionUIContext, ExtensionUIDialogOptions } from "../../extensi
 import { type Theme, theme } from "../../modes/theme/theme";
 import type { AgentSession } from "../../session/agent-session";
 import { buildIntrospectionSnapshot } from "./rpc-introspection";
+import {
+	buildPromptDecisionReport,
+	buildPromptSectionDetail,
+	buildPromptSnapshotOverview,
+} from "./prompt-snapshot-inspector";
 import type {
 	RpcCommand,
 	RpcExtensionUIRequest,
@@ -652,6 +657,28 @@ export async function runRpcMode(session: AgentSession): Promise<never> {
 			case "get_introspection": {
 				const snapshot = buildIntrospectionSnapshot(session.settings, session.assemblerBridge);
 				return success(id, "get_introspection", snapshot);
+			}
+
+			// =================================================================
+			// Prompt Snapshot Inspection
+			// =================================================================
+
+			case "get_prompt_snapshot": {
+				const overview = buildPromptSnapshotOverview(session.lastPromptSnapshot);
+				return success(id, "get_prompt_snapshot", overview);
+			}
+
+			case "inspect_prompt_section": {
+				const detail = buildPromptSectionDetail(session.lastPromptSnapshot, command.section);
+				if (!detail) {
+					return error(id, "inspect_prompt_section", `Section "${command.section}" is not available in the current snapshot`);
+				}
+				return success(id, "inspect_prompt_section", detail);
+			}
+
+			case "inspect_prompt_decisions": {
+				const report = buildPromptDecisionReport(session.lastPromptSnapshot, command.filter);
+				return success(id, "inspect_prompt_decisions", report);
 			}
 
 			default: {

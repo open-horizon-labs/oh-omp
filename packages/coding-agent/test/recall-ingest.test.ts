@@ -194,11 +194,12 @@ describe("IngestPipeline", () => {
 
 	test("ingest skips empty text", async () => {
 		const sessionDir = path.join(tmpDir, "skip-empty");
-		const store = await RecallStore.open({ sessionDir, sessionId: "test-skip" });
+		const store = await RecallStore.open({ agentDir: sessionDir, sessionId: "test-skip" });
 		const pipeline = new IngestPipeline({
 			store,
 			license: "fake-license",
 			sessionId: "test-skip",
+			projectCwd: "/tmp/test-project",
 		});
 
 		pipeline.ingest({ text: "", role: "user", turn: 0 });
@@ -212,11 +213,12 @@ describe("IngestPipeline", () => {
 
 	test("ingest respects in-flight guard", async () => {
 		const sessionDir = path.join(tmpDir, "inflight-guard");
-		const store = await RecallStore.open({ sessionDir, sessionId: "test-inflight" });
+		const store = await RecallStore.open({ agentDir: sessionDir, sessionId: "test-inflight" });
 		const pipeline = new IngestPipeline({
 			store,
 			license: "fake-license",
 			sessionId: "test-inflight",
+			projectCwd: "/tmp/test-project",
 		});
 
 		// Submit more items than MAX_IN_FLIGHT (4)
@@ -238,11 +240,12 @@ describe("IngestPipeline", () => {
 
 	test("failed embed does not crash", async () => {
 		const sessionDir = path.join(tmpDir, "fail-graceful");
-		const store = await RecallStore.open({ sessionDir, sessionId: "test-fail" });
+		const store = await RecallStore.open({ agentDir: sessionDir, sessionId: "test-fail" });
 		const pipeline = new IngestPipeline({
 			store,
 			license: "invalid-license-that-will-fail",
 			sessionId: "test-fail",
+			projectCwd: "/tmp/test-project",
 		});
 
 		// This should not throw

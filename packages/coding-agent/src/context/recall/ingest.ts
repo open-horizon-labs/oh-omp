@@ -18,6 +18,7 @@ export interface IngestPipelineOptions {
 	store: RecallStore;
 	license: string;
 	sessionId: string;
+	projectCwd: string;
 }
 
 export interface IngestItem {
@@ -33,6 +34,7 @@ export class IngestPipeline {
 	#store: RecallStore;
 	#license: string;
 	#sessionId: string;
+	#projectCwd: string;
 	#inFlight = 0;
 	#dropped = 0;
 
@@ -40,6 +42,7 @@ export class IngestPipeline {
 		this.#store = options.store;
 		this.#license = options.license;
 		this.#sessionId = options.sessionId;
+		this.#projectCwd = options.projectCwd;
 	}
 
 	/**
@@ -91,6 +94,7 @@ export class IngestPipeline {
 				tool_name: item.toolName ?? null,
 				paths: item.paths && item.paths.length > 0 ? JSON.stringify(item.paths) : null,
 				symbols: item.symbols && item.symbols.length > 0 ? JSON.stringify(item.symbols) : null,
+				project_cwd: this.#projectCwd,
 				timestamp: Date.now(),
 				session_id: this.#sessionId,
 			};

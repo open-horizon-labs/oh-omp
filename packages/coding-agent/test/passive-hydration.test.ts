@@ -81,6 +81,7 @@ function makeSearchResult(overrides: Partial<RecallSearchResult> = {}): RecallSe
 		symbols: null,
 		timestamp: Date.now(),
 		session_id: "test-session",
+		project_cwd: "/tmp/test-project",
 		_distance: 0.5,
 		...overrides,
 	};

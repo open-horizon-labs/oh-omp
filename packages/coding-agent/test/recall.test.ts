@@ -32,6 +32,7 @@ function makeRow(overrides: Partial<RecallRow> = {}): RecallRow {
 		symbols: null,
 		timestamp: Date.now(),
 		session_id: "test-session",
+		project_cwd: "/tmp/test-project",
 		...overrides,
 	};
 }
@@ -214,7 +215,7 @@ describe("RecallStore", () => {
 
 	test("open creates new store and table", async () => {
 		const sessionDir = path.join(tmpDir, "session-new");
-		const store = await RecallStore.open({ sessionDir, sessionId: "test-1" });
+		const store = await RecallStore.open({ agentDir: sessionDir, sessionId: "test-1" });
 		store.close();
 
 		// Verify lance directory was created
@@ -226,12 +227,12 @@ describe("RecallStore", () => {
 		const sessionDir = path.join(tmpDir, "session-reopen");
 
 		// First open — creates
-		const store1 = await RecallStore.open({ sessionDir, sessionId: "test-2" });
+		const store1 = await RecallStore.open({ agentDir: sessionDir, sessionId: "test-2" });
 		await store1.insert([makeRow({ text: "persisted" })]);
 		store1.close();
 
 		// Second open — re-opens
-		const store2 = await RecallStore.open({ sessionDir, sessionId: "test-2" });
+		const store2 = await RecallStore.open({ agentDir: sessionDir, sessionId: "test-2" });
 		const results = await store2.search(randomVector(EMBEDDING_DIM), 10);
 		expect(results.length).toBe(1);
 		expect(results[0].text).toBe("persisted");
@@ -240,7 +241,7 @@ describe("RecallStore", () => {
 
 	test("insert and search basic flow", async () => {
 		const sessionDir = path.join(tmpDir, "session-basic");
-		const store = await RecallStore.open({ sessionDir, sessionId: "test-3" });
+		const store = await RecallStore.open({ agentDir: sessionDir, sessionId: "test-3" });
 
 		const targetVector = randomVector(EMBEDDING_DIM);
 		await store.insert([
@@ -260,7 +261,7 @@ describe("RecallStore", () => {
 
 	test("search with filter", async () => {
 		const sessionDir = path.join(tmpDir, "session-filter");
-		const store = await RecallStore.open({ sessionDir, sessionId: "test-4" });
+		const store = await RecallStore.open({ agentDir: sessionDir, sessionId: "test-4" });
 
 		await store.insert([
 			makeRow({ text: "user msg", role: "user" }),
@@ -277,7 +278,7 @@ describe("RecallStore", () => {
 
 	test("insert with empty array is no-op", async () => {
 		const sessionDir = path.join(tmpDir, "session-empty");
-		const store = await RecallStore.open({ sessionDir, sessionId: "test-5" });
+		const store = await RecallStore.open({ agentDir: sessionDir, sessionId: "test-5" });
 
 		// Should not throw
 		await store.insert([]);
@@ -290,7 +291,7 @@ describe("RecallStore", () => {
 
 	test("search on empty store returns empty array", async () => {
 		const sessionDir = path.join(tmpDir, "session-empty-search");
-		const store = await RecallStore.open({ sessionDir, sessionId: "test-6" });
+		const store = await RecallStore.open({ agentDir: sessionDir, sessionId: "test-6" });
 
 		const results = await store.search(randomVector(EMBEDDING_DIM), 10);
 		expect(results.length).toBe(0);
@@ -300,7 +301,7 @@ describe("RecallStore", () => {
 
 	test("stores and retrieves metadata correctly", async () => {
 		const sessionDir = path.join(tmpDir, "session-meta");
-		const store = await RecallStore.open({ sessionDir, sessionId: "test-7" });
+		const store = await RecallStore.open({ agentDir: sessionDir, sessionId: "test-7" });
 
 		const now = Date.now();
 		const pathsJson = JSON.stringify(["src/main.ts", "src/config.ts"]);
@@ -338,7 +339,7 @@ describe("RecallStore", () => {
 
 	test("search limit is respected", async () => {
 		const sessionDir = path.join(tmpDir, "session-limit");
-		const store = await RecallStore.open({ sessionDir, sessionId: "test-8" });
+		const store = await RecallStore.open({ agentDir: sessionDir, sessionId: "test-8" });
 
 		// Insert 10 rows
 		const rows = Array.from({ length: 10 }, (_, i) => makeRow({ text: `item-${i}`, turn: i }));

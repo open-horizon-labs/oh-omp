@@ -8,7 +8,8 @@ import { EMBEDDING_DIM } from "./types";
 type LanceData = Record<string, unknown>[];
 
 export interface RecallStoreOptions {
-	sessionDir: string;
+	/** Global agent directory (~/.oh-omp/agent). DB lives at {agentDir}/recall.lance. */
+	agentDir: string;
 	sessionId: string;
 }
 
@@ -24,7 +25,7 @@ export class RecallStore {
 	}
 
 	static async open(options: RecallStoreOptions): Promise<RecallStore> {
-		const dbPath = path.join(options.sessionDir, "recall.lance");
+		const dbPath = path.join(options.agentDir, "recall.lance");
 		const db = await connect(dbPath);
 		const names = await db.tableNames();
 		let table: Table;
@@ -42,6 +43,7 @@ export class RecallStore {
 				tool_name: "__seed__",
 				paths: "__seed__",
 				symbols: "__seed__",
+				project_cwd: "__seed__",
 				timestamp: 0,
 				session_id: options.sessionId,
 			};

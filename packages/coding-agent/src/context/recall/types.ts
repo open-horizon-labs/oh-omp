@@ -22,6 +22,8 @@ export interface RecallRow {
 	/** JSON-encoded string[] of symbols referenced in this chunk. */
 	symbols: string | null;
 	timestamp: number;
+	/** Absolute CWD of the project that produced this row. */
+	project_cwd: string;
 	session_id: string;
 }
 

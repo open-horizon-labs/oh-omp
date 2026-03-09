@@ -840,7 +840,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	try {
 		memexLicense = await resolveMemexLicense();
 		recallStore = await RecallStore.open({
-			sessionDir: sessionManager.getSessionDir(),
+			agentDir,
 			sessionId: sessionManager.getSessionId(),
 		});
 		postmortem.register("recall-store-close", () => recallStore!.close());
@@ -1388,6 +1388,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			store: recallStore,
 			license: memexLicense,
 			sessionId: sessionManager.getSessionId(),
+			projectCwd: cwd,
 		});
 		passiveHydrator = new PassiveHydrator({
 			store: recallStore,

@@ -8,6 +8,7 @@ import type { RecallStore } from "../context/recall/store";
 import type { MmrCandidate, RecallSearchResult } from "../context/recall/types";
 import recallDescription from "../prompts/tools/recall.md" with { type: "text" };
 import type { ToolSession } from ".";
+import { shortenPath } from "./render-utils";
 
 const recallSchema = Type.Object({
 	query: Type.String({
@@ -17,6 +18,11 @@ const recallSchema = Type.Object({
 	role: Type.Optional(
 		Type.Union([Type.Literal("user"), Type.Literal("assistant"), Type.Literal("tool_result")], {
 			description: "Optional: filter by message type",
+		}),
+	),
+	project: Type.Optional(
+		Type.Union([Type.Literal("current"), Type.Literal("all")], {
+			description: "Search scope: 'current' (this project only) or 'all' (cross-project, default)",
 		}),
 	),
 });
@@ -36,24 +42,33 @@ export class RecallTool implements AgentTool<typeof recallSchema> {
 
 	#store: RecallStore;
 	#license: string;
+	#cwd: string;
 
-	constructor(store: RecallStore, license: string) {
+	constructor(store: RecallStore, license: string, cwd: string) {
 		this.description = renderPromptTemplate(recallDescription);
 		this.#store = store;
 		this.#license = license;
+		this.#cwd = cwd;
 	}
 
 	static createIf(session: ToolSession): RecallTool | null {
 		if (!session.recallStore || !session.memexLicense) return null;
-		return new RecallTool(session.recallStore, session.memexLicense);
+		return new RecallTool(session.recallStore, session.memexLicense, session.cwd);
 	}
 
 	async execute(_toolCallId: string, params: RecallParams, _signal?: AbortSignal): Promise<AgentToolResult> {
 		const limit = Math.min(Math.max(params.limit ?? DEFAULT_LIMIT, 1), MAX_LIMIT);
 		const overfetchLimit = limit * OVERFETCH_FACTOR;
 
-		// Build LanceDB SQL filter for role
-		const filter = params.role ? `role = '${params.role}'` : undefined;
+		// Build LanceDB SQL filter clauses
+		const clauses: string[] = [];
+		if (params.role) clauses.push(`role = '${params.role}'`);
+		if (params.project === "current") {
+			// Escape single quotes in CWD to prevent SQL injection in LanceDB filter
+			const escapedCwd = this.#cwd.replace(/'/g, "''");
+			clauses.push(`project_cwd = '${escapedCwd}'`);
+		}
+		const filter = clauses.length > 0 ? clauses.join(" AND ") : undefined;
 
 		// Step 1: Embed the query
 		let queryVector: number[];
@@ -117,10 +132,14 @@ export class RecallTool implements AgentTool<typeof recallSchema> {
 }
 
 function formatResult(r: RecallSearchResult): string {
-	// Header: Turn N [role: tool_name] paths: x, y
+	// Header: Turn N [role: tool_name] project: /path paths: x, y
 	let header = `Turn ${r.turn} [${r.role}`;
 	if (r.tool_name) header += `: ${r.tool_name}`;
 	header += "]";
+
+	if (r.project_cwd) {
+		header += ` project: ${shortenPath(r.project_cwd)}`;
+	}
 
 	if (r.paths) {
 		try {
@@ -129,7 +148,7 @@ function formatResult(r: RecallSearchResult): string {
 				header += ` paths: ${pathsList.join(", ")}`;
 			}
 		} catch {
-			// Malformed paths JSON — skip
+			// Malformed paths JSON -- skip
 		}
 	}
 

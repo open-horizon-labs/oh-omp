@@ -24,6 +24,7 @@ function makeRow(overrides: Partial<RecallRow> = {}): RecallRow {
 		symbols: null,
 		timestamp: Date.now(),
 		session_id: "test-session",
+		project_cwd: "/tmp/test-project",
 		...overrides,
 	};
 }
@@ -48,7 +49,7 @@ afterAll(async () => {
 async function createStoreWithRows(rows: RecallRow[]): Promise<RecallStore> {
 	testCounter++;
 	const sessionDir = path.join(tmpDir, `session-${testCounter}`);
-	const store = await RecallStore.open({ sessionDir, sessionId: `test-${testCounter}` });
+	const store = await RecallStore.open({ agentDir: sessionDir, sessionId: `test-${testCounter}` });
 	if (rows.length > 0) {
 		await store.insert(rows);
 	}
@@ -79,7 +80,7 @@ describe("RecallTool.createIf", () => {
 
 	test("returns RecallTool when both are present", async () => {
 		const store = await createStoreWithRows([]);
-		const session = { recallStore: store, memexLicense: "test-license" } as any;
+		const session = { recallStore: store, memexLicense: "test-license", cwd: "/tmp/test-project" } as any;
 		const tool = RecallTool.createIf(session);
 		expect(tool).toBeInstanceOf(RecallTool);
 		expect(tool!.name).toBe("recall");
@@ -99,7 +100,7 @@ describe("RecallTool.execute", () => {
 
 	test("returns empty message when store is empty", async () => {
 		const store = await createStoreWithRows([]);
-		const _tool = new RecallTool(store, "fake-license");
+		const _tool = new RecallTool(store, "fake-license", "/tmp/test-project");
 
 		// We need to mock embed to avoid hitting the real API.
 		// Instead of mocking, let's test the store.search path directly

@@ -40,6 +40,7 @@
 		"test": "bun test"
 	},
 	"dependencies": {
+		"@lancedb/lancedb": "0.26.2",
 		"@mozilla/readability": "^0.6",
 		"@oh-my-pi/omp-stats": "workspace:*",
 		"@oh-my-pi/pi-agent-core": "workspace:*",

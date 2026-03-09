@@ -229,9 +229,9 @@ export class ChildProcess<In extends InMask = InMask> {
 
 	async blob(): Promise<Blob> {
 		const p = new Response(this.stdout).blob();
-		if (this.#nothrow) return p;
+		if (this.#nothrow) return (await p) as unknown as Blob;
 		const [blob] = await Promise.all([p, this.exitedCleanly]);
-		return blob;
+		return blob as unknown as Blob;
 	}
 
 	async json(): Promise<unknown> {

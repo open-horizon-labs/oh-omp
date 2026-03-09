@@ -1220,9 +1220,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	const intentField = settings.get("tools.intentTracing") || $env.PI_INTENT_TRACING === "1" ? INTENT_FIELD : undefined;
 	const rebuildSystemPrompt = async (toolNames: string[], tools: Map<string, AgentTool>): Promise<string> => {
 		toolContextStore.setToolNames(toolNames);
-		// Memory instructions were legacy-only (ADR-0003). Assembler is now the sole mode.
-
-		// Build combined append prompt: memory instructions + MCP server instructions
+		// Build combined append prompt: MCP server instructions
 		const serverInstructions = mcpManager?.getServerInstructions();
 		let appendPrompt: string | undefined;
 		if (serverInstructions && serverInstructions.size > 0) {
@@ -1377,7 +1375,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		openaiWebsocketSetting === "on" ? true : openaiWebsocketSetting === "off" ? false : undefined;
 	const serviceTierSetting = settings.get("serviceTier");
 
-	// Pre-create bridge for assembler/shadow modes so it's available to transformContext.
+	// Pre-create bridge so it's available to transformContext.
 	// Event subscription is wired after session creation below.
 	const assemblerBridge = new ToolResultBridge();
 

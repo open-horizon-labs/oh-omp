@@ -10,7 +10,6 @@
  */
 
 import { logger } from "@oh-my-pi/pi-utils";
-import type { LocatorRetriever } from "../assembler/types";
 import type {
 	MemoryAssemblyBudget,
 	MemoryContractV1,
@@ -21,7 +20,6 @@ import type {
 } from "../memory-contract";
 import { MEMORY_CONTRACT_VERSION } from "../memory-contract";
 import { classifyResult, TOOL_CATEGORY_MAP } from "./classify";
-import { type ArtifactResolver, createCompositeRetriever } from "./retriever";
 import { type BridgeConfig, DEFAULT_MAX_LOCATOR_ENTRIES, type ResultProfile } from "./types";
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -106,11 +104,6 @@ export class ToolResultBridge {
 			budget: input.budget,
 			updatedAt: now,
 		};
-	}
-
-	/** Create a composite retriever backed by the given artifact resolver. */
-	createRetriever(resolver: ArtifactResolver): LocatorRetriever {
-		return createCompositeRetriever(resolver);
 	}
 
 	/**

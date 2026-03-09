@@ -39,6 +39,15 @@ import {
 } from "./context/assembler";
 import { ToolResultBridge } from "./context/bridge";
 import { captureEffectivePromptSnapshot, type EffectivePromptSnapshot } from "./context/effective-prompt-snapshot";
+import { extractPaths } from "./context/extract-paths";
+import {
+	extractAssistantText,
+	extractPathsFromText,
+	extractUserText,
+	IngestPipeline,
+	RecallStore,
+	resolveMemexLicense,
+} from "./context/recall";
 import {
 	isAssemblerActive,
 	isLegacyActive,
@@ -1394,6 +1403,31 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		? assemblerBridge.createRetriever({ getPath: id => sessionManager.getArtifactPath(id) })
 		: undefined;
 
+	// Initialize recall ingest pipeline for assembler/shadow modes.
+	// RecallStore + IngestPipeline persist and embed all messages into LanceDB.
+	let ingestPipeline: IngestPipeline | undefined;
+	if (assemblerBridge) {
+		try {
+			const license = await resolveMemexLicense();
+			const recallStore = await RecallStore.open({
+				sessionDir: sessionManager.getSessionDir(),
+				sessionId: sessionManager.getSessionId(),
+			});
+			ingestPipeline = new IngestPipeline({
+				store: recallStore,
+				license,
+				sessionId: sessionManager.getSessionId(),
+			});
+			postmortem.register("recall-store-close", () => recallStore.close());
+			logger.debug("Recall ingest pipeline initialized");
+		} catch (err) {
+			// No memex license or LanceDB init failure — recall is optional.
+			logger.debug("Recall ingest pipeline not available", {
+				error: err instanceof Error ? err.message : String(err),
+			});
+		}
+	}
+
 	// Build per-turn context transformer.
 	// In assembler mode, assembled context fragments are injected as a developer message.
 	// Extensions transform is always composed when available.
@@ -1689,8 +1723,10 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 
 	// Wire tool-result bridge event subscription for shadow/assembler mode.
 	// The bridge itself was created above (before Agent constructor) so transformContext can use it.
+	// Also wire ingest pipeline to persist + embed all messages into LanceDB.
 	if (assemblerBridge) {
 		const pendingArgs = new Map<string, unknown>();
+		let ingestTurn = 0;
 		session.subscribe(event => {
 			if (event.type === "tool_execution_start") {
 				pendingArgs.set(event.toolCallId, event.args);
@@ -1704,6 +1740,46 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 					event.result,
 					event.isError ?? false,
 				);
+
+				// Ingest tool result into LanceDB
+				if (ingestPipeline) {
+					const resultText =
+						typeof event.result === "string" ? event.result : (JSON.stringify(event.result) ?? "");
+					const safeArgs = (typeof args === "object" && args !== null ? args : {}) as Record<string, unknown>;
+					ingestPipeline.ingest({
+						text: resultText,
+						role: "tool_result",
+						turn: ingestTurn,
+						toolName: event.toolName,
+						paths: extractPaths(event.toolName, safeArgs),
+					});
+				}
+			}
+
+			// Ingest user and assistant messages into LanceDB
+			if (ingestPipeline && event.type === "message_end") {
+				const msg = event.message;
+				if (msg.role === "user") {
+					const text = extractUserText(msg.content);
+					ingestPipeline.ingest({
+						text,
+						role: "user",
+						turn: ingestTurn,
+						paths: extractPathsFromText(text),
+					});
+				} else if (msg.role === "assistant") {
+					const text = extractAssistantText(msg.content);
+					ingestPipeline.ingest({
+						text,
+						role: "assistant",
+						turn: ingestTurn,
+						paths: extractPathsFromText(text),
+					});
+				}
+			}
+
+			if (event.type === "turn_end") {
+				ingestTurn++;
 			}
 		});
 		logger.debug("Tool-result bridge wired", { mode: isShadowMode(settings) ? "shadow" : "assembler" });

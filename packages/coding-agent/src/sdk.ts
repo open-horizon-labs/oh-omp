@@ -27,13 +27,9 @@ import { CursorExecHandlers } from "./cursor";
 import "./discovery";
 import { resolveConfigValue } from "./config/resolve-config-value";
 import {
-	type AssemblerTurnInput,
-	assemble,
-	DEFAULT_BUDGET,
 	deriveBudget,
 	estimateMessageTokens,
 	estimateToolDefinitionTokens,
-	formatAssembledContext,
 	type TransformMetadata,
 	transformMessages,
 } from "./context/assembler";
@@ -45,6 +41,7 @@ import {
 	extractPathsFromText,
 	extractUserText,
 	IngestPipeline,
+	PassiveHydrator,
 	RecallStore,
 	resolveMemexLicense,
 } from "./context/recall";
@@ -387,34 +384,6 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		appendSystemPrompt: options.appendPrompt,
 		repeatToolDescriptions: options.repeatToolDescriptions,
 	});
-}
-
-/** Max characters to keep from the last user message as the WM objective. */
-const OBJECTIVE_MAX_CHARS = 500;
-
-/**
- * Extract a short objective string from the last user message in the turn.
- * Returns an empty string when no user message is found.
- */
-function extractObjective(messages: AgentMessage[]): string {
-	for (let i = messages.length - 1; i >= 0; i--) {
-		const msg = messages[i];
-		if (!("role" in msg) || msg.role !== "user") continue;
-		const content = msg.content;
-		if (typeof content === "string") {
-			return content.slice(0, OBJECTIVE_MAX_CHARS);
-		}
-		if (Array.isArray(content)) {
-			const parts: string[] = [];
-			for (const block of content) {
-				if (typeof block === "object" && block.type === "text") {
-					parts.push(block.text);
-				}
-			}
-			return parts.join("\n").slice(0, OBJECTIVE_MAX_CHARS);
-		}
-	}
-	return "";
 }
 
 // Internal Helpers
@@ -1424,24 +1393,26 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	// Pre-create bridge for assembler/shadow modes so it's available to transformContext.
 	// Event subscription is wired after session creation below.
 	const assemblerBridge = isShadowMode(settings) || isAssemblerActive(settings) ? new ToolResultBridge() : undefined;
-	const assemblerRetriever = assemblerBridge
-		? assemblerBridge.createRetriever({ getPath: id => sessionManager.getArtifactPath(id) })
-		: undefined;
 
-	// Initialize recall ingest pipeline for assembler/shadow modes.
+	// Initialize recall ingest pipeline and passive hydrator for assembler/shadow modes.
 	// Reuses the RecallStore + license initialized earlier (before tool creation).
 	let ingestPipeline: IngestPipeline | undefined;
+	let passiveHydrator: PassiveHydrator | undefined;
 	if (assemblerBridge && recallStore && memexLicense) {
 		ingestPipeline = new IngestPipeline({
 			store: recallStore,
 			license: memexLicense,
 			sessionId: sessionManager.getSessionId(),
 		});
-		logger.debug("Recall ingest pipeline initialized");
+		passiveHydrator = new PassiveHydrator({
+			store: recallStore,
+			license: memexLicense,
+		});
+		logger.debug("Recall pipeline initialized (ingest + passive hydration)");
 	}
 
 	// Build per-turn context transformer.
-	// In assembler mode, assembled context fragments are injected as a developer message.
+	// In assembler mode, passively hydrated context is injected as a developer message.
 	// Extensions transform is always composed when available.
 	// All modes capture an effective-prompt snapshot for canonical observability.
 	const assemblerMode = isAssemblerActive(settings);
@@ -1475,44 +1446,22 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 								})
 							: undefined;
 
-						// Extract objective from last user message.
-						const objective = extractObjective(messages);
+						// Step 2: Run passive hydration (embed hot window → cache check → search → MMR).
+						const hydration = passiveHydrator
+							? await passiveHydrator.hydrate(messages)
+							: { text: null, results: [], cacheHit: false, durationMs: 0 };
 
-						// Rebuild working memory from STM state before assembly.
-						// This ensures the kernel sees fresh per-turn WM with budget and active context.
-						const turnId = `turn-${Date.now()}`;
-						assemblerBridge.rebuildWorkingMemory({
-							turnId,
-							objective,
-							budget: budget ?? DEFAULT_BUDGET,
+						logger.debug("assembler:passive-hydration", {
+							resultCount: hydration.results.length,
+							cacheHit: hydration.cacheHit,
+							durationMs: Math.round(hydration.durationMs),
 						});
 
-						// Step 2: Run assembly (hydrate fragments within budget).
-						const stm = assemblerBridge.contract.shortTerm[0];
-						const turn: AssemblerTurnInput = {
-							turnId,
-							objective,
-							activePaths: stm?.touchedPaths ?? [],
-							activeSymbols: stm?.touchedSymbols ?? [],
-							unresolvedLoops: stm?.unresolvedLoops ?? [],
-						};
-						const packet = await assemble(assemblerBridge.contract, turn, {
-							retriever: assemblerRetriever,
-							budget,
-						});
-						logger.debug("assembler:transform", {
-							locators: assemblerBridge.contract.locatorMap.length,
-							fragments: packet.fragments.length,
-							dropped: packet.dropped.length,
-							drops: packet.dropped.map(d => `${d.id}:${d.reason}`),
-							usage: packet.usage,
-							budgetMaxTokens: packet.budget.maxTokens,
-						});
-
-						// Step 3: Apply budget bounding to fit messages + assembled context
-						// within the available budget.
-						const assembledContextTokens = packet.usage.consumedTokens;
-						const maxMessageTokens = budget ? Math.max(0, budget.maxTokens - assembledContextTokens) : undefined;
+						// Step 3: Apply budget bounding — account for hydrated context tokens.
+						const hydratedTokens = hydration.text
+							? estimateMessageTokens([{ role: "developer", content: hydration.text }])
+							: 0;
+						const maxMessageTokens = budget ? Math.max(0, budget.maxTokens - hydratedTokens) : undefined;
 						let boundedMessages: AgentMessage[];
 						let finalTransformMetadata: TransformMetadata;
 						if (maxMessageTokens !== undefined) {
@@ -1524,13 +1473,12 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 							finalTransformMetadata = firstPass.metadata;
 						}
 
-						// Step 4: Prepend assembled context if available.
-						const text = formatAssembledContext(packet);
-						const finalMessages = text
+						// Step 4: Inject hydrated context as developer message.
+						const finalMessages = hydration.text
 							? [
 									{
 										role: "developer" as const,
-										content: text,
+										content: hydration.text,
 										attribution: "agent" as const,
 										timestamp: Date.now(),
 									} satisfies AgentMessage,
@@ -1539,6 +1487,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 							: boundedMessages;
 
 						// Step 5: Capture effective-prompt snapshot.
+						const turnId = `turn-${Date.now()}`;
 						lastPromptSnapshot = captureEffectivePromptSnapshot({
 							turnId,
 							model: currentModel,
@@ -1546,7 +1495,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 							tools: currentTools,
 							finalMessages,
 							transformMetadata: finalTransformMetadata,
-							assemblerPacket: packet,
+							assemblerPacket: null,
 							assemblerBudget: budget ?? null,
 						});
 

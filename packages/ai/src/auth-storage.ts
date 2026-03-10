@@ -57,6 +57,7 @@ import { loginPerplexity } from "./utils/oauth/perplexity";
 import { loginQianfan } from "./utils/oauth/qianfan";
 import { loginQwenPortal } from "./utils/oauth/qwen-portal";
 import { loginSynthetic } from "./utils/oauth/synthetic";
+import { loginTavily } from "./utils/oauth/tavily";
 import { loginTogether } from "./utils/oauth/together";
 import type { OAuthController, OAuthCredentials, OAuthProvider, OAuthProviderId } from "./utils/oauth/types";
 import { loginVenice } from "./utils/oauth/venice";
@@ -164,6 +165,7 @@ const DEFAULT_USAGE_PROVIDER_MAP = new Map<Provider, UsageProvider>(
 const USAGE_CACHE_PREFIX = "usage_cache:";
 const USAGE_REPORT_TTL_MS = 30_000;
 const DEFAULT_USAGE_REQUEST_TIMEOUT_MS = 3_000;
+const DEFAULT_OAUTH_REFRESH_TIMEOUT_MS = 10_000;
 
 type UsageCacheEntry<T> = {
 	value: T;
@@ -181,6 +183,28 @@ type UsageRequestDescriptor = {
 	credential: UsageCredential;
 	baseUrl?: string;
 };
+
+type AuthApiKeyOptions = {
+	baseUrl?: string;
+	modelId?: string;
+};
+
+function requiresOpenAICodexProModel(provider: string, modelId: string | undefined): boolean {
+	return provider === "openai-codex" && typeof modelId === "string" && modelId.includes("-spark");
+}
+
+function getUsagePlanType(report: UsageReport | null): string | undefined {
+	const metadata = report?.metadata;
+	if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return undefined;
+	const planType = (metadata as { planType?: unknown }).planType;
+	return typeof planType === "string" ? planType.toLowerCase() : undefined;
+}
+
+function getOpenAICodexPlanPriority(report: UsageReport | null): number {
+	const planType = getUsagePlanType(report);
+	if (!planType) return 1;
+	return planType.includes("pro") ? 0 : 2;
+}
 
 function resolveDefaultUsageProvider(provider: Provider): UsageProvider | undefined {
 	return DEFAULT_USAGE_PROVIDER_MAP.get(provider);
@@ -817,6 +841,11 @@ export class AuthStorage {
 				await saveApiKeyCredential(apiKey);
 				return;
 			}
+			case "tavily": {
+				const apiKey = await loginTavily(ctrl);
+				await saveApiKeyCredential(apiKey);
+				return;
+			}
 			case "venice": {
 				const apiKey = await loginVenice(ctrl);
 				await saveApiKeyCredential(apiKey);
@@ -941,11 +970,17 @@ export class AuthStorage {
 		if (projectId) parts.push(`project:${projectId}`);
 		const enterpriseUrl = credential.enterpriseUrl?.trim().toLowerCase();
 		if (enterpriseUrl) parts.push(`enterprise:${enterpriseUrl}`);
-		const secret = credential.apiKey?.trim() || credential.refreshToken?.trim() || credential.accessToken?.trim();
-		if (secret) {
-			parts.push(`secret:${Bun.hash(secret).toString(16)}`);
-		} else if (parts.length === 1) {
-			parts.push("anonymous");
+		// Only fall back to a secret-derived key when a stable account identifier is unavailable.
+		// Including the token hash when accountId/email are present causes cache misses on
+		// every OAuth refresh — usage data is per-account, not per-token.
+		const hasStableIdentifier = Boolean(accountId || email);
+		if (!hasStableIdentifier) {
+			const secret = credential.apiKey?.trim() || credential.refreshToken?.trim() || credential.accessToken?.trim();
+			if (secret) {
+				parts.push(`secret:${Bun.hash(secret).toString(16)}`);
+			} else {
+				parts.push("anonymous");
+			}
 		}
 		return parts.join("|");
 	}
@@ -1315,7 +1350,7 @@ export class AuthStorage {
 	): Promise<UsageReport | null> {
 		return this.#fetchUsageCached(
 			this.#buildUsageRequestForOauth(provider, credential, options?.baseUrl),
-			options?.timeoutMs,
+			options?.timeoutMs ?? this.#usageRequestTimeoutMs,
 		);
 	}
 
@@ -1473,7 +1508,7 @@ export class AuthStorage {
 		provider: string;
 		order: number[];
 		credentials: Array<{ credential: OAuthCredential; index: number }>;
-		options?: { baseUrl?: string };
+		options?: AuthApiKeyOptions;
 		strategy: CredentialRankingStrategy;
 	}): Promise<
 		Array<{
@@ -1554,9 +1589,12 @@ export class AuthStorage {
 				if (leftBlockedUntil !== rightBlockedUntil) return leftBlockedUntil - rightBlockedUntil;
 				return left.orderPos - right.orderPos;
 			}
-			if (left.hasPriorityBoost !== right.hasPriorityBoost) {
-				return left.hasPriorityBoost ? -1 : 1;
+			if (requiresOpenAICodexProModel(args.provider, args.options?.modelId)) {
+				const leftPlanPriority = getOpenAICodexPlanPriority(left.usage);
+				const rightPlanPriority = getOpenAICodexPlanPriority(right.usage);
+				if (leftPlanPriority !== rightPlanPriority) return leftPlanPriority - rightPlanPriority;
 			}
+			if (left.hasPriorityBoost !== right.hasPriorityBoost) return left.hasPriorityBoost ? -1 : 1;
 			if (left.secondaryDrainRate !== right.secondaryDrainRate)
 				return left.secondaryDrainRate - right.secondaryDrainRate;
 			if (left.secondaryUsed !== right.secondaryUsed) return left.secondaryUsed - right.secondaryUsed;
@@ -1579,7 +1617,7 @@ export class AuthStorage {
 	async #resolveOAuthApiKey(
 		provider: string,
 		sessionId?: string,
-		options?: { baseUrl?: string },
+		options?: AuthApiKeyOptions,
 	): Promise<string | undefined> {
 		const credentials = this.#getCredentialsForProvider(provider)
 			.map((credential, index) => ({ credential, index }))
@@ -1597,9 +1635,10 @@ export class AuthStorage {
 		// mid-session causes account switches that cold-start the server-side prompt cache. New sessions
 		// (no preference) and sessions whose preferred is blocked still rank, so we pick the account
 		// with the most headroom proactively and fall back intelligently when rate-limited.
+		const requiresProModel = requiresOpenAICodexProModel(provider, options?.modelId);
 		const sessionPreferredIsAvailable =
 			sessionPreferredIndex !== undefined && !this.#isCredentialBlocked(providerKey, sessionPreferredIndex);
-		const shouldRank = checkUsage && !sessionPreferredIsAvailable;
+		const shouldRank = checkUsage && (!sessionPreferredIsAvailable || requiresProModel);
 		const candidates = shouldRank
 			? await this.#rankOAuthSelections({ providerKey, provider, order, credentials, options, strategy: strategy! })
 			: order
@@ -1607,7 +1646,7 @@ export class AuthStorage {
 					.filter((selection): selection is { credential: OAuthCredential; index: number } => Boolean(selection))
 					.map(selection => ({ selection, usage: null, usageChecked: false }));
 
-		if (sessionPreferredIndex !== undefined) {
+		if (sessionPreferredIndex !== undefined && !requiresProModel) {
 			const sessionPreferredCandidate = candidates.findIndex(
 				candidate =>
 					!this.#isCredentialBlocked(providerKey, candidate.selection.index) &&
@@ -1667,13 +1706,28 @@ export class AuthStorage {
 	async #refreshOAuthCredential(provider: Provider, credential: OAuthCredential): Promise<OAuthCredentials> {
 		if (Date.now() < credential.expires) return credential;
 		const customProvider = getOAuthProvider(provider);
+		let refreshPromise: Promise<OAuthCredentials>;
 		if (customProvider) {
 			if (!customProvider.refreshToken) {
 				throw new Error(`OAuth provider "${provider}" does not support token refresh`);
 			}
-			return customProvider.refreshToken(credential);
+			refreshPromise = customProvider.refreshToken(credential);
+		} else {
+			refreshPromise = refreshOAuthToken(provider as OAuthProvider, credential);
 		}
-		return refreshOAuthToken(provider as OAuthProvider, credential);
+		// Bound the refresh so a slow/hanging token endpoint cannot stall credential selection.
+		let timeout: NodeJS.Timeout | undefined;
+		const timeoutPromise = new Promise<never>((_, reject) => {
+			timeout = setTimeout(
+				() => reject(new Error(`OAuth token refresh timed out for provider: ${provider}`)),
+				DEFAULT_OAUTH_REFRESH_TIMEOUT_MS,
+			);
+		});
+		try {
+			return await Promise.race([refreshPromise, timeoutPromise]);
+		} finally {
+			if (timeout) clearTimeout(timeout);
+		}
 	}
 
 	/** Attempts to use a single OAuth credential, checking usage and refreshing token. */
@@ -1682,7 +1736,7 @@ export class AuthStorage {
 		selection: { credential: OAuthCredential; index: number },
 		providerKey: string,
 		sessionId: string | undefined,
-		options: { baseUrl?: string } | undefined,
+		options: AuthApiKeyOptions | undefined,
 		usageOptions: {
 			checkUsage: boolean;
 			allowBlocked: boolean;
@@ -1838,7 +1892,7 @@ export class AuthStorage {
 	 * 4. Environment variable
 	 * 5. Fallback resolver (models.json custom providers)
 	 */
-	async getApiKey(provider: string, sessionId?: string, options?: { baseUrl?: string }): Promise<string | undefined> {
+	async getApiKey(provider: string, sessionId?: string, options?: AuthApiKeyOptions): Promise<string | undefined> {
 		// Runtime override takes highest priority
 		const runtimeKey = this.#runtimeOverrides.get(provider);
 		if (runtimeKey) {
@@ -1952,10 +2006,11 @@ function toStoredAuthCredential(row: AuthRow, credential: AuthCredential): Store
 	return { id: row.id, provider: row.provider, credential, disabledCause: row.disabled_cause };
 }
 
-function resolveProviderCredentialIdentityKey(_provider: string, identifiers: string[]): string | null {
+function resolveProviderCredentialIdentityKey(provider: string, identifiers: string[]): string | null {
+	const emailIdentifier = identifiers.find(identifier => identifier.startsWith("email:"));
+	if ((provider === "openai-codex" || provider === "anthropic") && emailIdentifier) return emailIdentifier;
 	const accountIdentifier = identifiers.find(identifier => identifier.startsWith("account:"));
 	if (accountIdentifier) return accountIdentifier;
-	const emailIdentifier = identifiers.find(identifier => identifier.startsWith("email:"));
 	if (emailIdentifier) return emailIdentifier;
 	return null;
 }

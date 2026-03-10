@@ -1,5 +1,6 @@
 import * as os from "node:os";
-import { $env, abortableSleep, asRecord, readSseJson } from "@oh-my-pi/pi-utils";
+import { $env, abortableSleep, asRecord, logger, readSseJson } from "@oh-my-pi/pi-utils";
+import type OpenAI from "openai";
 import type {
 	ResponseFunctionToolCall,
 	ResponseInput,
@@ -12,25 +13,31 @@ import type {
 import packageJson from "../../package.json" with { type: "json" };
 import { calculateCost } from "../models";
 import { getEnvApiKey } from "../stream";
-import type {
-	Api,
-	AssistantMessage,
-	Context,
-	Model,
-	ProviderSessionState,
-	ServiceTier,
-	StopReason,
-	StreamFunction,
-	StreamOptions,
-	TextContent,
-	ThinkingContent,
-	Tool,
-	ToolCall,
-	ToolChoice,
+import {
+	type Api,
+	type AssistantMessage,
+	type Context,
+	isSpecialServiceTier,
+	type Model,
+	type ProviderSessionState,
+	type ServiceTier,
+	type StreamFunction,
+	type StreamOptions,
+	type TextContent,
+	type ThinkingContent,
+	type Tool,
+	type ToolCall,
+	type ToolChoice,
 } from "../types";
-import { normalizeResponsesToolCallId } from "../utils";
+import {
+	createOpenAIResponsesHistoryPayload,
+	getOpenAIResponsesHistoryItems,
+	getOpenAIResponsesHistoryPayload,
+	normalizeResponsesToolCallId,
+} from "../utils";
 import { AssistantMessageEventStream } from "../utils/event-stream";
 import { finalizeErrorMessage, type RawHttpRequestDump } from "../utils/http-inspector";
+import { getOpenAIStreamIdleTimeoutMs, iterateWithIdleTimeout } from "../utils/idle-iterator";
 import { parseStreamingJson } from "../utils/json-parse";
 import { adaptSchemaForStrict, NO_STRICT } from "../utils/schema";
 import {
@@ -47,6 +54,7 @@ import {
 	transformRequestBody,
 } from "./openai-codex/request-transformer";
 import { parseCodexError } from "./openai-codex/response-handler";
+import { encodeTextSignatureV1, mapOpenAIResponsesStopReason, parseTextSignature } from "./openai-responses-shared";
 import { transformMessages } from "./transform-messages";
 
 export interface OpenAICodexResponsesOptions extends StreamOptions {
@@ -87,11 +95,91 @@ const CODEX_RETRYABLE_STATUS = new Set([408, 429, 500, 502, 503, 504]);
 const CODEX_RETRY_DELAY_MS = 500;
 const CODEX_WEBSOCKET_CONNECT_TIMEOUT_MS = 10000;
 const CODEX_WEBSOCKET_IDLE_TIMEOUT_MS = 300000;
+const CODEX_WEBSOCKET_FIRST_EVENT_TIMEOUT_MS = 15000;
 const CODEX_WEBSOCKET_RETRY_BUDGET = CODEX_MAX_RETRIES;
 const CODEX_WEBSOCKET_TRANSPORT_ERROR_PREFIX = "Codex websocket transport error";
 const CODEX_RETRYABLE_EVENT_CODES = new Set(["model_error", "server_error", "internal_error"]);
 const CODEX_RETRYABLE_EVENT_MESSAGE =
 	/processing your request|retry your request|temporar(?:y|ily)|overloaded|service.?unavailable|internal error|server error/i;
+const CODEX_PROVIDER_SESSION_STATE_KEY = "openai-codex-responses";
+const X_CODEX_TURN_STATE_HEADER = "x-codex-turn-state";
+const X_MODELS_ETAG_HEADER = "x-models-etag";
+const X_REASONING_INCLUDED_HEADER = "x-reasoning-included";
+/** Connection-level websocket failures that should immediately fall back to SSE without retrying. */
+const CODEX_WEBSOCKET_FATAL_PATTERNS = ["websocket error:", "websocket closed before open", "connection timeout"];
+/** Max total time to spend retrying 429s with server-provided delays (5 minutes). */
+const CODEX_RATE_LIMIT_BUDGET_MS = 5 * 60 * 1000;
+
+type CodexTransport = "sse" | "websocket";
+type CodexEventItem = ResponseReasoningItem | ResponseOutputMessage | ResponseFunctionToolCall;
+type CodexOutputBlock = ThinkingContent | TextContent | (ToolCall & { partialJson: string });
+
+type CodexWebSocketSessionState = {
+	disableWebsocket: boolean;
+	lastRequest?: RequestBody;
+	lastResponseId?: string;
+	canAppend: boolean;
+	turnState?: string;
+	modelsEtag?: string;
+	reasoningIncluded?: boolean;
+	connection?: CodexWebSocketConnection;
+	lastTransport?: CodexTransport;
+	fallbackCount: number;
+	lastFallbackAt?: number;
+	prewarmed: boolean;
+};
+
+interface CodexProviderSessionState extends ProviderSessionState {
+	webSocketSessions: Map<string, CodexWebSocketSessionState>;
+	webSocketPublicToPrivate: Map<string, string>;
+}
+
+interface CodexRequestContext {
+	apiKey: string;
+	accountId: string;
+	baseUrl: string;
+	url: string;
+	requestHeaders: Record<string, string>;
+	providerSessionState?: CodexProviderSessionState;
+	websocketState?: CodexWebSocketSessionState;
+	transformedBody: RequestBody;
+	rawRequestDump: RawHttpRequestDump;
+}
+
+interface CodexRequestSetup {
+	requestSignal: AbortSignal;
+	wrapCodexSseStream: (source: AsyncGenerator<Record<string, unknown>>) => AsyncGenerator<Record<string, unknown>>;
+	requestAbortController: AbortController;
+}
+
+interface CodexStreamRuntime {
+	eventStream: AsyncGenerator<Record<string, unknown>>;
+	requestBodyForState: RequestBody;
+	transport: CodexTransport;
+	websocketState?: CodexWebSocketSessionState;
+	currentItem: CodexEventItem | null;
+	currentBlock: CodexOutputBlock | null;
+	nativeOutputItems: Array<Record<string, unknown>>;
+	websocketStreamRetries: number;
+	providerRetryAttempt: number;
+	sawTerminalEvent: boolean;
+	canSafelyReplayWebsocketOverSse: boolean;
+}
+
+interface CodexStreamProcessingContext {
+	model: Model<"openai-codex-responses">;
+	output: AssistantMessage;
+	stream: AssistantMessageEventStream;
+	options: OpenAICodexResponsesOptions | undefined;
+	requestSetup: CodexRequestSetup;
+	requestContext: CodexRequestContext;
+	startTime: number;
+	firstTokenTime?: number;
+}
+
+interface CodexStreamCompletion {
+	firstTokenTime?: number;
+}
 
 function parseCodexNonNegativeInteger(value: string | undefined, fallback: number): number {
 	if (!value) return fallback;
@@ -124,26 +212,11 @@ function getCodexWebSocketIdleTimeoutMs(): number {
 	return parseCodexPositiveInteger($env.PI_CODEX_WEBSOCKET_IDLE_TIMEOUT_MS, CODEX_WEBSOCKET_IDLE_TIMEOUT_MS);
 }
 
-type CodexWebSocketSessionState = {
-	disableWebsocket: boolean;
-	lastRequest?: RequestBody;
-	lastResponseId?: string;
-	canAppend: boolean;
-	turnState?: string;
-	modelsEtag?: string;
-	reasoningIncluded?: boolean;
-	connection?: CodexWebSocketConnection;
-	lastTransport?: "sse" | "websocket";
-	fallbackCount: number;
-	lastFallbackAt?: number;
-	prewarmed: boolean;
-};
-
-const CODEX_PROVIDER_SESSION_STATE_KEY = "openai-codex-responses";
-
-interface CodexProviderSessionState extends ProviderSessionState {
-	webSocketSessions: Map<string, CodexWebSocketSessionState>;
-	webSocketPublicToPrivate: Map<string, string>;
+function getCodexWebSocketFirstEventTimeoutMs(): number {
+	return parseCodexPositiveInteger(
+		$env.PI_CODEX_WEBSOCKET_FIRST_EVENT_TIMEOUT_MS,
+		Math.min(CODEX_WEBSOCKET_FIRST_EVENT_TIMEOUT_MS, getCodexWebSocketIdleTimeoutMs()),
+	);
 }
 
 function createCodexProviderSessionState(): CodexProviderSessionState {
@@ -171,20 +244,14 @@ function getCodexProviderSessionState(
 	providerSessionState.set(CODEX_PROVIDER_SESSION_STATE_KEY, created);
 	return created;
 }
-const X_CODEX_TURN_STATE_HEADER = "x-codex-turn-state";
-const X_MODELS_ETAG_HEADER = "x-models-etag";
-const X_REASONING_INCLUDED_HEADER = "x-reasoning-included";
 
 function createCodexWebSocketTransportError(message: string): Error {
 	return new Error(`${CODEX_WEBSOCKET_TRANSPORT_ERROR_PREFIX}: ${message}`);
 }
 
-/** Connection-level websocket failures that should immediately fall back to SSE without retrying. */
-const CODEX_WEBSOCKET_FATAL_PATTERNS = ["websocket error:", "websocket closed before open", "connection timeout"];
-
 function isCodexWebSocketFatalError(error: Error): boolean {
 	const msg = error.message.toLowerCase();
-	return CODEX_WEBSOCKET_FATAL_PATTERNS.some(p => msg.includes(p.toLowerCase()));
+	return CODEX_WEBSOCKET_FATAL_PATTERNS.some(pattern => msg.includes(pattern.toLowerCase()));
 }
 
 function isCodexWebSocketTransportError(error: unknown): boolean {
@@ -198,7 +265,11 @@ function isCodexWebSocketRetryableStreamError(error: unknown): boolean {
 	return (
 		message.includes("websocket closed (") ||
 		message.includes("websocket closed before response completion") ||
-		message.includes("websocket connection is unavailable")
+		message.includes("websocket connection is unavailable") ||
+		message.includes("idle timeout waiting for websocket") ||
+		message.includes("timeout waiting for first websocket event") ||
+		message.includes("syntaxerror") ||
+		message.includes("json")
 	);
 }
 
@@ -287,6 +358,876 @@ function normalizeCodexToolChoice(choice: ToolChoice | undefined): string | Reco
 	return undefined;
 }
 
+function createEmptyUsage(): AssistantMessage["usage"] {
+	return {
+		input: 0,
+		output: 0,
+		cacheRead: 0,
+		cacheWrite: 0,
+		totalTokens: 0,
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+	};
+}
+
+function createAssistantOutput(model: Model<"openai-codex-responses">): AssistantMessage {
+	return {
+		role: "assistant",
+		content: [],
+		api: "openai-codex-responses" as Api,
+		provider: model.provider,
+		model: model.id,
+		usage: createEmptyUsage(),
+		stopReason: "stop",
+		timestamp: Date.now(),
+	};
+}
+
+function resetOutputState(output: AssistantMessage): void {
+	output.content.length = 0;
+	output.usage = createEmptyUsage();
+	output.stopReason = "stop";
+}
+
+function removeTransientBlockIndices(output: AssistantMessage): void {
+	for (const block of output.content) {
+		delete (block as { index?: number }).index;
+	}
+}
+
+function createRequestSetup(options: OpenAICodexResponsesOptions | undefined): CodexRequestSetup {
+	const requestAbortController = new AbortController();
+	const requestSignal = options?.signal
+		? AbortSignal.any([options.signal, requestAbortController.signal])
+		: requestAbortController.signal;
+	const wrapCodexSseStream = (
+		source: AsyncGenerator<Record<string, unknown>>,
+	): AsyncGenerator<Record<string, unknown>> =>
+		iterateWithIdleTimeout(source, {
+			idleTimeoutMs: getOpenAIStreamIdleTimeoutMs(),
+			errorMessage: "OpenAI Codex SSE stream stalled while waiting for the next event",
+			onIdle: () => requestAbortController.abort(),
+		});
+	return { requestAbortController, requestSignal, wrapCodexSseStream };
+}
+
+async function buildCodexRequestContext(
+	model: Model<"openai-codex-responses">,
+	context: Context,
+	options: OpenAICodexResponsesOptions | undefined,
+	output: AssistantMessage,
+): Promise<CodexRequestContext> {
+	const apiKey = options?.apiKey || getEnvApiKey(model.provider) || "";
+	if (!apiKey) {
+		throw new Error(`No API key for provider: ${model.provider}`);
+	}
+
+	const accountId = getAccountId(apiKey);
+	const baseUrl = model.baseUrl || CODEX_BASE_URL;
+	const baseWithSlash = baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`;
+	const url = rewriteUrlForCodex(new URL(URL_PATHS.RESPONSES.slice(1), baseWithSlash).toString());
+	const transformedBody = await buildTransformedCodexRequestBody(model, context, options);
+	options?.onPayload?.(transformedBody);
+
+	const requestHeaders = { ...(model.headers ?? {}), ...(options?.headers ?? {}) };
+	const rawRequestDump: RawHttpRequestDump = {
+		provider: model.provider,
+		api: output.api,
+		model: model.id,
+		method: "POST",
+		url,
+		body: transformedBody,
+	};
+
+	const providerSessionState = getCodexProviderSessionState(options?.providerSessionState);
+	const sessionKey = getCodexWebSocketSessionKey(options?.sessionId, model, accountId, baseUrl);
+	const publicSessionKey = getCodexPublicSessionKey(options?.sessionId, model, baseUrl);
+	if (sessionKey && publicSessionKey) {
+		providerSessionState?.webSocketPublicToPrivate.set(publicSessionKey, sessionKey);
+	}
+	const websocketState =
+		sessionKey && providerSessionState ? getCodexWebSocketSessionState(sessionKey, providerSessionState) : undefined;
+
+	return {
+		apiKey,
+		accountId,
+		baseUrl,
+		url,
+		requestHeaders,
+		providerSessionState,
+		websocketState,
+		transformedBody,
+		rawRequestDump,
+	};
+}
+
+async function buildTransformedCodexRequestBody(
+	model: Model<"openai-codex-responses">,
+	context: Context,
+	options: OpenAICodexResponsesOptions | undefined,
+): Promise<RequestBody> {
+	const params: RequestBody = {
+		model: model.id,
+		input: [...convertMessages(model, context)],
+		stream: true,
+		prompt_cache_key: options?.sessionId,
+	};
+
+	if (options?.maxTokens) {
+		params.max_output_tokens = options.maxTokens;
+	}
+	if (options?.temperature !== undefined) {
+		params.temperature = options.temperature;
+	}
+	if (options?.topP !== undefined) {
+		params.top_p = options.topP;
+	}
+	if (options?.topK !== undefined) {
+		params.top_k = options.topK;
+	}
+	if (options?.minP !== undefined) {
+		params.min_p = options.minP;
+	}
+	if (options?.presencePenalty !== undefined) {
+		params.presence_penalty = options.presencePenalty;
+	}
+	if (options?.repetitionPenalty !== undefined) {
+		params.repetition_penalty = options.repetitionPenalty;
+	}
+	if (isSpecialServiceTier(options?.serviceTier)) {
+		params.service_tier = options.serviceTier;
+	}
+	if (context.tools && context.tools.length > 0) {
+		params.tools = convertTools(context.tools);
+		if (options?.toolChoice) {
+			const toolChoice = normalizeCodexToolChoice(options.toolChoice);
+			if (toolChoice) {
+				params.tool_choice = toolChoice;
+			}
+		}
+	}
+
+	const systemPrompt = buildCodexSystemPrompt({ userSystemPrompt: context.systemPrompt });
+	params.instructions = systemPrompt.instructions;
+
+	const codexOptions: CodexRequestOptions = {
+		reasoningEffort: options?.reasoning,
+		reasoningSummary: options?.reasoningSummary ?? "auto",
+		textVerbosity: options?.textVerbosity,
+		include: options?.include,
+	};
+
+	return transformRequestBody(params, model, codexOptions, systemPrompt);
+}
+
+async function openInitialCodexEventStream(
+	model: Model<"openai-codex-responses">,
+	options: OpenAICodexResponsesOptions | undefined,
+	requestSetup: CodexRequestSetup,
+	requestContext: CodexRequestContext,
+): Promise<{
+	eventStream: AsyncGenerator<Record<string, unknown>>;
+	requestBodyForState: RequestBody;
+	transport: CodexTransport;
+}> {
+	const { transformedBody, websocketState } = requestContext;
+	if (websocketState && shouldUseCodexWebSocket(model, websocketState, options?.preferWebsockets)) {
+		const websocketRetryBudget = getCodexWebSocketRetryBudget();
+		let websocketRetries = 0;
+		while (true) {
+			try {
+				return await openCodexWebSocketTransport(
+					requestContext,
+					requestSetup,
+					options,
+					websocketState,
+					websocketRetries,
+				);
+			} catch (error) {
+				const websocketError = error instanceof Error ? error : new Error(String(error));
+				const isFatal = isCodexWebSocketFatalError(websocketError);
+				const activateFallback = isFatal || websocketRetries >= websocketRetryBudget;
+				recordCodexWebSocketFailure(websocketState, activateFallback);
+				logCodexDebug("codex websocket fallback", {
+					error: websocketError.message,
+					retry: websocketRetries,
+					retryBudget: websocketRetryBudget,
+					activated: activateFallback,
+					fatal: isFatal,
+				});
+				if (!activateFallback) {
+					websocketRetries += 1;
+					await abortableSleep(getCodexWebSocketRetryDelayMs(websocketRetries), requestSetup.requestSignal);
+					continue;
+				}
+				break;
+			}
+		}
+	}
+	return openCodexSseTransport(requestContext, requestSetup, options, websocketState, transformedBody);
+}
+async function openCodexWebSocketTransport(
+	requestContext: CodexRequestContext,
+	requestSetup: CodexRequestSetup,
+	options: OpenAICodexResponsesOptions | undefined,
+	websocketState: CodexWebSocketSessionState,
+	retry: number,
+): Promise<{
+	eventStream: AsyncGenerator<Record<string, unknown>>;
+	requestBodyForState: RequestBody;
+	transport: CodexTransport;
+}> {
+	const websocketRequest = buildCodexWebSocketRequest(requestContext.transformedBody, websocketState);
+	const websocketHeaders = createCodexHeaders(
+		requestContext.requestHeaders,
+		requestContext.accountId,
+		requestContext.apiKey,
+		options?.sessionId,
+		"websocket",
+		websocketState,
+	);
+	const requestBodyForState = cloneRequestBody(requestContext.transformedBody);
+	logCodexDebug("codex websocket request", {
+		url: toWebSocketUrl(requestContext.url),
+		model: requestContext.transformedBody.model,
+		reasoningEffort: requestContext.transformedBody.reasoning?.effort ?? null,
+		headers: redactHeaders(websocketHeaders),
+		sentTurnStateHeader: websocketHeaders.has(X_CODEX_TURN_STATE_HEADER),
+		sentModelsEtagHeader: websocketHeaders.has(X_MODELS_ETAG_HEADER),
+		requestType: websocketRequest.type,
+		retry,
+		retryBudget: getCodexWebSocketRetryBudget(),
+	});
+	const eventStream = await openCodexWebSocketEventStream(
+		toWebSocketUrl(requestContext.url),
+		websocketHeaders,
+		websocketRequest,
+		websocketState,
+		requestSetup.requestSignal,
+	);
+	return { eventStream, requestBodyForState, transport: "websocket" };
+}
+
+async function openCodexSseTransport(
+	requestContext: CodexRequestContext,
+	requestSetup: CodexRequestSetup,
+	options: OpenAICodexResponsesOptions | undefined,
+	state: CodexWebSocketSessionState | undefined,
+	body = requestContext.transformedBody,
+): Promise<{
+	eventStream: AsyncGenerator<Record<string, unknown>>;
+	requestBodyForState: RequestBody;
+	transport: CodexTransport;
+}> {
+	const eventStream = requestSetup.wrapCodexSseStream(
+		await openCodexSseEventStream(
+			requestContext.url,
+			requestContext.requestHeaders,
+			requestContext.accountId,
+			requestContext.apiKey,
+			options?.sessionId,
+			body,
+			state,
+			requestSetup.requestSignal,
+		),
+	);
+	return { eventStream, requestBodyForState: cloneRequestBody(body), transport: "sse" };
+}
+
+async function reopenCodexWebSocketRuntimeStream(
+	context: CodexStreamProcessingContext,
+	runtime: CodexStreamRuntime,
+	state: CodexWebSocketSessionState,
+): Promise<void> {
+	const next = await openCodexWebSocketTransport(
+		context.requestContext,
+		context.requestSetup,
+		context.options,
+		state,
+		runtime.websocketStreamRetries,
+	);
+	runtime.eventStream = next.eventStream;
+	runtime.requestBodyForState = next.requestBodyForState;
+	runtime.transport = next.transport;
+	state.lastTransport = next.transport;
+}
+
+async function reopenCodexSseRuntimeStream(
+	context: CodexStreamProcessingContext,
+	runtime: CodexStreamRuntime,
+	state: CodexWebSocketSessionState | undefined,
+): Promise<void> {
+	const next = await openCodexSseTransport(context.requestContext, context.requestSetup, context.options, state);
+	runtime.eventStream = next.eventStream;
+	runtime.requestBodyForState = next.requestBodyForState;
+	runtime.transport = next.transport;
+	if (state) {
+		state.lastTransport = next.transport;
+	}
+}
+
+function createCodexStreamRuntime(initial: {
+	eventStream: AsyncGenerator<Record<string, unknown>>;
+	requestBodyForState: RequestBody;
+	transport: CodexTransport;
+	websocketState?: CodexWebSocketSessionState;
+}): CodexStreamRuntime {
+	return {
+		eventStream: initial.eventStream,
+		requestBodyForState: initial.requestBodyForState,
+		transport: initial.transport,
+		websocketState: initial.websocketState,
+		currentItem: null,
+		currentBlock: null,
+		nativeOutputItems: [],
+		websocketStreamRetries: 0,
+		providerRetryAttempt: 0,
+		sawTerminalEvent: false,
+		canSafelyReplayWebsocketOverSse: true,
+	};
+}
+
+async function processCodexResponseStream(
+	context: CodexStreamProcessingContext,
+	runtime: CodexStreamRuntime,
+): Promise<CodexStreamCompletion> {
+	const { output, stream } = context;
+	stream.push({ type: "start", partial: output });
+
+	while (true) {
+		try {
+			let firstTokenTime = context.firstTokenTime;
+			for await (const rawEvent of runtime.eventStream) {
+				firstTokenTime = handleCodexStreamEvent({
+					...context,
+					runtime,
+					rawEvent,
+					firstTokenTime,
+				});
+			}
+			return { firstTokenTime };
+		} catch (error) {
+			const recovered = await recoverCodexStreamError(context, runtime, error);
+			if (!recovered) {
+				throw error;
+			}
+		}
+	}
+}
+
+function handleCodexStreamEvent(args: {
+	model: Model<"openai-codex-responses">;
+	output: AssistantMessage;
+	stream: AssistantMessageEventStream;
+	runtime: CodexStreamRuntime;
+	rawEvent: Record<string, unknown>;
+	firstTokenTime?: number;
+}): number | undefined {
+	const { model, output, stream, runtime, rawEvent } = args;
+	const eventType = typeof rawEvent.type === "string" ? rawEvent.type : "";
+	if (!eventType) return args.firstTokenTime;
+
+	const blocks = output.content;
+	const blockIndex = () => blocks.length - 1;
+	let firstTokenTime = args.firstTokenTime;
+
+	if (eventType === "response.output_item.added") {
+		if (!firstTokenTime) firstTokenTime = Date.now();
+		const item = rawEvent.item as CodexEventItem;
+		runtime.currentItem = item;
+		runtime.currentBlock = createOutputBlockForItem(item);
+		if (!runtime.currentBlock) return firstTokenTime;
+		output.content.push(runtime.currentBlock);
+		stream.push({
+			type: getOutputBlockStartEventType(runtime.currentBlock),
+			contentIndex: blockIndex(),
+			partial: output,
+		});
+		return firstTokenTime;
+	}
+
+	if (eventType === "response.reasoning_summary_part.added") {
+		handleReasoningSummaryPartAdded(runtime.currentItem, rawEvent);
+		return firstTokenTime;
+	}
+
+	if (eventType === "response.reasoning_summary_text.delta") {
+		handleReasoningSummaryTextDelta(runtime.currentItem, runtime.currentBlock, rawEvent, stream, output, blockIndex);
+		return firstTokenTime;
+	}
+
+	if (eventType === "response.reasoning_summary_part.done") {
+		handleReasoningSummaryPartDone(runtime.currentItem, runtime.currentBlock, stream, output, blockIndex);
+		return firstTokenTime;
+	}
+
+	if (eventType === "response.content_part.added") {
+		handleContentPartAdded(runtime.currentItem, rawEvent);
+		return firstTokenTime;
+	}
+
+	if (eventType === "response.output_text.delta") {
+		handleMessageTextDelta(
+			runtime.currentItem,
+			runtime.currentBlock,
+			rawEvent,
+			stream,
+			output,
+			blockIndex,
+			"output_text",
+		);
+		return firstTokenTime;
+	}
+
+	if (eventType === "response.refusal.delta") {
+		handleMessageTextDelta(
+			runtime.currentItem,
+			runtime.currentBlock,
+			rawEvent,
+			stream,
+			output,
+			blockIndex,
+			"refusal",
+		);
+		return firstTokenTime;
+	}
+
+	if (eventType === "response.function_call_arguments.delta") {
+		handleToolCallArgumentsDelta(runtime.currentItem, runtime.currentBlock, rawEvent, stream, output, blockIndex);
+		return firstTokenTime;
+	}
+
+	if (eventType === "response.function_call_arguments.done") {
+		handleToolCallArgumentsDone(runtime.currentItem, runtime.currentBlock, rawEvent);
+		return firstTokenTime;
+	}
+
+	if (eventType === "response.output_item.done") {
+		handleOutputItemDone(model, output, stream, runtime, rawEvent, blockIndex);
+		return firstTokenTime;
+	}
+
+	if (eventType === "response.created") {
+		return handleResponseCreated(runtime, rawEvent);
+	}
+
+	if (eventType === "response.completed" || eventType === "response.done") {
+		handleResponseCompleted(model, output, runtime, rawEvent);
+		return firstTokenTime;
+	}
+
+	if (eventType === "error" || eventType === "response.failed") {
+		throw createCodexProviderStreamError(rawEvent);
+	}
+
+	return firstTokenTime;
+}
+
+function createOutputBlockForItem(item: CodexEventItem): CodexOutputBlock | null {
+	if (item.type === "reasoning") {
+		return { type: "thinking", thinking: "" };
+	}
+	if (item.type === "message") {
+		return { type: "text", text: "" };
+	}
+	if (item.type === "function_call") {
+		return {
+			type: "toolCall",
+			id: `${item.call_id}|${item.id}`,
+			name: item.name,
+			arguments: {},
+			partialJson: item.arguments || "",
+		};
+	}
+	return null;
+}
+
+function getOutputBlockStartEventType(block: CodexOutputBlock): "thinking_start" | "text_start" | "toolcall_start" {
+	if (block.type === "thinking") return "thinking_start";
+	if (block.type === "text") return "text_start";
+	return "toolcall_start";
+}
+
+function handleReasoningSummaryPartAdded(currentItem: CodexEventItem | null, rawEvent: Record<string, unknown>): void {
+	if (currentItem?.type !== "reasoning") return;
+	currentItem.summary = currentItem.summary || [];
+	currentItem.summary.push((rawEvent as { part: ResponseReasoningItem["summary"][number] }).part);
+}
+
+function handleReasoningSummaryTextDelta(
+	currentItem: CodexEventItem | null,
+	currentBlock: CodexOutputBlock | null,
+	rawEvent: Record<string, unknown>,
+	stream: AssistantMessageEventStream,
+	output: AssistantMessage,
+	blockIndex: () => number,
+): void {
+	if (currentItem?.type !== "reasoning" || currentBlock?.type !== "thinking") return;
+	currentItem.summary = currentItem.summary || [];
+	const lastPart = currentItem.summary[currentItem.summary.length - 1];
+	if (!lastPart) return;
+	const delta = (rawEvent as { delta?: string }).delta || "";
+	currentBlock.thinking += delta;
+	lastPart.text += delta;
+	stream.push({ type: "thinking_delta", contentIndex: blockIndex(), delta, partial: output });
+}
+
+function handleReasoningSummaryPartDone(
+	currentItem: CodexEventItem | null,
+	currentBlock: CodexOutputBlock | null,
+	stream: AssistantMessageEventStream,
+	output: AssistantMessage,
+	blockIndex: () => number,
+): void {
+	if (currentItem?.type !== "reasoning" || currentBlock?.type !== "thinking") return;
+	currentItem.summary = currentItem.summary || [];
+	const lastPart = currentItem.summary[currentItem.summary.length - 1];
+	if (!lastPart) return;
+	currentBlock.thinking += "\n\n";
+	lastPart.text += "\n\n";
+	stream.push({ type: "thinking_delta", contentIndex: blockIndex(), delta: "\n\n", partial: output });
+}
+
+function handleContentPartAdded(currentItem: CodexEventItem | null, rawEvent: Record<string, unknown>): void {
+	if (currentItem?.type !== "message") return;
+	currentItem.content = currentItem.content || [];
+	const part = (rawEvent as { part?: ResponseOutputMessage["content"][number] }).part;
+	if (part && (part.type === "output_text" || part.type === "refusal")) {
+		currentItem.content.push(part);
+	}
+}
+
+function handleMessageTextDelta(
+	currentItem: CodexEventItem | null,
+	currentBlock: CodexOutputBlock | null,
+	rawEvent: Record<string, unknown>,
+	stream: AssistantMessageEventStream,
+	output: AssistantMessage,
+	blockIndex: () => number,
+	partType: "output_text" | "refusal",
+): void {
+	if (currentItem?.type !== "message" || currentBlock?.type !== "text") return;
+	if (!currentItem.content || currentItem.content.length === 0) return;
+	const lastPart = currentItem.content[currentItem.content.length - 1];
+	if (!lastPart || lastPart.type !== partType) return;
+	const delta = (rawEvent as { delta?: string }).delta || "";
+	currentBlock.text += delta;
+	if (lastPart.type === "output_text") {
+		lastPart.text += delta;
+	} else {
+		lastPart.refusal += delta;
+	}
+	stream.push({ type: "text_delta", contentIndex: blockIndex(), delta, partial: output });
+}
+
+function handleToolCallArgumentsDelta(
+	currentItem: CodexEventItem | null,
+	currentBlock: CodexOutputBlock | null,
+	rawEvent: Record<string, unknown>,
+	stream: AssistantMessageEventStream,
+	output: AssistantMessage,
+	blockIndex: () => number,
+): void {
+	if (currentItem?.type !== "function_call" || currentBlock?.type !== "toolCall") return;
+	const delta = (rawEvent as { delta?: string }).delta || "";
+	currentBlock.partialJson += delta;
+	currentBlock.arguments = parseStreamingJson(currentBlock.partialJson);
+	stream.push({ type: "toolcall_delta", contentIndex: blockIndex(), delta, partial: output });
+}
+
+function handleToolCallArgumentsDone(
+	currentItem: CodexEventItem | null,
+	currentBlock: CodexOutputBlock | null,
+	rawEvent: Record<string, unknown>,
+): void {
+	if (currentItem?.type !== "function_call" || currentBlock?.type !== "toolCall") return;
+	const args = (rawEvent as { arguments?: string }).arguments;
+	if (typeof args === "string") {
+		currentBlock.partialJson = args;
+		currentBlock.arguments = parseStreamingJson(currentBlock.partialJson);
+	}
+}
+
+function handleOutputItemDone(
+	model: Model<"openai-codex-responses">,
+	output: AssistantMessage,
+	stream: AssistantMessageEventStream,
+	runtime: CodexStreamRuntime,
+	rawEvent: Record<string, unknown>,
+	blockIndex: () => number,
+): void {
+	const item = rawEvent.item as CodexEventItem;
+	const rawItem = item as unknown as Record<string, unknown>;
+	runtime.nativeOutputItems.push(structuredClone(rawItem));
+
+	if (item.type === "reasoning" && runtime.currentBlock?.type === "thinking") {
+		runtime.currentBlock.thinking = item.summary?.map(summary => summary.text).join("\n\n") || "";
+		runtime.currentBlock.thinkingSignature = JSON.stringify(item);
+		stream.push({
+			type: "thinking_end",
+			contentIndex: blockIndex(),
+			content: runtime.currentBlock.thinking,
+			partial: output,
+		});
+		runtime.currentBlock = null;
+		return;
+	}
+
+	if (item.type === "message" && runtime.currentBlock?.type === "text") {
+		runtime.currentBlock.text = item.content
+			.map(content => (content.type === "output_text" ? content.text : content.refusal))
+			.join("");
+		const phase = item.phase === "commentary" || item.phase === "final_answer" ? item.phase : undefined;
+		runtime.currentBlock.textSignature = encodeTextSignatureV1(item.id, phase);
+		stream.push({
+			type: "text_end",
+			contentIndex: blockIndex(),
+			content: runtime.currentBlock.text,
+			partial: output,
+		});
+		runtime.currentBlock = null;
+		return;
+	}
+
+	if (item.type === "function_call") {
+		const toolCall: ToolCall = {
+			type: "toolCall",
+			id: `${item.call_id}|${item.id}`,
+			name: item.name,
+			arguments: parseStreamingJson(item.arguments || "{}"),
+		};
+		runtime.canSafelyReplayWebsocketOverSse = false;
+		stream.push({ type: "toolcall_end", contentIndex: blockIndex(), toolCall, partial: output });
+		return;
+	}
+
+	void model;
+}
+
+function handleResponseCreated(runtime: CodexStreamRuntime, rawEvent: Record<string, unknown>): number | undefined {
+	const response = (rawEvent as { response?: { id?: string } }).response;
+	const state = runtime.websocketState;
+	if (runtime.transport === "websocket" && state && typeof response?.id === "string" && response.id.length > 0) {
+		state.lastResponseId = response.id;
+	}
+	return undefined;
+}
+
+function handleResponseCompleted(
+	model: Model<"openai-codex-responses">,
+	output: AssistantMessage,
+	runtime: CodexStreamRuntime,
+	rawEvent: Record<string, unknown>,
+): void {
+	runtime.sawTerminalEvent = true;
+	const response = (
+		rawEvent as {
+			response?: {
+				id?: string;
+				usage?: {
+					input_tokens?: number;
+					output_tokens?: number;
+					total_tokens?: number;
+					input_tokens_details?: { cached_tokens?: number };
+				};
+				status?: string;
+			};
+		}
+	).response;
+
+	if (response?.usage) {
+		const cachedTokens = response.usage.input_tokens_details?.cached_tokens || 0;
+		output.usage = {
+			input: (response.usage.input_tokens || 0) - cachedTokens,
+			output: response.usage.output_tokens || 0,
+			cacheRead: cachedTokens,
+			cacheWrite: 0,
+			totalTokens: response.usage.total_tokens || 0,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		};
+	}
+
+	const state = runtime.websocketState;
+	if (runtime.transport === "websocket" && state) {
+		state.lastRequest = cloneRequestBody(runtime.requestBodyForState);
+		if (typeof response?.id === "string" && response.id.length > 0) {
+			state.lastResponseId = response.id;
+		}
+		state.canAppend = rawEvent.type === "response.done";
+	}
+
+	calculateCost(model, output.usage);
+	output.stopReason = mapOpenAIResponsesStopReason(response?.status as OpenAI.Responses.ResponseStatus | undefined);
+	if (output.content.some(block => block.type === "toolCall") && output.stopReason === "stop") {
+		output.stopReason = "toolUse";
+	}
+}
+
+async function recoverCodexStreamError(
+	context: CodexStreamProcessingContext,
+	runtime: CodexStreamRuntime,
+	error: unknown,
+): Promise<boolean> {
+	if (await tryReplayWebsocketFailureOverSse(context, runtime, error)) {
+		return true;
+	}
+	if (await tryRetryCodexProviderError(context, runtime, error)) {
+		return true;
+	}
+	return false;
+}
+
+async function tryReplayWebsocketFailureOverSse(
+	context: CodexStreamProcessingContext,
+	runtime: CodexStreamRuntime,
+	error: unknown,
+): Promise<boolean> {
+	const websocketState = context.requestContext.websocketState;
+	const canReplay =
+		runtime.transport === "websocket" &&
+		websocketState &&
+		isCodexWebSocketRetryableStreamError(error) &&
+		runtime.canSafelyReplayWebsocketOverSse &&
+		!runtime.sawTerminalEvent &&
+		!context.options?.signal?.aborted;
+	if (!canReplay) return false;
+
+	const state = websocketState;
+	const streamError = error instanceof Error ? error : new Error(String(error));
+	const replayingBufferedOutputOverSse = context.output.content.length > 0;
+	const isFatal = isCodexWebSocketFatalError(streamError);
+	const activateFallback =
+		replayingBufferedOutputOverSse || isFatal || runtime.websocketStreamRetries >= getCodexWebSocketRetryBudget();
+	recordCodexWebSocketFailure(state, activateFallback);
+	logCodexDebug("codex websocket stream fallback", {
+		error: streamError.message,
+		retry: runtime.websocketStreamRetries,
+		retryBudget: getCodexWebSocketRetryBudget(),
+		activated: activateFallback,
+		fatal: isFatal,
+		replayedBufferedOutput: replayingBufferedOutputOverSse,
+	});
+
+	if (!activateFallback) {
+		runtime.websocketStreamRetries += 1;
+		await abortableSleep(
+			getCodexWebSocketRetryDelayMs(runtime.websocketStreamRetries),
+			context.requestSetup.requestSignal,
+		);
+		await reopenCodexWebSocketRuntimeStream(context, runtime, state);
+		return true;
+	}
+
+	if (replayingBufferedOutputOverSse) {
+		runtime.canSafelyReplayWebsocketOverSse = true;
+		runtime.currentItem = null;
+		runtime.currentBlock = null;
+		runtime.nativeOutputItems.length = 0;
+		resetOutputState(context.output);
+		context.firstTokenTime = undefined;
+	}
+
+	await reopenCodexSseRuntimeStream(context, runtime, state);
+	return true;
+}
+
+async function tryRetryCodexProviderError(
+	context: CodexStreamProcessingContext,
+	runtime: CodexStreamRuntime,
+	error: unknown,
+): Promise<boolean> {
+	if (
+		!isRetryableCodexProviderError(error) ||
+		context.output.content.length > 0 ||
+		runtime.providerRetryAttempt >= CODEX_MAX_RETRIES ||
+		context.options?.signal?.aborted
+	) {
+		return false;
+	}
+
+	runtime.providerRetryAttempt += 1;
+	const websocketState = context.requestContext.websocketState;
+	if (runtime.transport === "websocket" && websocketState) {
+		resetCodexWebSocketAppendState(websocketState);
+		resetCodexSessionMetadata(websocketState);
+	}
+
+	logCodexDebug("retrying codex provider stream error", {
+		error: error instanceof Error ? error.message : String(error),
+		retry: runtime.providerRetryAttempt,
+		retryBudget: CODEX_MAX_RETRIES,
+		transport: runtime.transport,
+	});
+
+	runtime.currentItem = null;
+	runtime.currentBlock = null;
+	runtime.sawTerminalEvent = false;
+	resetOutputState(context.output);
+	context.firstTokenTime = undefined;
+	await abortableSleep(CODEX_RETRY_DELAY_MS * runtime.providerRetryAttempt, context.requestSetup.requestSignal);
+
+	if (runtime.transport === "websocket" && websocketState) {
+		await reopenCodexWebSocketRuntimeStream(context, runtime, websocketState);
+		return true;
+	}
+
+	await reopenCodexSseRuntimeStream(context, runtime, websocketState);
+	return true;
+}
+
+function finalizeCodexResponse(
+	context: CodexStreamProcessingContext,
+	runtime: CodexStreamRuntime,
+	completion: CodexStreamCompletion,
+): AssistantMessage {
+	const { output } = context;
+	if (context.options?.signal?.aborted) {
+		throw new Error("Request was aborted");
+	}
+	if (!runtime.sawTerminalEvent) {
+		if (runtime.transport === "websocket" && context.requestContext.websocketState) {
+			resetCodexWebSocketAppendState(context.requestContext.websocketState);
+			resetCodexSessionMetadata(context.requestContext.websocketState);
+		}
+		logCodexDebug("codex stream ended unexpectedly", {
+			transport: runtime.transport,
+			terminalEventSeen: runtime.sawTerminalEvent,
+			unexpectedStreamEnd: true,
+			sentTurnStateHeader: Boolean(context.requestContext.websocketState?.turnState),
+			sentModelsEtagHeader: Boolean(context.requestContext.websocketState?.modelsEtag),
+		});
+		throw new Error("Codex stream ended before terminal completion event");
+	}
+	if (output.stopReason === "aborted" || output.stopReason === "error") {
+		throw new Error("Codex response failed");
+	}
+
+	output.providerPayload = createOpenAIResponsesHistoryPayload(context.model.provider, runtime.nativeOutputItems);
+	output.duration = Date.now() - context.startTime;
+	if (completion.firstTokenTime) {
+		output.ttft = completion.firstTokenTime - context.startTime;
+	}
+	return output;
+}
+
+async function handleCodexStreamFailure(
+	context: CodexStreamProcessingContext,
+	error: unknown,
+): Promise<AssistantMessage> {
+	const { output } = context;
+	removeTransientBlockIndices(output);
+	if (context.requestContext.websocketState) {
+		resetCodexWebSocketAppendState(context.requestContext.websocketState);
+		resetCodexSessionMetadata(context.requestContext.websocketState);
+	}
+	output.stopReason = context.options?.signal?.aborted ? "aborted" : "error";
+	output.errorMessage = await finalizeErrorMessage(error, context.requestContext.rawRequestDump);
+	output.duration = Date.now() - context.startTime;
+	if (context.firstTokenTime) {
+		output.ttft = context.firstTokenTime - context.startTime;
+	}
+	return output;
+}
+
 export const streamOpenAICodexResponses: StreamFunction<"openai-codex-responses"> = (
 	model: Model<"openai-codex-responses">,
 	context: Context,
@@ -296,632 +1237,65 @@ export const streamOpenAICodexResponses: StreamFunction<"openai-codex-responses"
 
 	(async () => {
 		const startTime = Date.now();
-		let firstTokenTime: number | undefined;
-
-		const output: AssistantMessage = {
-			role: "assistant",
-			content: [],
-			api: "openai-codex-responses" as Api,
-			provider: model.provider,
-			model: model.id,
-			usage: {
-				input: 0,
-				output: 0,
-				cacheRead: 0,
-				cacheWrite: 0,
-				totalTokens: 0,
-				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-			},
-			stopReason: "stop",
-			timestamp: Date.now(),
-		};
-		let websocketState: CodexWebSocketSessionState | undefined;
-		let usingWebsocket = false;
-		let rawRequestDump: RawHttpRequestDump | undefined;
+		const output = createAssistantOutput(model);
+		const requestSetup = createRequestSetup(options);
+		let processingContext: CodexStreamProcessingContext | undefined;
 
 		try {
-			const apiKey = options?.apiKey || getEnvApiKey(model.provider) || "";
-			if (!apiKey) {
-				throw new Error(`No API key for provider: ${model.provider}`);
-			}
-
-			const accountId = getAccountId(apiKey);
-			const baseUrl = model.baseUrl || CODEX_BASE_URL;
-			const baseWithSlash = baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`;
-			const url = rewriteUrlForCodex(new URL(URL_PATHS.RESPONSES.slice(1), baseWithSlash).toString());
-
-			const conversationMessages = convertMessages(model, context);
-			const params: RequestBody = {
-				model: model.id,
-				input: [...conversationMessages],
-				stream: true,
-				prompt_cache_key: options?.sessionId,
-			};
-
-			if (options?.maxTokens) {
-				params.max_output_tokens = options.maxTokens;
-			}
-
-			if (options?.temperature !== undefined) {
-				params.temperature = options.temperature;
-			}
-			if (options?.topP !== undefined) {
-				params.top_p = options.topP;
-			}
-			if (options?.topK !== undefined) {
-				params.top_k = options.topK;
-			}
-			if (options?.minP !== undefined) {
-				params.min_p = options.minP;
-			}
-			if (options?.presencePenalty !== undefined) {
-				params.presence_penalty = options.presencePenalty;
-			}
-			if (options?.repetitionPenalty !== undefined) {
-				params.repetition_penalty = options.repetitionPenalty;
-			}
-			if (options?.serviceTier !== undefined) {
-				params.service_tier = options.serviceTier;
-			}
-
-			if (context.tools && context.tools.length > 0) {
-				params.tools = convertTools(context.tools);
-				if (options?.toolChoice) {
-					const toolChoice = normalizeCodexToolChoice(options.toolChoice);
-					if (toolChoice) {
-						params.tool_choice = toolChoice;
-					}
-				}
-			}
-
-			const systemPrompt = buildCodexSystemPrompt({
-				userSystemPrompt: context.systemPrompt,
+			const requestContext = await buildCodexRequestContext(model, context, options, output);
+			const initialTransport = await openInitialCodexEventStream(model, options, requestSetup, requestContext);
+			const runtime = createCodexStreamRuntime({
+				...initialTransport,
+				websocketState: requestContext.websocketState,
 			});
+			if (requestContext.websocketState) {
+				requestContext.websocketState.lastTransport = initialTransport.transport;
+			}
 
-			params.instructions = systemPrompt.instructions;
-
-			const codexOptions: CodexRequestOptions = {
-				reasoningEffort: options?.reasoning,
-				reasoningSummary: options?.reasoningSummary ?? "auto",
-				textVerbosity: options?.textVerbosity,
-				include: options?.include,
+			processingContext = {
+				model,
+				output,
+				stream,
+				options,
+				requestSetup,
+				requestContext,
+				startTime,
 			};
 
-			const transformedBody = await transformRequestBody(params, model, codexOptions, systemPrompt);
-			options?.onPayload?.(transformedBody);
-
-			const reasoningEffort = transformedBody.reasoning?.effort ?? null;
-			const requestHeaders = { ...(model.headers ?? {}), ...(options?.headers ?? {}) };
-			rawRequestDump = {
-				provider: model.provider,
-				api: output.api,
-				model: model.id,
-				method: "POST",
-				url,
-				body: transformedBody,
-			};
-			const providerSessionState = getCodexProviderSessionState(options?.providerSessionState);
-			const sessionKey = getCodexWebSocketSessionKey(options?.sessionId, model, accountId, baseUrl);
-			const publicSessionKey = getCodexPublicSessionKey(options?.sessionId, model, baseUrl);
-			if (sessionKey && publicSessionKey) {
-				providerSessionState?.webSocketPublicToPrivate.set(publicSessionKey, sessionKey);
-			}
-			websocketState =
-				sessionKey && providerSessionState
-					? getCodexWebSocketSessionState(sessionKey, providerSessionState)
-					: undefined;
-			usingWebsocket = false;
-			let requestBodyForState = cloneRequestBody(transformedBody);
-			let eventStream: AsyncGenerator<Record<string, unknown>>;
-
-			if (websocketState && shouldUseCodexWebSocket(model, websocketState, options?.preferWebsockets)) {
-				const websocketRetryBudget = getCodexWebSocketRetryBudget();
-				let websocketRetries = 0;
-				while (true) {
-					const websocketRequest = buildCodexWebSocketRequest(transformedBody, websocketState);
-					const websocketHeaders = createCodexHeaders(
-						requestHeaders,
-						accountId,
-						apiKey,
-						options?.sessionId,
-						"websocket",
-						websocketState,
-					);
-					requestBodyForState = cloneRequestBody(transformedBody);
-					logCodexDebug("codex websocket request", {
-						url: toWebSocketUrl(url),
-						model: params.model,
-						reasoningEffort,
-						headers: redactHeaders(websocketHeaders),
-						sentTurnStateHeader: websocketHeaders.has(X_CODEX_TURN_STATE_HEADER),
-						sentModelsEtagHeader: websocketHeaders.has(X_MODELS_ETAG_HEADER),
-						requestType: websocketRequest.type,
-						retry: websocketRetries,
-						retryBudget: websocketRetryBudget,
-					});
-					try {
-						eventStream = await openCodexWebSocketEventStream(
-							toWebSocketUrl(url),
-							websocketHeaders,
-							websocketRequest,
-							websocketState,
-							options?.signal,
-						);
-						usingWebsocket = true;
-						break;
-					} catch (error) {
-						const websocketError = error instanceof Error ? error : new Error(String(error));
-						const isFatal = isCodexWebSocketFatalError(websocketError);
-						const activateFallback = isFatal || websocketRetries >= websocketRetryBudget;
-						recordCodexWebSocketFailure(websocketState, activateFallback);
-						logCodexDebug("codex websocket fallback", {
-							error: websocketError.message,
-							retry: websocketRetries,
-							retryBudget: websocketRetryBudget,
-							activated: activateFallback,
-							fatal: isFatal,
-						});
-						if (!activateFallback) {
-							websocketRetries += 1;
-							await abortableSleep(getCodexWebSocketRetryDelayMs(websocketRetries), options?.signal);
-							continue;
-						}
-						eventStream = await openCodexSseEventStream(
-							url,
-							requestHeaders,
-							accountId,
-							apiKey,
-							options?.sessionId,
-							transformedBody,
-							websocketState,
-							options?.signal,
-						);
-						break;
-					}
-				}
-			} else {
-				eventStream = await openCodexSseEventStream(
-					url,
-					requestHeaders,
-					accountId,
-					apiKey,
-					options?.sessionId,
-					transformedBody,
-					websocketState,
-					options?.signal,
-				);
-			}
-			if (websocketState) {
-				websocketState.lastTransport = usingWebsocket ? "websocket" : "sse";
-			}
-
-			stream.push({ type: "start", partial: output });
-			let currentItem: ResponseReasoningItem | ResponseOutputMessage | ResponseFunctionToolCall | null = null;
-			let currentBlock: ThinkingContent | TextContent | (ToolCall & { partialJson: string }) | null = null;
-			const blocks = output.content;
-			const blockIndex = () => blocks.length - 1;
-			const nativeOutputItems: Array<Record<string, unknown>> = [];
-			let websocketStreamRetries = 0;
-			let providerRetryAttempt = 0;
-			let sawTerminalEvent = false;
-			let canSafelyReplayWebsocketOverSse = true;
-			while (true) {
-				try {
-					for await (const rawEvent of eventStream) {
-						const eventType = typeof rawEvent.type === "string" ? rawEvent.type : "";
-						if (!eventType) continue;
-
-						if (eventType === "response.output_item.added") {
-							if (!firstTokenTime) firstTokenTime = Date.now();
-							const item = rawEvent.item as
-								| ResponseReasoningItem
-								| ResponseOutputMessage
-								| ResponseFunctionToolCall;
-							if (item.type === "reasoning") {
-								currentItem = item;
-								currentBlock = { type: "thinking", thinking: "" };
-								output.content.push(currentBlock);
-								stream.push({ type: "thinking_start", contentIndex: blockIndex(), partial: output });
-							} else if (item.type === "message") {
-								currentItem = item;
-								currentBlock = { type: "text", text: "" };
-								output.content.push(currentBlock);
-								stream.push({ type: "text_start", contentIndex: blockIndex(), partial: output });
-							} else if (item.type === "function_call") {
-								currentItem = item;
-								currentBlock = {
-									type: "toolCall",
-									id: `${item.call_id}|${item.id}`,
-									name: item.name,
-									arguments: {},
-									partialJson: item.arguments || "",
-								};
-								output.content.push(currentBlock);
-								stream.push({ type: "toolcall_start", contentIndex: blockIndex(), partial: output });
-							}
-						} else if (eventType === "response.reasoning_summary_part.added") {
-							if (currentItem && currentItem.type === "reasoning") {
-								currentItem.summary = currentItem.summary || [];
-								currentItem.summary.push((rawEvent as { part: ResponseReasoningItem["summary"][number] }).part);
-							}
-						} else if (eventType === "response.reasoning_summary_text.delta") {
-							if (currentItem && currentItem.type === "reasoning" && currentBlock?.type === "thinking") {
-								currentItem.summary = currentItem.summary || [];
-								const lastPart = currentItem.summary[currentItem.summary.length - 1];
-								if (lastPart) {
-									const delta = (rawEvent as { delta?: string }).delta || "";
-									currentBlock.thinking += delta;
-									lastPart.text += delta;
-									stream.push({
-										type: "thinking_delta",
-										contentIndex: blockIndex(),
-										delta,
-										partial: output,
-									});
-								}
-							}
-						} else if (eventType === "response.reasoning_summary_part.done") {
-							if (currentItem && currentItem.type === "reasoning" && currentBlock?.type === "thinking") {
-								currentItem.summary = currentItem.summary || [];
-								const lastPart = currentItem.summary[currentItem.summary.length - 1];
-								if (lastPart) {
-									currentBlock.thinking += "\n\n";
-									lastPart.text += "\n\n";
-									stream.push({
-										type: "thinking_delta",
-										contentIndex: blockIndex(),
-										delta: "\n\n",
-										partial: output,
-									});
-								}
-							}
-						} else if (eventType === "response.content_part.added") {
-							if (currentItem && currentItem.type === "message") {
-								currentItem.content = currentItem.content || [];
-								const part = (rawEvent as { part?: ResponseOutputMessage["content"][number] }).part;
-								if (part && (part.type === "output_text" || part.type === "refusal")) {
-									currentItem.content.push(part);
-								}
-							}
-						} else if (eventType === "response.output_text.delta") {
-							if (currentItem && currentItem.type === "message" && currentBlock?.type === "text") {
-								if (!currentItem.content || currentItem.content.length === 0) {
-									continue;
-								}
-								const lastPart = currentItem.content[currentItem.content.length - 1];
-								if (lastPart && lastPart.type === "output_text") {
-									const delta = (rawEvent as { delta?: string }).delta || "";
-									currentBlock.text += delta;
-									lastPart.text += delta;
-									stream.push({
-										type: "text_delta",
-										contentIndex: blockIndex(),
-										delta,
-										partial: output,
-									});
-								}
-							}
-						} else if (eventType === "response.refusal.delta") {
-							if (currentItem && currentItem.type === "message" && currentBlock?.type === "text") {
-								if (!currentItem.content || currentItem.content.length === 0) {
-									continue;
-								}
-								const lastPart = currentItem.content[currentItem.content.length - 1];
-								if (lastPart && lastPart.type === "refusal") {
-									const delta = (rawEvent as { delta?: string }).delta || "";
-									currentBlock.text += delta;
-									lastPart.refusal += delta;
-									stream.push({
-										type: "text_delta",
-										contentIndex: blockIndex(),
-										delta,
-										partial: output,
-									});
-								}
-							}
-						} else if (eventType === "response.function_call_arguments.delta") {
-							if (currentItem && currentItem.type === "function_call" && currentBlock?.type === "toolCall") {
-								const delta = (rawEvent as { delta?: string }).delta || "";
-								currentBlock.partialJson += delta;
-								currentBlock.arguments = parseStreamingJson(currentBlock.partialJson);
-								stream.push({
-									type: "toolcall_delta",
-									contentIndex: blockIndex(),
-									delta,
-									partial: output,
-								});
-							}
-						} else if (eventType === "response.function_call_arguments.done") {
-							if (currentItem?.type === "function_call" && currentBlock?.type === "toolCall") {
-								const args = (rawEvent as { arguments?: string }).arguments;
-								if (typeof args === "string") {
-									currentBlock.partialJson = args;
-									currentBlock.arguments = parseStreamingJson(currentBlock.partialJson);
-								}
-							}
-						} else if (eventType === "response.output_item.done") {
-							const item = rawEvent.item as
-								| ResponseReasoningItem
-								| ResponseOutputMessage
-								| ResponseFunctionToolCall;
-							const rawItem = item as unknown as Record<string, unknown>;
-							nativeOutputItems.push(structuredClone(rawItem));
-							if (item.type === "reasoning" && currentBlock?.type === "thinking") {
-								currentBlock.thinking = item.summary?.map(s => s.text).join("\n\n") || "";
-								currentBlock.thinkingSignature = JSON.stringify(item);
-								stream.push({
-									type: "thinking_end",
-									contentIndex: blockIndex(),
-									content: currentBlock.thinking,
-									partial: output,
-								});
-								currentBlock = null;
-							} else if (item.type === "message" && currentBlock?.type === "text") {
-								currentBlock.text = item.content
-									.map(c => (c.type === "output_text" ? c.text : c.refusal))
-									.join("");
-								currentBlock.textSignature = item.id;
-								stream.push({
-									type: "text_end",
-									contentIndex: blockIndex(),
-									content: currentBlock.text,
-									partial: output,
-								});
-								currentBlock = null;
-							} else if (item.type === "function_call") {
-								const toolCall: ToolCall = {
-									type: "toolCall",
-									id: `${item.call_id}|${item.id}`,
-									name: item.name,
-									arguments: parseStreamingJson(item.arguments || "{}"),
-								};
-								canSafelyReplayWebsocketOverSse = false;
-								stream.push({ type: "toolcall_end", contentIndex: blockIndex(), toolCall, partial: output });
-							}
-						} else if (eventType === "response.created") {
-							if (usingWebsocket && websocketState) {
-								const createdResponse = (rawEvent as { response?: { id?: string } }).response;
-								if (typeof createdResponse?.id === "string" && createdResponse.id.length > 0) {
-									websocketState.lastResponseId = createdResponse.id;
-								}
-							}
-						} else if (eventType === "response.completed" || eventType === "response.done") {
-							sawTerminalEvent = true;
-							const response = (
-								rawEvent as {
-									response?: {
-										id?: string;
-										usage?: {
-											input_tokens?: number;
-											output_tokens?: number;
-											total_tokens?: number;
-											input_tokens_details?: { cached_tokens?: number };
-										};
-										status?: string;
-									};
-								}
-							).response;
-							if (response?.usage) {
-								const cachedTokens = response.usage.input_tokens_details?.cached_tokens || 0;
-								output.usage = {
-									input: (response.usage.input_tokens || 0) - cachedTokens,
-									output: response.usage.output_tokens || 0,
-									cacheRead: cachedTokens,
-									cacheWrite: 0,
-									totalTokens: response.usage.total_tokens || 0,
-									cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-								};
-							}
-							if (usingWebsocket && websocketState) {
-								websocketState.lastRequest = cloneRequestBody(requestBodyForState);
-								if (typeof response?.id === "string" && response.id.length > 0) {
-									websocketState.lastResponseId = response.id;
-								}
-								websocketState.canAppend = eventType === "response.done";
-							}
-							calculateCost(model, output.usage);
-							output.stopReason = mapStopReason(response?.status);
-							if (output.content.some(b => b.type === "toolCall") && output.stopReason === "stop") {
-								output.stopReason = "toolUse";
-							}
-						} else if (eventType === "error" || eventType === "response.failed") {
-							throw createCodexProviderStreamError(rawEvent);
-						}
-					}
-
-					break;
-				} catch (error) {
-					const canReplayWebsocketFailureOverSse =
-						usingWebsocket &&
-						websocketState &&
-						isCodexWebSocketRetryableStreamError(error) &&
-						canSafelyReplayWebsocketOverSse &&
-						!sawTerminalEvent &&
-						!options?.signal?.aborted;
-					if (canReplayWebsocketFailureOverSse) {
-						const state = websocketState!;
-						const streamError = error instanceof Error ? error : new Error(String(error));
-						const replayingBufferedOutputOverSse = output.content.length > 0;
-						const isFatal = isCodexWebSocketFatalError(streamError);
-						const activateFallback =
-							replayingBufferedOutputOverSse ||
-							isFatal ||
-							websocketStreamRetries >= getCodexWebSocketRetryBudget();
-						recordCodexWebSocketFailure(state, activateFallback);
-						logCodexDebug("codex websocket stream fallback", {
-							error: streamError.message,
-							retry: websocketStreamRetries,
-							retryBudget: getCodexWebSocketRetryBudget(),
-							activated: activateFallback,
-							fatal: isFatal,
-							replayedBufferedOutput: replayingBufferedOutputOverSse,
-						});
-						if (!activateFallback) {
-							websocketStreamRetries += 1;
-							await abortableSleep(getCodexWebSocketRetryDelayMs(websocketStreamRetries), options?.signal);
-							const websocketRequest = buildCodexWebSocketRequest(transformedBody, state);
-							const websocketHeaders = createCodexHeaders(
-								requestHeaders,
-								accountId,
-								apiKey,
-								options?.sessionId,
-								"websocket",
-								state,
-							);
-							requestBodyForState = cloneRequestBody(transformedBody);
-							eventStream = await openCodexWebSocketEventStream(
-								toWebSocketUrl(url),
-								websocketHeaders,
-								websocketRequest,
-								state,
-								options?.signal,
-							);
-							usingWebsocket = true;
-							state.lastTransport = "websocket";
-							continue;
-						}
-						if (replayingBufferedOutputOverSse) {
-							canSafelyReplayWebsocketOverSse = true;
-							currentItem = null;
-							currentBlock = null;
-							output.content.length = 0;
-							nativeOutputItems.length = 0;
-							output.usage = {
-								input: 0,
-								output: 0,
-								cacheRead: 0,
-								cacheWrite: 0,
-								totalTokens: 0,
-								cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-							};
-							output.stopReason = "stop";
-							firstTokenTime = undefined;
-						}
-						eventStream = await openCodexSseEventStream(
-							url,
-							requestHeaders,
-							accountId,
-							apiKey,
-							options?.sessionId,
-							transformedBody,
-							state,
-							options?.signal,
-						);
-						usingWebsocket = false;
-						state.lastTransport = "sse";
-						requestBodyForState = cloneRequestBody(transformedBody);
-						continue;
-					}
-
-					if (
-						isRetryableCodexProviderError(error) &&
-						output.content.length === 0 &&
-						providerRetryAttempt < CODEX_MAX_RETRIES &&
-						!options?.signal?.aborted
-					) {
-						providerRetryAttempt += 1;
-						if (usingWebsocket && websocketState) {
-							resetCodexWebSocketAppendState(websocketState);
-							resetCodexSessionMetadata(websocketState);
-						}
-						logCodexDebug("retrying codex provider stream error", {
-							error: error instanceof Error ? error.message : String(error),
-							retry: providerRetryAttempt,
-							retryBudget: CODEX_MAX_RETRIES,
-							transport: usingWebsocket ? "websocket" : "sse",
-						});
-						currentItem = null;
-						currentBlock = null;
-						output.content.length = 0;
-						output.stopReason = "stop";
-						sawTerminalEvent = false;
-						firstTokenTime = undefined;
-						await abortableSleep(CODEX_RETRY_DELAY_MS * providerRetryAttempt, options?.signal);
-						if (usingWebsocket && websocketState) {
-							const websocketRequest = buildCodexWebSocketRequest(transformedBody, websocketState);
-							const websocketHeaders = createCodexHeaders(
-								requestHeaders,
-								accountId,
-								apiKey,
-								options?.sessionId,
-								"websocket",
-								websocketState,
-							);
-							requestBodyForState = cloneRequestBody(transformedBody);
-							eventStream = await openCodexWebSocketEventStream(
-								toWebSocketUrl(url),
-								websocketHeaders,
-								websocketRequest,
-								websocketState,
-								options?.signal,
-							);
-							usingWebsocket = true;
-							websocketState.lastTransport = "websocket";
-						} else {
-							requestBodyForState = cloneRequestBody(transformedBody);
-							eventStream = await openCodexSseEventStream(
-								url,
-								requestHeaders,
-								accountId,
-								apiKey,
-								options?.sessionId,
-								transformedBody,
-								websocketState,
-								options?.signal,
-							);
-							usingWebsocket = false;
-						}
-						continue;
-					}
-
-					throw error;
-				}
-			}
-
-			if (options?.signal?.aborted) {
-				throw new Error("Request was aborted");
-			}
-
-			if (!sawTerminalEvent) {
-				if (usingWebsocket && websocketState) {
-					resetCodexWebSocketAppendState(websocketState);
-					resetCodexSessionMetadata(websocketState);
-				}
-				logCodexDebug("codex stream ended unexpectedly", {
-					transport: usingWebsocket ? "websocket" : "sse",
-					terminalEventSeen: sawTerminalEvent,
-					unexpectedStreamEnd: true,
-					sentTurnStateHeader: Boolean(websocketState?.turnState),
-					sentModelsEtagHeader: Boolean(websocketState?.modelsEtag),
-				});
-				throw new Error("Codex stream ended before terminal completion event");
-			}
-
-			if (output.stopReason === "aborted" || output.stopReason === "error") {
-				throw new Error("Codex response failed");
-			}
-
-			output.providerPayload = {
-				type: "openaiResponsesHistory",
-				dt: true,
-				items: nativeOutputItems,
-			};
-
-			output.duration = Date.now() - startTime;
-			if (firstTokenTime) output.ttft = firstTokenTime - startTime;
-			stream.push({ type: "done", reason: output.stopReason, message: output });
+			const completion = await processCodexResponseStream(processingContext, runtime);
+			processingContext.firstTokenTime = completion.firstTokenTime;
+			const message = finalizeCodexResponse(processingContext, runtime, completion);
+			stream.push({ type: "done", reason: message.stopReason as "stop" | "length" | "toolUse", message });
 			stream.end();
 		} catch (error) {
-			for (const block of output.content) delete (block as { index?: number }).index;
-			if (usingWebsocket && websocketState) {
-				resetCodexWebSocketAppendState(websocketState);
-				resetCodexSessionMetadata(websocketState);
-			}
-			output.stopReason = options?.signal?.aborted ? "aborted" : "error";
-			output.errorMessage = await finalizeErrorMessage(error, rawRequestDump);
-			output.duration = Date.now() - startTime;
-			if (firstTokenTime) output.ttft = firstTokenTime - startTime;
-			stream.push({ type: "error", reason: output.stopReason, error: output });
+			const failureContext =
+				processingContext ??
+				({
+					model,
+					output,
+					stream,
+					options,
+					requestSetup,
+					requestContext: {
+						apiKey: "",
+						accountId: "",
+						baseUrl: model.baseUrl || CODEX_BASE_URL,
+						url: "",
+						requestHeaders: {},
+						transformedBody: { model: model.id },
+						rawRequestDump: {
+							provider: model.provider,
+							api: output.api,
+							model: model.id,
+							method: "POST",
+							url: "",
+							body: { model: model.id },
+						},
+					},
+					startTime,
+				} satisfies CodexStreamProcessingContext);
+			const failure = await handleCodexStreamFailure(failureContext, error);
+			stream.push({ type: "error", reason: failure.stopReason as "error" | "aborted", error: failure });
 			stream.end();
 		}
 	})();
@@ -1037,7 +1411,7 @@ function shouldUseCodexWebSocket(
 
 export interface OpenAICodexTransportDetails {
 	websocketPreferred: boolean;
-	lastTransport?: "sse" | "websocket";
+	lastTransport?: CodexTransport;
 	websocketDisabled: boolean;
 	websocketConnected: boolean;
 	fallbackCount: number;
@@ -1151,27 +1525,38 @@ function headersToRecord(headers: Headers): Record<string, string> {
 
 interface CodexWebSocketConnectionOptions {
 	idleTimeoutMs: number;
+	firstEventTimeoutMs: number;
 	onHandshakeHeaders?: (headers: Headers) => void;
 }
+
 class CodexWebSocketConnection {
 	#url: string;
 	#headers: Record<string, string>;
 	#idleTimeoutMs: number;
+	#firstEventTimeoutMs: number;
 	#onHandshakeHeaders?: (headers: Headers) => void;
 	#socket: WebSocket | null = null;
 	#queue: Array<Record<string, unknown> | Error | null> = [];
 	#waiters: Array<() => void> = [];
 	#connectPromise?: Promise<void>;
 	#activeRequest = false;
+
 	constructor(url: string, headers: Record<string, string>, options: CodexWebSocketConnectionOptions) {
 		this.#url = url;
 		this.#headers = headers;
 		this.#idleTimeoutMs = options.idleTimeoutMs;
+		this.#firstEventTimeoutMs = options.firstEventTimeoutMs;
 		this.#onHandshakeHeaders = options.onHandshakeHeaders;
 	}
+
 	isOpen(): boolean {
 		return this.#socket?.readyState === WebSocket.OPEN;
 	}
+
+	matchesAuth(headers: Record<string, string>): boolean {
+		return this.#headers.authorization === headers.authorization;
+	}
+
 	close(reason = "done"): void {
 		if (
 			this.#socket &&
@@ -1181,6 +1566,7 @@ class CodexWebSocketConnection {
 		}
 		this.#socket = null;
 	}
+
 	async connect(signal?: AbortSignal): Promise<void> {
 		if (this.isOpen()) return;
 		if (this.#connectPromise) {
@@ -1281,6 +1667,7 @@ class CodexWebSocketConnection {
 			this.#connectPromise = undefined;
 		}
 	}
+
 	async *streamRequest(
 		request: Record<string, unknown>,
 		signal?: AbortSignal,
@@ -1306,14 +1693,19 @@ class CodexWebSocketConnection {
 
 		try {
 			this.#socket.send(JSON.stringify(request));
+			let sawFirstEvent = false;
 			while (true) {
-				const next = await this.#nextMessage(this.#idleTimeoutMs);
+				const next = await this.#nextMessage(
+					sawFirstEvent ? this.#idleTimeoutMs : this.#firstEventTimeoutMs,
+					sawFirstEvent ? "idle timeout waiting for websocket" : "timeout waiting for first websocket event",
+				);
 				if (next instanceof Error) {
 					throw next;
 				}
 				if (next === null) {
 					throw createCodexWebSocketTransportError("websocket closed before response completion");
 				}
+				sawFirstEvent = true;
 				yield next;
 				const eventType = typeof next.type === "string" ? next.type : "";
 				if (
@@ -1339,13 +1731,14 @@ class CodexWebSocketConnection {
 		if (!headers) return;
 		this.#onHandshakeHeaders(headers);
 	}
+
 	#push(item: Record<string, unknown> | Error | null): void {
 		this.#queue.push(item);
 		const waiter = this.#waiters.shift();
 		if (waiter) waiter();
 	}
 
-	async #nextMessage(timeoutMs: number): Promise<Record<string, unknown> | Error | null> {
+	async #nextMessage(timeoutMs: number, timeoutReason: string): Promise<Record<string, unknown> | Error | null> {
 		while (this.#queue.length === 0) {
 			const { promise, resolve } = Promise.withResolvers<void>();
 			this.#waiters.push(resolve);
@@ -1364,25 +1757,32 @@ class CodexWebSocketConnection {
 			await promise;
 			if (timeout) clearTimeout(timeout);
 			if (timedOut && this.#queue.length === 0) {
-				return createCodexWebSocketTransportError("idle timeout waiting for websocket");
+				return createCodexWebSocketTransportError(timeoutReason);
 			}
 		}
 		return this.#queue.shift() ?? null;
 	}
 }
+
 async function getOrCreateCodexWebSocketConnection(
 	state: CodexWebSocketSessionState,
 	url: string,
 	headers: Headers,
 	signal?: AbortSignal,
 ): Promise<CodexWebSocketConnection> {
+	const headerRecord = headersToRecord(headers);
 	if (state.connection?.isOpen()) {
-		return state.connection;
+		if (state.connection.matchesAuth(headerRecord)) {
+			return state.connection;
+		}
+		state.connection.close("token-refresh");
+		resetCodexWebSocketAppendState(state);
 	}
 	state.connection?.close("reconnect");
 	resetCodexWebSocketAppendState(state);
-	state.connection = new CodexWebSocketConnection(url, headersToRecord(headers), {
+	state.connection = new CodexWebSocketConnection(url, headerRecord, {
 		idleTimeoutMs: getCodexWebSocketIdleTimeoutMs(),
+		firstEventTimeoutMs: getCodexWebSocketFirstEventTimeoutMs(),
 		onHandshakeHeaders: handshakeHeaders => {
 			updateCodexSessionMetadataFromHeaders(state, handshakeHeaders);
 		},
@@ -1390,6 +1790,7 @@ async function getOrCreateCodexWebSocketConnection(
 	await state.connection.connect(signal);
 	return state.connection;
 }
+
 async function openCodexSseEventStream(
 	url: string,
 	requestHeaders: Record<string, string> | undefined,
@@ -1437,6 +1838,7 @@ async function openCodexSseEventStream(
 	}
 	return readSseJson<Record<string, unknown>>(response.body, signal);
 }
+
 async function openCodexWebSocketEventStream(
 	url: string,
 	headers: Headers,
@@ -1447,12 +1849,13 @@ async function openCodexWebSocketEventStream(
 	const connection = await getOrCreateCodexWebSocketConnection(state, url, headers, signal);
 	return connection.streamRequest(request, signal);
 }
+
 function createCodexHeaders(
 	initHeaders: Record<string, string> | undefined,
 	accountId: string,
 	accessToken: string,
 	promptCacheKey?: string,
-	transport: "sse" | "websocket" = "sse",
+	transport: CodexTransport = "sse",
 	state?: CodexWebSocketSessionState,
 ): Headers {
 	const headers = new Headers(initHeaders ?? {});
@@ -1494,11 +1897,7 @@ function createCodexHeaders(
 
 function logCodexDebug(message: string, details?: Record<string, unknown>): void {
 	if (!CODEX_DEBUG) return;
-	if (details) {
-		console.error(`[codex] ${message}`, details);
-		return;
-	}
-	console.error(`[codex] ${message}`);
+	logger.debug(`[codex] ${message}`, details ?? {});
 }
 
 function getRetryDelayMs(
@@ -1517,7 +1916,6 @@ function getRetryDelayMs(
 			return { delay: Math.max(0, parsedDate - Date.now()), serverProvided: true };
 		}
 	}
-	// Parse retry delay from error body (e.g., "Please try again in 225ms" or "Please try again in 1.5s")
 	if (errorBody) {
 		const msMatch = /try again in\s+(\d+(?:\.\d+)?)\s*ms/i.exec(errorBody);
 		if (msMatch) {
@@ -1526,14 +1924,12 @@ function getRetryDelayMs(
 		}
 		const sMatch = /try again in\s+(\d+(?:\.\d+)?)\s*s(?:ec)?/i.exec(errorBody);
 		if (sMatch) {
-			const s = Number(sMatch[1]);
-			if (Number.isFinite(s)) return { delay: Math.max(s * 1000, 100), serverProvided: true };
+			const seconds = Number(sMatch[1]);
+			if (Number.isFinite(seconds)) return { delay: Math.max(seconds * 1000, 100), serverProvided: true };
 		}
 	}
 	return { delay: CODEX_RETRY_DELAY_MS * (attempt + 1), serverProvided: false };
 }
-/** Max total time to spend retrying 429s with server-provided delays (5 minutes). */
-const CODEX_RATE_LIMIT_BUDGET_MS = 5 * 60 * 1000;
 
 async function fetchWithRetry(url: string, init: RequestInit, signal?: AbortSignal): Promise<Response> {
 	let attempt = 0;
@@ -1545,10 +1941,8 @@ async function fetchWithRetry(url: string, init: RequestInit, signal?: AbortSign
 				return response;
 			}
 			if (signal?.aborted) return response;
-			// Read error body for retry delay parsing
 			const errorBody = await response.clone().text();
 			const { delay, serverProvided } = getRetryDelayMs(response, attempt, errorBody);
-			// For 429s with a server-provided delay, use a time budget instead of attempt count
 			if (response.status === 429 && serverProvided) {
 				if (rateLimitTimeSpent + delay > CODEX_RATE_LIMIT_BUDGET_MS) {
 					return response;
@@ -1603,15 +1997,6 @@ function getAccountId(accessToken: string): string {
 	return accountId;
 }
 
-function getOpenAIResponsesHistoryItems(
-	providerPayload: { type?: string; items?: unknown } | undefined,
-): ResponseInput | undefined {
-	if (providerPayload?.type !== "openaiResponsesHistory" || !Array.isArray(providerPayload.items)) {
-		return undefined;
-	}
-	return providerPayload.items as ResponseInput;
-}
-
 function convertMessages(model: Model<"openai-codex-responses">, context: Context): ResponseInput {
 	const messages: ResponseInput = [];
 
@@ -1620,150 +2005,87 @@ function convertMessages(model: Model<"openai-codex-responses">, context: Contex
 		const [callId, itemId] = id.split("|");
 		const sanitizedCallId = callId.replace(/[^a-zA-Z0-9_-]/g, "_");
 		let sanitizedItemId = itemId.replace(/[^a-zA-Z0-9_-]/g, "_");
-		// OpenAI Responses API requires item id to start with "fc"
 		if (!sanitizedItemId.startsWith("fc")) {
 			sanitizedItemId = `fc_${sanitizedItemId}`;
 		}
-		// Truncate to 64 chars and strip trailing underscores (OpenAI Codex rejects them)
 		let normalizedCallId = sanitizedCallId.length > 64 ? sanitizedCallId.slice(0, 64) : sanitizedCallId;
 		let normalizedItemId = sanitizedItemId.length > 64 ? sanitizedItemId.slice(0, 64) : sanitizedItemId;
 		normalizedCallId = normalizedCallId.replace(/_+$/, "");
 		normalizedItemId = normalizedItemId.replace(/_+$/, "");
 		return `${normalizedCallId}|${normalizedItemId}`;
 	};
-	const transformedMessages = transformMessages(context.messages, model, normalizeToolCallId);
 
+	const transformedMessages = transformMessages(context.messages, model, normalizeToolCallId);
 	let msgIndex = 0;
+
 	for (const msg of transformedMessages) {
-		if (msg.role === "user") {
-			const providerPayload = (msg as { providerPayload?: { type?: string; items?: unknown } }).providerPayload;
-			const historyItems = getOpenAIResponsesHistoryItems(providerPayload);
+		if (msg.role === "user" || msg.role === "developer") {
+			const providerPayload = (msg as { providerPayload?: AssistantMessage["providerPayload"] }).providerPayload;
+			const historyItems = getOpenAIResponsesHistoryItems(providerPayload, model.provider) as
+				| Array<ResponseInput[number]>
+				| undefined;
 			if (historyItems) {
 				messages.push(...historyItems);
-				msgIndex++;
+				msgIndex += 1;
 				continue;
 			}
-			if (typeof msg.content === "string") {
-				// Skip empty user messages
-				if (!msg.content || msg.content.trim() === "") continue;
-				messages.push({
-					role: "user",
-					content: [{ type: "input_text", text: msg.content.toWellFormed() }],
-				});
-			} else {
-				const content: ResponseInputContent[] = msg.content.map((item): ResponseInputContent => {
-					if (item.type === "text") {
-						return {
-							type: "input_text",
-							text: item.text.toWellFormed(),
-						} satisfies ResponseInputText;
-					}
-					return {
-						type: "input_image",
-						detail: "auto",
-						image_url: `data:${item.mimeType};base64,${item.data}`,
-					} satisfies ResponseInputImage;
-				});
-				// Filter out images if model doesn't support them, and empty text blocks
-				let filteredContent = !model.input.includes("image")
-					? content.filter(c => c.type !== "input_image")
-					: content;
-				filteredContent = filteredContent.filter(c => {
-					if (c.type === "input_text") {
-						return c.text.trim().length > 0;
-					}
-					return true; // Keep non-text content (images)
-				});
-				if (filteredContent.length === 0) continue;
-				messages.push({
-					role: "user",
-					content: filteredContent,
-				});
-			}
-		} else if (msg.role === "developer") {
-			const providerPayload = (msg as { providerPayload?: { type?: string; items?: unknown } }).providerPayload;
-			const historyItems = getOpenAIResponsesHistoryItems(providerPayload);
-			if (historyItems) {
-				messages.push(...historyItems);
-				msgIndex++;
-				continue;
-			}
-			if (typeof msg.content === "string") {
-				if (!msg.content || msg.content.trim() === "") continue;
-				messages.push({
-					role: "developer",
-					content: [{ type: "input_text", text: msg.content.toWellFormed() }],
-				});
-			} else {
-				const content: ResponseInputContent[] = msg.content.map((item): ResponseInputContent => {
-					if (item.type === "text") {
-						return {
-							type: "input_text",
-							text: item.text.toWellFormed(),
-						} satisfies ResponseInputText;
-					}
-					return {
-						type: "input_image",
-						detail: "auto",
-						image_url: `data:${item.mimeType};base64,${item.data}`,
-					} satisfies ResponseInputImage;
-				});
-				let filteredContent = !model.input.includes("image")
-					? content.filter(c => c.type !== "input_image")
-					: content;
-				filteredContent = filteredContent.filter(c => {
-					if (c.type === "input_text") {
-						return c.text.trim().length > 0;
-					}
-					return true;
-				});
-				if (filteredContent.length === 0) continue;
-				messages.push({
-					role: "developer",
-					content: filteredContent,
-				});
-			}
-		} else if (msg.role === "assistant") {
-			const providerPayload = (msg as { providerPayload?: { type?: string; dt?: boolean; items?: unknown } })
-				.providerPayload;
-			const historyItems = getOpenAIResponsesHistoryItems(providerPayload);
+
+			const normalizedContent = normalizeInputMessageContent(model, msg.content);
+			if (normalizedContent.length === 0) continue;
+			messages.push({ role: msg.role, content: normalizedContent });
+			msgIndex += 1;
+			continue;
+		}
+
+		if (msg.role === "assistant") {
+			const assistantMsg = msg as AssistantMessage;
+			const providerPayload = getOpenAIResponsesHistoryPayload(
+				assistantMsg.providerPayload,
+				model.provider,
+				assistantMsg.provider,
+			);
+			const historyItems = providerPayload?.items as Array<ResponseInput[number]> | undefined;
 			if (historyItems) {
 				if (providerPayload?.dt) {
 					messages.push(...historyItems);
 				} else {
 					messages.splice(0, messages.length, ...historyItems);
 				}
-				msgIndex++;
+				msgIndex += 1;
 				continue;
 			}
 
-			const output: ResponseInput = [];
-
+			const outputItems: ResponseInput = [];
 			for (const block of msg.content) {
 				if (block.type === "thinking" && msg.stopReason !== "error") {
 					if (block.thinkingSignature) {
-						const reasoningItem = JSON.parse(block.thinkingSignature) as ResponseReasoningItem;
-						output.push(reasoningItem);
+						outputItems.push(JSON.parse(block.thinkingSignature) as ResponseReasoningItem);
 					}
-				} else if (block.type === "text") {
+					continue;
+				}
+				if (block.type === "text") {
 					const textBlock = block as TextContent;
-					let msgId = textBlock.textSignature;
+					const parsedSignature = parseTextSignature(textBlock.textSignature);
+					let msgId = parsedSignature?.id;
 					if (!msgId) {
 						msgId = `msg_${msgIndex}`;
 					} else if (msgId.length > 64) {
 						msgId = `msg_${Bun.hash.xxHash64(msgId).toString(36)}`;
 					}
-					output.push({
+					outputItems.push({
 						type: "message",
 						role: "assistant",
 						content: [{ type: "output_text", text: textBlock.text.toWellFormed(), annotations: [] }],
 						status: "completed",
 						id: msgId,
+						phase: parsedSignature?.phase,
 					} satisfies ResponseOutputMessage);
-				} else if (block.type === "toolCall" && msg.stopReason !== "error") {
+					continue;
+				}
+				if (block.type === "toolCall" && msg.stopReason !== "error") {
 					const toolCall = block as ToolCall;
 					const normalized = normalizeResponsesToolCallId(toolCall.id);
-					output.push({
+					outputItems.push({
 						type: "function_call",
 						id: normalized.itemId,
 						call_id: normalized.callId,
@@ -1772,30 +2094,29 @@ function convertMessages(model: Model<"openai-codex-responses">, context: Contex
 					});
 				}
 			}
-			if (output.length === 0) continue;
-			messages.push(...output);
-		} else if (msg.role === "toolResult") {
-			const textResult = msg.content
-				.filter(c => c.type === "text")
-				.map(c => c.text)
-				.join("\n");
-			const hasImages = msg.content.some(c => c.type === "image");
-			const normalized = normalizeResponsesToolCallId(msg.toolCallId);
+			if (outputItems.length > 0) {
+				messages.push(...outputItems);
+			}
+			msgIndex += 1;
+			continue;
+		}
 
-			const hasText = textResult.length > 0;
+		if (msg.role === "toolResult") {
+			const textResult = msg.content
+				.filter(content => content.type === "text")
+				.map(content => content.text)
+				.join("\n");
+			const hasImages = msg.content.some(content => content.type === "image");
+			const normalized = normalizeResponsesToolCallId(msg.toolCallId);
 			messages.push({
 				type: "function_call_output",
 				call_id: normalized.callId,
-				output: (hasText ? textResult : "(see attached image)").toWellFormed(),
+				output: (textResult.length > 0 ? textResult : "(see attached image)").toWellFormed(),
 			});
-
 			if (hasImages && model.input.includes("image")) {
-				const contentParts: ResponseInputContent[] = [];
-				contentParts.push({
-					type: "input_text",
-					text: "Attached image(s) from tool result:",
-				} satisfies ResponseInputText);
-
+				const contentParts: ResponseInputContent[] = [
+					{ type: "input_text", text: "Attached image(s) from tool result:" } satisfies ResponseInputText,
+				];
 				for (const block of msg.content) {
 					if (block.type === "image") {
 						contentParts.push({
@@ -1805,17 +2126,40 @@ function convertMessages(model: Model<"openai-codex-responses">, context: Contex
 						} satisfies ResponseInputImage);
 					}
 				}
-
-				messages.push({
-					role: "user",
-					content: contentParts,
-				});
+				messages.push({ role: "user", content: contentParts });
 			}
 		}
-		msgIndex++;
+
+		msgIndex += 1;
 	}
 
 	return messages;
+}
+
+function normalizeInputMessageContent(
+	model: Model<"openai-codex-responses">,
+	content: string | Array<{ type: "text"; text: string } | { type: "image"; mimeType: string; data: string }>,
+): ResponseInputContent[] {
+	if (typeof content === "string") {
+		if (!content || content.trim() === "") return [];
+		return [{ type: "input_text", text: content.toWellFormed() }];
+	}
+
+	const normalizedContent: ResponseInputContent[] = content.map(item => {
+		if (item.type === "text") {
+			return { type: "input_text", text: item.text.toWellFormed() } satisfies ResponseInputText;
+		}
+		return {
+			type: "input_image",
+			detail: "auto",
+			image_url: `data:${item.mimeType};base64,${item.data}`,
+		} satisfies ResponseInputImage;
+	});
+
+	const maybeWithoutImages = model.input.includes("image")
+		? normalizedContent
+		: normalizedContent.filter(item => item.type !== "input_image");
+	return maybeWithoutImages.filter(item => item.type !== "input_text" || item.text.trim().length > 0);
 }
 
 function convertTools(tools: Tool[]): Array<{
@@ -1834,28 +2178,9 @@ function convertTools(tools: Tool[]): Array<{
 			name: tool.name,
 			description: tool.description || "",
 			parameters,
-			// Only include strict if provider supports it. Some reject unknown fields.
 			...(effectiveStrict && { strict: true }),
 		};
 	});
-}
-
-function mapStopReason(status: string | undefined): StopReason {
-	if (!status) return "stop";
-	switch (status) {
-		case "completed":
-			return "stop";
-		case "incomplete":
-			return "length";
-		case "failed":
-		case "cancelled":
-			return "error";
-		case "in_progress":
-		case "queued":
-			return "stop";
-		default:
-			return "stop";
-	}
 }
 
 function getString(value: unknown): string | undefined {
@@ -1879,7 +2204,6 @@ function isRetryableCodexFailureEvent(rawEvent: Record<string, unknown>): boolea
 	if (code && CODEX_RETRYABLE_EVENT_CODES.has(code.toLowerCase())) {
 		return true;
 	}
-
 	const message = getString(error?.message) ?? getString(rawEvent.message) ?? getString(response?.message);
 	return !!message && CODEX_RETRYABLE_EVENT_MESSAGE.test(message);
 }
@@ -1906,7 +2230,6 @@ function truncate(text: string, limit: number): string {
 function formatCodexFailure(rawEvent: Record<string, unknown>): string | null {
 	const response = asRecord(rawEvent.response);
 	const error = asRecord(rawEvent.error) ?? (response ? asRecord(response.error) : null);
-
 	const message = getString(error?.message) ?? getString(rawEvent.message) ?? getString(response?.message);
 	const code = getString(error?.code) ?? getString(error?.type) ?? getString(rawEvent.code);
 	const status = getString(response?.status) ?? getString(rawEvent.status);
@@ -1919,11 +2242,9 @@ function formatCodexFailure(rawEvent: Record<string, unknown>): string | null {
 		const metaText = meta.length ? ` (${meta.join(", ")})` : "";
 		return `Codex response failed: ${message}${metaText}`;
 	}
-
 	if (meta.length) {
 		return `Codex response failed (${meta.join(", ")})`;
 	}
-
 	try {
 		return `Codex response failed: ${truncate(JSON.stringify(rawEvent), 800)}`;
 	} catch {
@@ -1936,15 +2257,12 @@ function formatCodexErrorEvent(rawEvent: Record<string, unknown>, code: string, 
 	if (detail) {
 		return detail.replace("response failed", "error event");
 	}
-
 	const meta: string[] = [];
 	if (code) meta.push(`code=${code}`);
 	if (message) meta.push(`message=${message}`);
-
 	if (meta.length > 0) {
 		return `Codex error event (${meta.join(", ")})`;
 	}
-
 	try {
 		return `Codex error event: ${truncate(JSON.stringify(rawEvent), 800)}`;
 	} catch {

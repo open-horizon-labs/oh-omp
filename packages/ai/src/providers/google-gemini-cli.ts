@@ -240,9 +240,8 @@ function isClaudeModel(modelId: string): boolean {
 	return modelId.toLowerCase().includes("claude");
 }
 
-function isClaudeThinkingModel(modelId: string): boolean {
-	const normalized = modelId.toLowerCase();
-	return normalized.includes("claude") && normalized.includes("thinking");
+function needsClaudeThinkingBetaHeader(model: Model<"google-gemini-cli">): boolean {
+	return model.provider === "google-antigravity" && model.id.startsWith("claude-") && model.reasoning;
 }
 
 function shouldInjectAntigravitySystemInstruction(modelId: string): boolean {
@@ -487,8 +486,11 @@ export const streamGoogleGeminiCli: StreamFunction<"google-gemini-cli"> = (
 			const baseUrl = model.baseUrl?.trim();
 			const endpoints = baseUrl ? [baseUrl] : isAntigravity ? ANTIGRAVITY_ENDPOINT_FALLBACKS : [DEFAULT_ENDPOINT];
 
-			const requestBody = buildRequest(model, context, projectId, options, isAntigravity);
-			options?.onPayload?.(requestBody);
+			let requestBody = buildRequest(model, context, projectId, options, isAntigravity);
+			const replacementPayload = await options?.onPayload?.(requestBody, model);
+			if (replacementPayload !== undefined) {
+				requestBody = replacementPayload as typeof requestBody;
+			}
 			const headers = isAntigravity ? getAntigravityHeaders() : GEMINI_CLI_HEADERS;
 
 			const requestHeaders = {
@@ -496,9 +498,7 @@ export const streamGoogleGeminiCli: StreamFunction<"google-gemini-cli"> = (
 				"Content-Type": "application/json",
 				Accept: "text/event-stream",
 				...headers,
-				...(!isAntigravity && isClaudeThinkingModel(model.id)
-					? { "anthropic-beta": CLAUDE_THINKING_BETA_HEADER }
-					: {}),
+				...(needsClaudeThinkingBetaHeader(model) ? { "anthropic-beta": CLAUDE_THINKING_BETA_HEADER } : {}),
 				...(options?.headers ?? {}),
 			};
 			const requestBodyJson = JSON.stringify(requestBody);

@@ -2,6 +2,44 @@
 
 ## [Unreleased]
 
+## [13.9.16] - 2026-03-10
+### Added
+
+- Support for `onPayload` callback to replace provider request payloads before sending, enabling request interception and modification
+- Support for structured text signature metadata with phase information (commentary/final_answer) in OpenAI and Azure OpenAI Responses providers
+- Support for OpenAI Codex Spark model selection with plan-based account prioritization
+- Added `modelId` option to `getApiKey()` to enable model-specific credential ranking
+
+### Changed
+
+- Enhanced `onPayload` callback signature to accept model parameter and support async payload replacement
+- Improved error messages for `response.failed` events to include detailed error codes, messages, and incomplete reasons
+- Refactored OpenAI Codex response streaming to improve code organization and maintainability with extracted helper functions and type definitions
+- Enhanced websocket fallback logic to safely replay buffered output over SSE when websocket connections fail mid-stream
+- Improved error recovery for websocket streams by distinguishing between fatal connection errors and retryable stream errors
+- Updated credential ranking strategy to prioritize Pro plan accounts when requesting OpenAI Codex Spark models
+
+### Fixed
+
+- Fixed websocket stream recovery to properly reset output state and clear buffered items when falling back to SSE after partial output
+- Fixed handling of malformed JSON messages in websocket streams to trigger immediate fallback to SSE without retry attempts
+
+## [13.9.13] - 2026-03-10
+### Added
+
+- Added `isSpecialServiceTier` utility function to validate OpenAI service tier values
+
+## [13.9.12] - 2026-03-09
+### Added
+
+- Added Tavily web search provider support with API key authentication
+
+### Fixed
+
+- Fixed OpenAI-family streaming transports to fail with an explicit idle-timeout error instead of hanging indefinitely when the provider stops sending events mid-response
+- Fixed OpenAI Codex OAuth refresh and usage-limit lookups to respect request timeouts instead of waiting indefinitely during account selection or rotation
+- Fixed OpenAI Codex prewarmed websocket requests to fall back quickly when the socket connects but never starts the response stream
+
 ## [13.9.10] - 2026-03-08
 
 ### Added

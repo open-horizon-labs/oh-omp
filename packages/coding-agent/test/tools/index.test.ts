@@ -157,6 +157,26 @@ describe("createTools", () => {
 
 		expect(names).toContain("render_mermaid");
 	});
+
+	it("excludes inspect_image tool by default", async () => {
+		const session = createTestSession();
+		const tools = await createTools(session);
+		const names = tools.map(t => t.name);
+
+		expect(names).not.toContain("inspect_image");
+	});
+
+	it("includes inspect_image tool when enabled", async () => {
+		const session = createTestSession({
+			settings: createSettingsWithOverrides({
+				"inspect_image.enabled": true,
+			}),
+		});
+		const tools = await createTools(session);
+		const names = tools.map(t => t.name);
+
+		expect(names).toContain("inspect_image");
+	});
 	it("HIDDEN_TOOLS contains review tools", () => {
 		expect(Object.keys(HIDDEN_TOOLS).sort()).toEqual([
 			"exit_plan_mode",

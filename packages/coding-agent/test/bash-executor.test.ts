@@ -36,7 +36,21 @@ describe("executeBash", () => {
 
 	it("honors cwd", async () => {
 		const result = await executeBash("pwd", { cwd: tempDir, timeout: 5000 });
-		expect(result.output.trim()).toBe(tempDir);
+		expect(result.output.trim()).toBe(fs.realpathSync(tempDir));
+	});
+
+	it("canonicalizes symlinked cwd before execution", async () => {
+		if (process.platform === "win32") {
+			return;
+		}
+
+		const realDir = path.join(tempDir, "real");
+		const linkDir = path.join(tempDir, "link");
+		fs.mkdirSync(realDir);
+		fs.symlinkSync(realDir, linkDir, "dir");
+
+		const result = await executeBash("pwd", { cwd: linkDir, timeout: 5000 });
+		expect(result.output.trim()).toBe(fs.realpathSync(linkDir));
 	});
 
 	it("passes env vars", async () => {

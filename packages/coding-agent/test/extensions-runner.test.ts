@@ -32,8 +32,8 @@ describe("ExtensionRunner", () => {
 		tempDir.removeSync();
 	});
 
-	const loadTestExtensions = async () => {
-		const result = await discoverAndLoadExtensions([], tempDir.path());
+	const loadTestExtensions = async (configuredPaths: string[] = []) => {
+		const result = await discoverAndLoadExtensions(configuredPaths, tempDir.path());
 		return {
 			...result,
 			extensions: filterUserExtensions(result.extensions),
@@ -199,6 +199,37 @@ describe("ExtensionRunner", () => {
 			const missing = runner.getCommand("not-exists");
 			expect(missing).toBeUndefined();
 		});
+
+		it("prefers later-loaded explicit extensions for conflicting commands", async () => {
+			const deployCommand = (description: string) => `
+				export default function(pi) {
+					pi.registerCommand("deploy", {
+						description: "${description}",
+						handler: async () => {},
+					});
+				}
+			`;
+
+			fs.writeFileSync(path.join(extensionsDir, "discovered-deploy.ts"), deployCommand("Discovered deploy"));
+			const explicitExtensionPath = path.join(tempDir.path(), "explicit-deploy.ts");
+			fs.writeFileSync(explicitExtensionPath, deployCommand("Explicit deploy"));
+
+			const result = await loadTestExtensions([explicitExtensionPath]);
+			const runner = new ExtensionRunner(
+				result.extensions,
+				result.runtime,
+				tempDir.path(),
+				sessionManager,
+				modelRegistry,
+			);
+
+			const commands = runner.getRegisteredCommands();
+			expect(commands).toHaveLength(1);
+			expect(commands[0]?.description).toBe("Explicit deploy");
+
+			const command = runner.getCommand("deploy");
+			expect(command?.description).toBe("Explicit deploy");
+		});
 	});
 
 	describe("error handling", () => {
@@ -311,6 +342,80 @@ describe("ExtensionRunner", () => {
 
 			// The flag values are stored in the shared runtime
 			expect(result.runtime.flagValues.get("--test-flag")).toBe(true);
+		});
+	});
+
+	describe("before_provider_request chaining", () => {
+		it("chains payload replacements across handlers in load order", async () => {
+			const extCode1 = `
+				export default function(pi) {
+					pi.on("before_provider_request", async (event) => {
+						const payload = event.payload as { chain?: string[] };
+						return { ...payload, chain: [...(payload.chain ?? []), "ext1"] };
+					});
+				}
+			`;
+			const extCode2 = `
+				export default function(pi) {
+					pi.on("before_provider_request", async (event) => {
+						const payload = event.payload as { chain?: string[] };
+						return { ...payload, chain: [...(payload.chain ?? []), "ext2"] };
+					});
+				}
+			`;
+			fs.writeFileSync(path.join(extensionsDir, "payload-1.ts"), extCode1);
+			fs.writeFileSync(path.join(extensionsDir, "payload-2.ts"), extCode2);
+
+			const result = await loadTestExtensions();
+			const runner = new ExtensionRunner(
+				result.extensions,
+				result.runtime,
+				tempDir.path(),
+				sessionManager,
+				modelRegistry,
+			);
+
+			const payload = await runner.emitBeforeProviderRequest({ chain: ["base"] });
+			expect(payload).toEqual({ chain: ["base", "ext1", "ext2"] });
+		});
+
+		it("keeps chaining after handler errors", async () => {
+			const extCode1 = `
+				export default function(pi) {
+					pi.on("before_provider_request", async () => {
+						throw new Error("payload failed");
+					});
+				}
+			`;
+			const extCode2 = `
+				export default function(pi) {
+					pi.on("before_provider_request", async (event) => {
+						const payload = event.payload as { preserved?: boolean };
+						return { ...payload, preserved: true };
+					});
+				}
+			`;
+			fs.writeFileSync(path.join(extensionsDir, "payload-error.ts"), extCode1);
+			fs.writeFileSync(path.join(extensionsDir, "payload-ok.ts"), extCode2);
+
+			const result = await loadTestExtensions();
+			const runner = new ExtensionRunner(
+				result.extensions,
+				result.runtime,
+				tempDir.path(),
+				sessionManager,
+				modelRegistry,
+			);
+			const errors: Array<{ extensionPath: string; event: string; error: string }> = [];
+			runner.onError(err => {
+				errors.push(err);
+			});
+
+			const payload = await runner.emitBeforeProviderRequest({ original: true });
+			expect(payload).toEqual({ original: true, preserved: true });
+			expect(errors).toHaveLength(1);
+			expect(errors[0]?.event).toBe("before_provider_request");
+			expect(errors[0]?.error).toContain("payload failed");
 		});
 	});
 

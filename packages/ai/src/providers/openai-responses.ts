@@ -3,36 +3,31 @@ import OpenAI from "openai";
 import type {
 	Tool as OpenAITool,
 	ResponseCreateParamsStreaming,
-	ResponseFunctionToolCall,
 	ResponseInput,
-	ResponseInputContent,
-	ResponseInputImage,
-	ResponseInputText,
-	ResponseOutputMessage,
-	ResponseReasoningItem,
 } from "openai/resources/responses/responses";
-import { calculateCost } from "../models";
 import { getEnvApiKey } from "../stream";
-import type {
-	Api,
-	AssistantMessage,
-	CacheRetention,
-	Context,
-	Model,
-	ServiceTier,
-	StopReason,
-	StreamFunction,
-	StreamOptions,
-	TextContent,
-	ThinkingContent,
-	Tool,
-	ToolCall,
-	ToolChoice,
+import {
+	type Api,
+	type AssistantMessage,
+	type CacheRetention,
+	type Context,
+	isSpecialServiceTier,
+	type Model,
+	type ServiceTier,
+	type StreamFunction,
+	type StreamOptions,
+	type Tool,
+	type ToolChoice,
 } from "../types";
-import { normalizeResponsesToolCallId, resolveCacheRetention } from "../utils";
+import {
+	createOpenAIResponsesHistoryPayload,
+	getOpenAIResponsesHistoryItems,
+	getOpenAIResponsesHistoryPayload,
+	resolveCacheRetention,
+} from "../utils";
 import { AssistantMessageEventStream } from "../utils/event-stream";
 import { finalizeErrorMessage, type RawHttpRequestDump } from "../utils/http-inspector";
-import { parseStreamingJson } from "../utils/json-parse";
+import { getOpenAIStreamIdleTimeoutMs, iterateWithIdleTimeout } from "../utils/idle-iterator";
 import { adaptSchemaForStrict, NO_STRICT } from "../utils/schema";
 import { mapToOpenAIResponsesToolChoice } from "../utils/tool-choice";
 import {
@@ -40,6 +35,14 @@ import {
 	hasCopilotVisionInput,
 	resolveGitHubCopilotBaseUrl,
 } from "./github-copilot-headers";
+import {
+	appendResponsesToolResultMessages,
+	collectKnownCallIds,
+	convertResponsesAssistantMessage,
+	convertResponsesInputContent,
+	normalizeResponsesToolCallIdForTransform,
+	processResponsesStream,
+} from "./openai-responses-shared";
 import { transformMessages } from "./transform-messages";
 
 /**
@@ -116,6 +119,10 @@ export const streamOpenAIResponses: StreamFunction<"openai-responses"> = (
 			const apiKey = options?.apiKey || getEnvApiKey(model.provider) || "";
 			const { client, copilotPremiumRequests, baseUrl } = createClient(model, context, apiKey, options?.headers);
 			const { params } = buildParams(model, context, options);
+			const requestAbortController = new AbortController();
+			const requestSignal = options?.signal
+				? AbortSignal.any([options.signal, requestAbortController.signal])
+				: requestAbortController.signal;
 			options?.onPayload?.(params);
 			rawRequestDump = {
 				provider: model.provider,
@@ -125,240 +132,30 @@ export const streamOpenAIResponses: StreamFunction<"openai-responses"> = (
 				url: `${baseUrl ?? "https://api.openai.com/v1"}/responses`,
 				body: params,
 			};
-			const openaiStream = await client.responses.create(
-				params,
-				options?.signal ? { signal: options.signal } : undefined,
-			);
+			const openaiStream = await client.responses.create(params, { signal: requestSignal });
 			if (copilotPremiumRequests !== undefined) output.usage.premiumRequests = copilotPremiumRequests;
 			stream.push({ type: "start", partial: output });
 
-			let currentItem: ResponseReasoningItem | ResponseOutputMessage | ResponseFunctionToolCall | null = null;
-			let currentBlock: ThinkingContent | TextContent | (ToolCall & { partialJson: string }) | null = null;
-			const blocks = output.content;
-			const blockIndex = () => blocks.length - 1;
 			const nativeOutputItems: Array<Record<string, unknown>> = [];
-
-			for await (const event of openaiStream) {
-				// Handle output item start
-				if (event.type === "response.output_item.added") {
-					if (!firstTokenTime) firstTokenTime = Date.now();
-					const item = event.item;
-					if (item.type === "reasoning") {
-						currentItem = item;
-						currentBlock = { type: "thinking", thinking: "" };
-						output.content.push(currentBlock);
-						stream.push({ type: "thinking_start", contentIndex: blockIndex(), partial: output });
-					} else if (item.type === "message") {
-						currentItem = item;
-						currentBlock = { type: "text", text: "" };
-						output.content.push(currentBlock);
-						stream.push({ type: "text_start", contentIndex: blockIndex(), partial: output });
-					} else if (item.type === "function_call") {
-						currentItem = item;
-						currentBlock = {
-							type: "toolCall",
-							id: `${item.call_id}|${item.id}`,
-							name: item.name,
-							arguments: {},
-							partialJson: item.arguments || "",
-						};
-						output.content.push(currentBlock);
-						stream.push({ type: "toolcall_start", contentIndex: blockIndex(), partial: output });
-					}
-				}
-				// Handle reasoning summary deltas
-				else if (event.type === "response.reasoning_summary_part.added") {
-					if (currentItem && currentItem.type === "reasoning") {
-						currentItem.summary = currentItem.summary || [];
-						currentItem.summary.push(event.part);
-					}
-				} else if (event.type === "response.reasoning_summary_text.delta") {
-					if (
-						currentItem &&
-						currentItem.type === "reasoning" &&
-						currentBlock &&
-						currentBlock.type === "thinking"
-					) {
-						currentItem.summary = currentItem.summary || [];
-						const lastPart = currentItem.summary[currentItem.summary.length - 1];
-						if (lastPart) {
-							currentBlock.thinking += event.delta;
-							lastPart.text += event.delta;
-							stream.push({
-								type: "thinking_delta",
-								contentIndex: blockIndex(),
-								delta: event.delta,
-								partial: output,
-							});
-						}
-					}
-				}
-				// Add a new line between summary parts (hack...)
-				else if (event.type === "response.reasoning_summary_part.done") {
-					if (
-						currentItem &&
-						currentItem.type === "reasoning" &&
-						currentBlock &&
-						currentBlock.type === "thinking"
-					) {
-						currentItem.summary = currentItem.summary || [];
-						const lastPart = currentItem.summary[currentItem.summary.length - 1];
-						if (lastPart) {
-							currentBlock.thinking += "\n\n";
-							lastPart.text += "\n\n";
-							stream.push({
-								type: "thinking_delta",
-								contentIndex: blockIndex(),
-								delta: "\n\n",
-								partial: output,
-							});
-						}
-					}
-				}
-				// Handle text output deltas
-				else if (event.type === "response.content_part.added") {
-					if (currentItem && currentItem.type === "message") {
-						currentItem.content = currentItem.content || [];
-						// Filter out ReasoningText, only accept output_text and refusal
-						if (event.part.type === "output_text" || event.part.type === "refusal") {
-							currentItem.content.push(event.part);
-						}
-					}
-				} else if (event.type === "response.output_text.delta") {
-					if (currentItem && currentItem.type === "message" && currentBlock && currentBlock.type === "text") {
-						if (!currentItem.content || currentItem.content.length === 0) {
-							continue;
-						}
-						const lastPart = currentItem.content[currentItem.content.length - 1];
-						if (lastPart && lastPart.type === "output_text") {
-							currentBlock.text += event.delta;
-							lastPart.text += event.delta;
-							stream.push({
-								type: "text_delta",
-								contentIndex: blockIndex(),
-								delta: event.delta,
-								partial: output,
-							});
-						}
-					}
-				} else if (event.type === "response.refusal.delta") {
-					if (currentItem && currentItem.type === "message" && currentBlock && currentBlock.type === "text") {
-						if (!currentItem.content || currentItem.content.length === 0) {
-							continue;
-						}
-						const lastPart = currentItem.content[currentItem.content.length - 1];
-						if (lastPart && lastPart.type === "refusal") {
-							currentBlock.text += event.delta;
-							lastPart.refusal += event.delta;
-							stream.push({
-								type: "text_delta",
-								contentIndex: blockIndex(),
-								delta: event.delta,
-								partial: output,
-							});
-						}
-					}
-				}
-				// Handle function call argument deltas
-				else if (event.type === "response.function_call_arguments.delta") {
-					if (
-						currentItem &&
-						currentItem.type === "function_call" &&
-						currentBlock &&
-						currentBlock.type === "toolCall"
-					) {
-						currentBlock.partialJson += event.delta;
-						currentBlock.arguments = parseStreamingJson(currentBlock.partialJson);
-						stream.push({
-							type: "toolcall_delta",
-							contentIndex: blockIndex(),
-							delta: event.delta,
-							partial: output,
-						});
-					}
-				}
-				// Handle function call arguments done (some providers send this instead of deltas)
-				else if (event.type === "response.function_call_arguments.done") {
-					if (currentItem?.type === "function_call" && currentBlock?.type === "toolCall") {
-						currentBlock.partialJson = event.arguments;
-						currentBlock.arguments = parseStreamingJson(currentBlock.partialJson);
-					}
-				}
-				// Handle output item completion
-				else if (event.type === "response.output_item.done") {
-					const item = event.item;
-					const rawItem = item as unknown as Record<string, unknown>;
-					nativeOutputItems.push(structuredClone(rawItem));
-
-					if (item.type === "reasoning" && currentBlock && currentBlock.type === "thinking") {
-						currentBlock.thinking = item.summary?.map((part: { text: string }) => part.text).join("\n\n") || "";
-						currentBlock.thinkingSignature = JSON.stringify(item);
-						stream.push({
-							type: "thinking_end",
-							contentIndex: blockIndex(),
-							content: currentBlock.thinking,
-							partial: output,
-						});
-						currentBlock = null;
-					} else if (item.type === "message" && currentBlock && currentBlock.type === "text") {
-						currentBlock.text = item.content
-							.map((part: { type: string; text?: string; refusal?: string }) =>
-								part.type === "output_text" ? (part.text ?? "") : (part.refusal ?? ""),
-							)
-							.join("");
-						currentBlock.textSignature = item.id;
-						stream.push({
-							type: "text_end",
-							contentIndex: blockIndex(),
-							content: currentBlock.text,
-							partial: output,
-						});
-						currentBlock = null;
-					} else if (item.type === "function_call") {
-						const args =
-							currentBlock?.type === "toolCall" && currentBlock.partialJson
-								? parseStreamingJson(currentBlock.partialJson)
-								: parseStreamingJson(item.arguments || "{}");
-						const toolCall: ToolCall = {
-							type: "toolCall",
-							id: `${item.call_id}|${item.id}`,
-							name: item.name,
-							arguments: args,
-						};
-						currentBlock = null;
-						stream.push({ type: "toolcall_end", contentIndex: blockIndex(), toolCall, partial: output });
-					}
-				}
-				// Handle completion
-				else if (event.type === "response.completed") {
-					const response = event.response;
-					if (response?.usage) {
-						const cachedTokens = response.usage.input_tokens_details?.cached_tokens || 0;
-						output.usage = {
-							// OpenAI includes cached tokens in input_tokens, so subtract to get non-cached input
-							input: (response.usage.input_tokens || 0) - cachedTokens,
-							output: response.usage.output_tokens || 0,
-							cacheRead: cachedTokens,
-							cacheWrite: 0,
-							totalTokens: response.usage.total_tokens || 0,
-							...(copilotPremiumRequests !== undefined ? { premiumRequests: copilotPremiumRequests } : {}),
-							cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-						};
-					}
-					calculateCost(model, output.usage);
-					// Map status to stop reason
-					output.stopReason = mapStopReason(response?.status);
-					if (output.content.some(b => b.type === "toolCall") && output.stopReason === "stop") {
-						output.stopReason = "toolUse";
-					}
-				}
-				// Handle errors
-				else if (event.type === "error") {
-					throw new Error(`Error Code ${event.code}: ${event.message}` || "Unknown error");
-				} else if (event.type === "response.failed") {
-					throw new Error("Unknown error");
-				}
-			}
+			await processResponsesStream(
+				iterateWithIdleTimeout(openaiStream, {
+					idleTimeoutMs: getOpenAIStreamIdleTimeoutMs(),
+					errorMessage: "OpenAI responses stream stalled while waiting for the next event",
+					onIdle: () => requestAbortController.abort(),
+				}),
+				output,
+				stream,
+				model,
+				{
+					onFirstToken: () => {
+						if (!firstTokenTime) firstTokenTime = Date.now();
+					},
+					onOutputItemDone: item => {
+						nativeOutputItems.push(structuredClone(item as unknown as Record<string, unknown>));
+					},
+				},
+			);
+			if (copilotPremiumRequests !== undefined) output.usage.premiumRequests = copilotPremiumRequests;
 
 			if (options?.signal?.aborted) {
 				throw new Error("Request was aborted");
@@ -368,18 +165,14 @@ export const streamOpenAIResponses: StreamFunction<"openai-responses"> = (
 				throw new Error("An unknown error occurred");
 			}
 
-			output.providerPayload = {
-				type: "openaiResponsesHistory",
-				dt: true,
-				items: nativeOutputItems,
-			};
+			output.providerPayload = createOpenAIResponsesHistoryPayload(model.provider, nativeOutputItems);
 
 			output.duration = Date.now() - startTime;
 			if (firstTokenTime) output.ttft = firstTokenTime - startTime;
 			stream.push({ type: "done", reason: output.stopReason, message: output });
 			stream.end();
 		} catch (error) {
-			for (const block of output.content) delete (block as any).index;
+			for (const block of output.content) delete (block as { index?: number }).index;
 			output.stopReason = options?.signal?.aborted ? "aborted" : "error";
 			output.errorMessage = await finalizeErrorMessage(error, rawRequestDump);
 			output.duration = Date.now() - startTime;
@@ -488,8 +281,7 @@ function buildParams(
 	if (options?.repetitionPenalty !== undefined) {
 		params.repetition_penalty = options.repetitionPenalty;
 	}
-
-	if (options?.serviceTier !== undefined) {
+	if (isSpecialServiceTier(options?.serviceTier)) {
 		params.service_tier = options.serviceTier;
 	}
 
@@ -544,25 +336,6 @@ function supportsStrictMode(model: Model<"openai-responses">): boolean {
 	);
 }
 
-function getOpenAIResponsesHistoryItems(
-	providerPayload: { type?: string; items?: unknown } | undefined,
-): ResponseInput | undefined {
-	if (providerPayload?.type !== "openaiResponsesHistory" || !Array.isArray(providerPayload.items)) {
-		return undefined;
-	}
-	return providerPayload.items as ResponseInput;
-}
-
-function collectKnownCallIds(messages: ResponseInput): Set<string> {
-	const knownCallIds = new Set<string>();
-	for (const item of messages) {
-		if (item.type === "function_call" && typeof item.call_id === "string") {
-			knownCallIds.add(item.call_id);
-		}
-	}
-	return knownCallIds;
-}
-
 function convertConversationMessages(
 	model: Model<"openai-responses">,
 	context: Context,
@@ -570,77 +343,32 @@ function convertConversationMessages(
 ): ResponseInput {
 	const messages: ResponseInput = [];
 	let knownCallIds = new Set<string>();
-
-	const normalizeToolCallId = (id: string): string => {
-		if (!id.includes("|")) return id;
-		const [callId, itemId] = id.split("|");
-		const sanitizedCallId = callId.replace(/[^a-zA-Z0-9_-]/g, "_");
-		let sanitizedItemId = itemId.replace(/[^a-zA-Z0-9_-]/g, "_");
-		// OpenAI Responses API requires item id to start with "fc"
-		if (!sanitizedItemId.startsWith("fc")) {
-			sanitizedItemId = `fc_${sanitizedItemId}`;
-		}
-		// Truncate to 64 chars and strip trailing underscores (OpenAI Codex rejects them)
-		let normalizedCallId = sanitizedCallId.length > 64 ? sanitizedCallId.slice(0, 64) : sanitizedCallId;
-		let normalizedItemId = sanitizedItemId.length > 64 ? sanitizedItemId.slice(0, 64) : sanitizedItemId;
-		normalizedCallId = normalizedCallId.replace(/_+$/, "");
-		normalizedItemId = normalizedItemId.replace(/_+$/, "");
-		return `${normalizedCallId}|${normalizedItemId}`;
-	};
-	const transformedMessages = transformMessages(context.messages, model, normalizeToolCallId);
+	const transformedMessages = transformMessages(context.messages, model, normalizeResponsesToolCallIdForTransform);
 
 	let msgIndex = 0;
 	for (const msg of transformedMessages) {
 		if (msg.role === "user" || msg.role === "developer") {
-			const providerPayload = (msg as { providerPayload?: { type?: string; items?: unknown } }).providerPayload;
-			const historyItems = getOpenAIResponsesHistoryItems(providerPayload);
+			const providerPayload = (msg as { providerPayload?: AssistantMessage["providerPayload"] }).providerPayload;
+			const historyItems = getOpenAIResponsesHistoryItems(providerPayload, model.provider) as
+				| Array<ResponseInput[number]>
+				| undefined;
 			if (historyItems) {
 				messages.push(...historyItems);
 				knownCallIds = collectKnownCallIds(messages);
 				msgIndex++;
 				continue;
 			}
-			if (typeof msg.content === "string") {
-				// Skip empty user messages
-				if (!msg.content || msg.content.trim() === "") continue;
-				messages.push({
-					role: "user",
-					content: [{ type: "input_text", text: msg.content.toWellFormed() }],
-				});
-			} else {
-				const content: ResponseInputContent[] = msg.content.map((item): ResponseInputContent => {
-					if (item.type === "text") {
-						return {
-							type: "input_text",
-							text: item.text.toWellFormed(),
-						} satisfies ResponseInputText;
-					}
-					return {
-						type: "input_image",
-						detail: "auto",
-						image_url: `data:${item.mimeType};base64,${item.data}`,
-					} satisfies ResponseInputImage;
-				});
-				// Filter out images if model doesn't support them, and empty text blocks
-				let filteredContent = !model.input.includes("image")
-					? content.filter(c => c.type !== "input_image")
-					: content;
-				filteredContent = filteredContent.filter(c => {
-					if (c.type === "input_text") {
-						return c.text.trim().length > 0;
-					}
-					return true; // Keep non-text content (images)
-				});
-				if (filteredContent.length === 0) continue;
-				messages.push({
-					role: "user",
-					content: filteredContent,
-				});
-			}
+			const content = convertResponsesInputContent(msg.content, model.input.includes("image"));
+			if (!content) continue;
+			messages.push({ role: "user", content });
 		} else if (msg.role === "assistant") {
-			const providerPayload = (msg as { providerPayload?: { type?: string; dt?: boolean; items?: unknown } })
-				.providerPayload;
-			const historyItems = getOpenAIResponsesHistoryItems(providerPayload);
+			const assistantMsg = msg as AssistantMessage;
+			const providerPayload = getOpenAIResponsesHistoryPayload(
+				assistantMsg.providerPayload,
+				model.provider,
+				assistantMsg.provider,
+			);
+			const historyItems = providerPayload?.items as Array<ResponseInput[number]> | undefined;
 			if (historyItems) {
 				if (providerPayload?.dt) {
 					messages.push(...historyItems);
@@ -652,111 +380,11 @@ function convertConversationMessages(
 				continue;
 			}
 
-			const output: ResponseInput = [];
-			const assistantMsg = msg as AssistantMessage;
-
-			// Check if this message is from a different model (same provider, different model ID).
-			// For such messages, tool call IDs with fc_ prefix need to be stripped to avoid
-			// OpenAI's reasoning/function_call pairing validation errors.
-			const isDifferentModel =
-				assistantMsg.model !== model.id &&
-				assistantMsg.provider === model.provider &&
-				assistantMsg.api === model.api;
-
-			for (const block of msg.content) {
-				// Do not submit thinking blocks if the completion had an error (i.e. abort)
-				if (block.type === "thinking" && msg.stopReason !== "error") {
-					if (block.thinkingSignature) {
-						const reasoningItem = JSON.parse(block.thinkingSignature);
-						output.push(reasoningItem);
-					}
-				} else if (block.type === "text") {
-					const textBlock = block as TextContent;
-					// OpenAI requires id to be max 64 characters
-					let msgId = textBlock.textSignature;
-					if (!msgId) {
-						msgId = `msg_${msgIndex}`;
-					} else if (msgId.length > 64) {
-						msgId = `msg_${Bun.hash.xxHash64(msgId).toString(36)}`;
-					}
-					output.push({
-						type: "message",
-						role: "assistant",
-						content: [{ type: "output_text", text: textBlock.text.toWellFormed(), annotations: [] }],
-						status: "completed",
-						id: msgId,
-					} satisfies ResponseOutputMessage);
-					// Do not submit toolcall blocks if the completion had an error (i.e. abort)
-				} else if (block.type === "toolCall" && msg.stopReason !== "error") {
-					const toolCall = block as ToolCall;
-					const normalized = normalizeResponsesToolCallId(toolCall.id);
-					const callId = normalized.callId;
-					// For different-model messages, set id to undefined to avoid pairing validation.
-					// OpenAI tracks which fc_xxx IDs were paired with rs_xxx reasoning items.
-					// By omitting the id, we avoid triggering that validation (like cross-provider does).
-					let itemId: string | undefined = normalized.itemId;
-					if (isDifferentModel && (itemId?.startsWith("fc_") || itemId?.startsWith("fcr_"))) {
-						itemId = undefined;
-					}
-					knownCallIds.add(normalized.callId);
-					output.push({
-						type: "function_call",
-						id: itemId,
-						call_id: callId,
-						name: toolCall.name,
-						arguments: JSON.stringify(toolCall.arguments),
-					});
-				}
-			}
-			if (output.length === 0) continue;
-			messages.push(...output);
+			const outputItems = convertResponsesAssistantMessage(assistantMsg, model, msgIndex, knownCallIds);
+			if (outputItems.length === 0) continue;
+			messages.push(...outputItems);
 		} else if (msg.role === "toolResult") {
-			// Extract text and image content
-			const textResult = msg.content
-				.filter(c => c.type === "text")
-				.map(c => c.text)
-				.join("\n");
-			const hasImages = msg.content.some(c => c.type === "image");
-			const normalized = normalizeResponsesToolCallId(msg.toolCallId);
-			if (strictResponsesPairing && !knownCallIds.has(normalized.callId)) {
-				msgIndex++;
-				continue;
-			}
-
-			// Always send function_call_output with text (or placeholder if only images)
-			const hasText = textResult.length > 0;
-			messages.push({
-				type: "function_call_output",
-				call_id: normalized.callId,
-				output: (hasText ? textResult : "(see attached image)").toWellFormed(),
-			});
-
-			// If there are images and model supports them, send a follow-up user message with images
-			if (hasImages && model.input.includes("image")) {
-				const contentParts: ResponseInputContent[] = [];
-
-				// Add text prefix
-				contentParts.push({
-					type: "input_text",
-					text: "Attached image(s) from tool result:",
-				} satisfies ResponseInputText);
-
-				// Add images
-				for (const block of msg.content) {
-					if (block.type === "image") {
-						contentParts.push({
-							type: "input_image",
-							detail: "auto",
-							image_url: `data:${block.mimeType};base64,${block.data}`,
-						} satisfies ResponseInputImage);
-					}
-				}
-
-				messages.push({
-					role: "user",
-					content: contentParts,
-				});
-			}
+			appendResponsesToolResultMessages(messages, msg, model, strictResponsesPairing, knownCallIds);
 		}
 		msgIndex++;
 	}
@@ -777,25 +405,4 @@ function convertTools(tools: Tool[], strictMode: boolean): OpenAITool[] {
 			...(effectiveStrict && { strict: true }),
 		} as OpenAITool;
 	});
-}
-
-function mapStopReason(status: OpenAI.Responses.ResponseStatus | undefined): StopReason {
-	if (!status) return "stop";
-	switch (status) {
-		case "completed":
-			return "stop";
-		case "incomplete":
-			return "length";
-		case "failed":
-		case "cancelled":
-			return "error";
-		// These two are wonky ...
-		case "in_progress":
-		case "queued":
-			return "stop";
-		default: {
-			const _exhaustive: never = status;
-			throw new Error(`Unhandled stop reason: ${_exhaustive}`);
-		}
-	}
 }

@@ -144,7 +144,6 @@ export class StatusLineComponent implements Component {
 	#invalidateGitCaches(): void {
 		this.#cachedBranch = undefined;
 		this.#cachedBranchRepoId = undefined;
-		this.#cachedPr = undefined;
 		this.#cachedPrContext = undefined;
 	}
 	#getCurrentBranch(): string | null {
@@ -256,20 +255,17 @@ export class StatusLineComponent implements Component {
 			return this.#cachedPr ?? null;
 		}
 
-		if (this.#cachedPr !== undefined) {
-			this.#cachedPr = undefined;
-			this.#cachedPrContext = undefined;
-		}
+		const stalePr = this.#cachedPr;
 
 		// Don't look up if no branch, detached HEAD, default branch, or already in flight
 		if (!branch || branch === "detached" || this.#isDefaultBranch(branch) || this.#prLookupInFlight) {
-			return null;
+			return stalePr ?? null;
 		}
 
 		this.#prLookupInFlight = true;
 		const lookupContext = currentContext;
 
-		// Fire async lookup, return null until resolved
+		// Fire async lookup, keep stale value visible until resolved
 		(async () => {
 			// Helper: only write cache if branch/repo context hasn't changed since launch
 			const setCachedPr = (value: { number: number; url: string } | null) => {
@@ -299,13 +295,13 @@ export class StatusLineComponent implements Component {
 				setCachedPr(null);
 			} finally {
 				this.#prLookupInFlight = false;
-				if (this.#cachedPr && this.#onBranchChange) {
+				if (this.#onBranchChange) {
 					this.#onBranchChange();
 				}
 			}
 		})();
 
-		return null;
+		return stalePr ?? null;
 	}
 
 	#getTokensPerSecond(): number | null {

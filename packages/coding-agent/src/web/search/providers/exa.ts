@@ -7,6 +7,7 @@
  * them into a combined `answer` string on the SearchResponse.
  */
 import { getEnvApiKey } from "@oh-my-pi/pi-ai";
+import { settings } from "../../../config/settings";
 import { callExaTool, findApiKey, isSearchResponse } from "../../../exa/mcp-client";
 import type { SearchResponse, SearchSource } from "../../../web/search/types";
 import { SearchProviderError } from "../../../web/search/types";
@@ -244,6 +245,13 @@ export class ExaProvider extends SearchProvider {
 	readonly label = "Exa";
 
 	isAvailable(): boolean {
+		try {
+			if (settings.get("exa.enabled") === false || settings.get("exa.enableSearch") === false) {
+				return false;
+			}
+		} catch {
+			// Settings not initialized; fall through to public MCP availability
+		}
 		return true;
 	}
 

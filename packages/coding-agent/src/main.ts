@@ -135,12 +135,20 @@ async function runInteractiveMode(
 	}
 
 	while (true) {
-		const { text, images } = await mode.getUserInput();
+		const input = await mode.getUserInput();
+		if (input.cancelled) {
+			continue;
+		}
 		try {
-			await session.prompt(text, { images });
+			if (!mode.markPendingSubmissionStarted(input)) {
+				continue;
+			}
+			await session.prompt(input.text, { images: input.images });
 		} catch (error: unknown) {
 			const errorMessage = error instanceof Error ? error.message : "Unknown error occurred";
 			mode.showError(errorMessage);
+		} finally {
+			mode.finishPendingSubmission(input);
 		}
 	}
 }
@@ -510,8 +518,6 @@ export async function runRootCommand(parsed: Args, rawArgs: string[]): Promise<v
 	const { authStorage, modelRegistry } = await logger.timeAsync("discoverModels", async () => {
 		const authStorage = await discoverAuthStorage();
 		const modelRegistry = new ModelRegistry(authStorage);
-		const refreshStrategy = parsedArgs.listModels !== undefined ? "online" : "online-if-uncached";
-		await modelRegistry.refresh(refreshStrategy);
 		return { authStorage, modelRegistry };
 	});
 
@@ -521,6 +527,7 @@ export async function runRootCommand(parsed: Args, rawArgs: string[]): Promise<v
 	}
 
 	if (parsedArgs.listModels !== undefined) {
+		await modelRegistry.refresh("online");
 		const searchPattern = typeof parsedArgs.listModels === "string" ? parsedArgs.listModels : undefined;
 		await listModels(modelRegistry, searchPattern);
 		process.exit(0);
@@ -572,6 +579,7 @@ export async function runRootCommand(parsed: Args, rawArgs: string[]): Promise<v
 
 	// Initialize discovery system with settings for provider persistence
 	logger.time("initializeWithSettings", () => initializeWithSettings(settings));
+	modelRegistry.refreshInBackground();
 
 	// Apply model role overrides from CLI args or env vars (ephemeral, not persisted)
 	const smolModel = parsedArgs.smol ?? $env.PI_SMOL_MODEL;

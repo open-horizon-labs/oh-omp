@@ -618,9 +618,6 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	const { authStorage, modelRegistry } = await logger.timeAsync("discoverModels", async () => {
 		const authStorage = options.authStorage ?? (await discoverAuthStorage(agentDir));
 		const modelRegistry = options.modelRegistry ?? new ModelRegistry(authStorage);
-		if (!options.modelRegistry) {
-			await modelRegistry.refresh();
-		}
 		return { authStorage, modelRegistry };
 	});
 
@@ -629,6 +626,9 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		async () => options.settings ?? (await Settings.init({ cwd, agentDir })),
 	);
 	logger.time("initializeWithSettings", initializeWithSettings, settings);
+	if (!options.modelRegistry) {
+		modelRegistry.refreshInBackground();
+	}
 	const skillsSettings = settings.getGroup("skills") as SkillsSettings;
 	const discoveredSkillsPromise =
 		options.skills === undefined ? discoverSkills(cwd, agentDir, skillsSettings) : undefined;
@@ -1582,6 +1582,11 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			tools: initialTools,
 		},
 		convertToLlm: convertToLlmFinal,
+		onPayload: extensionRunner
+			? async (payload, _model) => {
+					return extensionRunner.emitBeforeProviderRequest(payload);
+				}
+			: undefined,
 		sessionId: sessionManager.getSessionId(),
 		transformContext,
 		steeringMode: settings.get("steeringMode") ?? "one-at-a-time",

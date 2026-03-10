@@ -456,9 +456,15 @@ export function transformMessages(messages: AgentMessage[], options: MessageTran
 	// 3b. Ensure surviving messages start with a user turn (Claude API requirement).
 	// When budget drops remove a user turn at the front, the next surviving turn
 	// may be an assistant turn. Extend drops until a user turn is at the front.
-	// Bounded by hotWindowStart — the hot window is inviolable.
+	// First pass: bounded by hotWindowStart (preserve hot window when possible).
+	// Fallback: if the hot window itself starts with a non-user turn, extend into
+	// it — the API constraint is harder than the hot-window preservation guarantee.
 	if (dropCount > 0) {
 		while (dropCount < hotWindowStart && transformedTurns[dropCount].messages[0].role !== "user") {
+			dropCount++;
+		}
+		// Fallback: hot-window boundary reached but first surviving turn is still non-user
+		while (dropCount < transformedTurns.length && transformedTurns[dropCount].messages[0].role !== "user") {
 			dropCount++;
 		}
 	}

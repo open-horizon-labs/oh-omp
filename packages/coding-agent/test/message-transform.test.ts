@@ -897,6 +897,32 @@ describe("transformMessages — front-drop API ordering", () => {
 		expect(result[0].role).toBe("user");
 	});
 
+	test("hot window starts with assistant after budget drop → extends into hot window", () => {
+		// Turn 0: user (large)      <- budget drops this
+		// Turn 1: assistant + tool   <- hot window, non-user → must also be dropped
+		// Turn 2: user               <- hot window, becomes first message
+		// hotWindowTurns = 2, so hotWindowStart = 1
+		// Budget drops turn 0. dropCount = 1 = hotWindowStart.
+		// transformedTurns[1] is assistant → pre-hotWindowStart loop doesn't run.
+		// Fallback loop must extend past hotWindowStart to find user at turn 2.
+		const messages: AgentMessage[] = [
+			makeUser("a".repeat(2000)), // ~500 tokens (Turn 0)
+			makeAssistant([{ id: "tc-1", name: "read" }]), // Turn 1 (hot window)
+			makeToolResult("tc-1", "b".repeat(100)), // Turn 1 continued (hot window)
+			makeUser("end"), // Turn 2 (hot window)
+		];
+
+		const { messages: result, metadata } = transformMessages(messages, { maxTokens: 50, hotWindowTurns: 2 });
+
+		// First surviving message must be user
+		expect(result[0].role).toBe("user");
+		expect((result[0] as UserMessage).content).toBe("end");
+		// Turn 0 and turn 1 both dropped
+		expect(metadata.decisions[0].action).toBe("dropped");
+		expect(metadata.decisions[1].action).toBe("dropped");
+		expect(metadata.droppedCount).toBe(2);
+	});
+
 	test("no budget → ordering fix not applied", () => {
 		// Without budget bounding, dropCount stays 0 and no ordering fix is needed
 		const messages: AgentMessage[] = [makeUser("hello"), makeAssistant(), makeUser("end")];

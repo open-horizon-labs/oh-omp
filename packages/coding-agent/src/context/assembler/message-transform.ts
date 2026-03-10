@@ -17,6 +17,7 @@
 
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { TextContent, ToolResultMessage } from "@oh-my-pi/pi-ai";
+import { logger } from "@oh-my-pi/pi-utils";
 import { parseMCPToolName } from "../../mcp/tool-bridge";
 import type { MemoryAssemblyBudget } from "../memory-contract";
 import type { BudgetDerivationInput } from "./types";
@@ -101,6 +102,18 @@ export function deriveBudget(input: BudgetDerivationInput): MemoryAssemblyBudget
 	const totalCosts = input.systemPromptTokens + input.toolDefinitionTokens + input.currentTurnTokens;
 	const safetyReserve = Math.floor((input.contextWindow * safetyPercent) / 100);
 	const allocatable = Math.max(0, input.contextWindow - totalCosts - safetyReserve);
+
+	// Warn when fixed costs dominate and the allocatable budget is critically low.
+	// Threshold: less than 10% of the context window is available for messages + hydration.
+	if (input.contextWindow > 0 && allocatable < input.contextWindow * 0.1) {
+		logger.warn("Budget critically low: fixed costs dominate context window", {
+			contextWindow: input.contextWindow,
+			totalCosts,
+			safetyReserve,
+			allocatable,
+			usagePercent: Math.round((totalCosts / input.contextWindow) * 100),
+		});
+	}
 
 	return {
 		maxTokens: allocatable,

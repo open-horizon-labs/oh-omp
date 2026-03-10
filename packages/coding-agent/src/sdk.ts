@@ -22,7 +22,7 @@ import {
 	type PromptTemplate,
 	renderPromptTemplate,
 } from "./config/prompt-templates";
-import { Settings, type SkillsSettings } from "./config/settings";
+import { type AssemblerSettings, Settings, type SkillsSettings } from "./config/settings";
 import { CursorExecHandlers } from "./cursor";
 import "./discovery";
 import { resolveConfigValue } from "./config/resolve-config-value";
@@ -41,6 +41,7 @@ import {
 	extractAssistantText,
 	extractPathsFromText,
 	extractUserText,
+	formatHydratedContext,
 	IngestPipeline,
 	PassiveHydrator,
 	RecallStore,
@@ -1409,6 +1410,11 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			? (messages: AgentMessage[]) => extensionRunner.emitContext(messages)
 			: undefined;
 
+		// Read assembler settings once at closure creation. Settings are static
+		// for the session lifetime — no need to re-read per turn.
+		const assemblerSettings = settings.getGroup("assembler") as AssemblerSettings;
+		const hotWindowTurns = assemblerSettings.hotWindowTurns;
+
 		const assemblerTransform = async (messages: AgentMessage[]): Promise<AgentMessage[]> => {
 			// Derive budget from current model context window and measured costs.
 			// agent.state is read each turn to reflect model/tool changes mid-session.
@@ -1419,7 +1425,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			// Step 1: Apply message transform (hot window + content replacement).
 			// This strips tool_result content from older turns before budget derivation
 			// so the budget reflects actual post-transform message costs.
-			const firstPass = transformMessages(messages);
+			const firstPass = transformMessages(messages, { hotWindowTurns });
 			const transformedMessages = firstPass.messages;
 
 			const budget = currentModel
@@ -1428,10 +1434,13 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 						systemPromptTokens: Math.ceil(currentSystemPrompt.length / 4),
 						toolDefinitionTokens: estimateToolDefinitionTokens(currentTools),
 						currentTurnTokens: estimateMessageTokens(transformedMessages),
+						safetyMarginPercent: assemblerSettings.safetyMarginPercent,
+						messageBudgetPercent: assemblerSettings.messageBudgetPercent,
+						hydrationBudgetPercent: assemblerSettings.hydrationBudgetPercent,
 					})
 				: undefined;
 
-			// Step 2: Run passive hydration (embed hot window → cache check → search → MMR).
+			// Step 2: Run passive hydration (embed hot window -> cache check -> search -> MMR).
 			const hydration = passiveHydrator
 				? await passiveHydrator.hydrate(messages)
 				: { text: null, results: [], cacheHit: false, durationMs: 0 };
@@ -1442,15 +1451,55 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				durationMs: Math.round(hydration.durationMs),
 			});
 
-			// Step 3: Apply budget bounding — account for hydrated context tokens.
-			const hydratedTokens = hydration.text
-				? estimateMessageTokens([{ role: "developer", content: hydration.text }])
-				: 0;
-			const maxMessageTokens = budget ? Math.max(0, budget.maxTokens - hydratedTokens) : undefined;
+			// Step 3: Enforce hydration cap at entry level.
+			// When hydrated tokens exceed budget.hydrationBudgetMax, drop lowest-MMR-ranked
+			// entries (from the end of the results array — already ranked by MMR) until
+			// the total fits. Never truncate the XML blob.
+			let cappedResults = hydration.results;
+			let hydratedText = hydration.text;
+			let hydratedTokens = hydratedText ? estimateMessageTokens([{ role: "developer", content: hydratedText }]) : 0;
+
+			if (budget && hydratedTokens > budget.hydrationBudgetMax && cappedResults.length > 0) {
+				// Drop entries from the end (lowest MMR rank) until within budget.
+				// Uses real token counts via formatHydratedContext + estimateMessageTokens
+				// each iteration to account for XML wrapper overhead accurately.
+				const remaining = [...cappedResults];
+				while (remaining.length > 0) {
+					const candidateText = formatHydratedContext(remaining, sessionId);
+					const candidateTokens = candidateText
+						? estimateMessageTokens([{ role: "developer", content: candidateText }])
+						: 0;
+					if (candidateTokens <= budget.hydrationBudgetMax) break;
+					remaining.pop();
+				}
+
+				if (remaining.length < cappedResults.length) {
+					logger.debug("assembler:hydration-cap-enforced", {
+						originalEntries: cappedResults.length,
+						survivingEntries: remaining.length,
+						hydrationBudgetMax: budget.hydrationBudgetMax,
+					});
+					cappedResults = remaining;
+					hydratedText = remaining.length > 0 ? formatHydratedContext(remaining, sessionId) : null;
+					hydratedTokens = hydratedText
+						? estimateMessageTokens([{ role: "developer", content: hydratedText }])
+						: 0;
+				}
+			}
+
+			// Step 4: Compute elastic message budget.
+			// Messages get: allocatable - actual hydration, floored at messageBudgetMin.
+			// This means messages expand into unused hydration capacity.
+			let maxMessageTokens: number | undefined;
+			if (budget) {
+				const effectiveBudget = Math.max(budget.messageBudgetMin, budget.maxTokens - hydratedTokens);
+				maxMessageTokens = effectiveBudget;
+			}
+
 			let boundedMessages: AgentMessage[];
 			let finalTransformMetadata: TransformMetadata;
 			if (maxMessageTokens !== undefined) {
-				const boundedPass = transformMessages(messages, { maxTokens: maxMessageTokens });
+				const boundedPass = transformMessages(messages, { maxTokens: maxMessageTokens, hotWindowTurns });
 				boundedMessages = boundedPass.messages;
 				finalTransformMetadata = boundedPass.metadata;
 			} else {
@@ -1458,12 +1507,26 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				finalTransformMetadata = firstPass.metadata;
 			}
 
-			// Step 4: Inject hydrated context as developer message.
-			const finalMessages = hydration.text
+			// Step 5: Budget debug logging — per-category allocation and actual usage.
+			if (budget) {
+				logger.debug("assembler:budget-derivation", {
+					contextWindow: currentModel?.contextWindow ?? 0,
+					allocatable: budget.maxTokens,
+					hydrationBudgetMax: budget.hydrationBudgetMax,
+					messageBudgetMin: budget.messageBudgetMin,
+					actualHydratedTokens: hydratedTokens,
+					effectiveMessageBudget: maxMessageTokens,
+					messageTokensAfterTransform: finalTransformMetadata.tokensAfter,
+					hydratedEntries: cappedResults.length,
+				});
+			}
+
+			// Step 6: Inject hydrated context as developer message.
+			const finalMessages = hydratedText
 				? [
 						{
 							role: "developer" as const,
-							content: hydration.text,
+							content: hydratedText,
 							attribution: "agent" as const,
 							timestamp: Date.now(),
 						} satisfies AgentMessage,
@@ -1471,7 +1534,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 					]
 				: boundedMessages;
 
-			// Step 5: Capture effective-prompt snapshot.
+			// Step 7: Capture effective-prompt snapshot.
 			const turnId = `turn-${Date.now()}`;
 			lastPromptSnapshot = captureEffectivePromptSnapshot({
 				turnId,
@@ -1484,7 +1547,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				assemblerBudget: budget ?? null,
 			});
 
-			// Step 6: Inject assembly summary as developer message.
+			// Step 8: Inject assembly summary as developer message.
 			const summary = formatAssemblySummary(lastPromptSnapshot);
 			if (summary) {
 				return [

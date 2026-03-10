@@ -1460,22 +1460,17 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			let hydratedTokens = hydratedText ? estimateMessageTokens([{ role: "developer", content: hydratedText }]) : 0;
 
 			if (budget && hydratedTokens > budget.hydrationBudgetMax && cappedResults.length > 0) {
-				// Estimate tokens per entry by distributing total proportionally by text length.
-				const entryLengths = cappedResults.map(r => r.text.length);
-				const totalLength = entryLengths.reduce((a, b) => a + b, 0);
-
 				// Drop entries from the end (lowest MMR rank) until within budget.
+				// Uses real token counts via formatHydratedContext + estimateMessageTokens
+				// each iteration to account for XML wrapper overhead accurately.
 				const remaining = [...cappedResults];
-				let remainingLength = totalLength;
 				while (remaining.length > 0) {
-					// Estimate tokens from remaining text + XML wrapper overhead.
-					// Overhead: <recalled-context>\n per entry: <entry ...>\n...\n</entry>\n + </recalled-context>
-					const wrapperChars = 40 + remaining.length * 80; // rough XML overhead estimate
-					const estimatedTokens = Math.ceil((remainingLength + wrapperChars) / 4);
-					if (estimatedTokens <= budget.hydrationBudgetMax) break;
-					// Drop last entry (lowest MMR rank).
-					const dropped = remaining.pop()!;
-					remainingLength -= dropped.text.length;
+					const candidateText = formatHydratedContext(remaining, sessionId);
+					const candidateTokens = candidateText
+						? estimateMessageTokens([{ role: "developer", content: candidateText }])
+						: 0;
+					if (candidateTokens <= budget.hydrationBudgetMax) break;
+					remaining.pop();
 				}
 
 				if (remaining.length < cappedResults.length) {

@@ -6,6 +6,15 @@
 
 - Surface assembly metadata to the LLM as a compact developer message each turn, including turn composition (kept/stubbed/dropped counts with affected ranges) and budget usage with headroom ([#58](https://github.com/open-horizon-labs/oh-omp/issues/58))
 - Add source provenance tags to assembled context: MCP tool results are tagged `mcp:serverName`, builtin tools as `tool:name`, and recall results include session age signals ([#59](https://github.com/open-horizon-labs/oh-omp/issues/59))
+- Elastic budget: `deriveBudget` uses percentage-based settings for safety margin, message floor, and hydration cap. Hydration cap enforced at entry level (drop lowest-MMR entries) instead of blob truncation. Messages expand into unused hydration capacity ([#63](https://github.com/open-horizon-labs/oh-omp/issues/63))
+- Budget per-category breakdown logged at debug level each turn (allocatable, hydration budget, message budget, actual usage) ([#63](https://github.com/open-horizon-labs/oh-omp/issues/63))
+- Warning logged when fixed costs dominate context window and allocatable budget is critically low ([#63](https://github.com/open-horizon-labs/oh-omp/issues/63))
+
+### Changed
+
+- Safety margin reduced from 10% to 5% of context window (configurable via `assembler.safetyMarginPercent`) ([#63](https://github.com/open-horizon-labs/oh-omp/issues/63))
+- Hydration gains a hard cap at 50% of allocatable budget (configurable via `assembler.hydrationBudgetPercent`), replacing the previous uncapped model ([#63](https://github.com/open-horizon-labs/oh-omp/issues/63))
+- Messages gain a guaranteed minimum floor of 50% of allocatable budget (configurable via `assembler.messageBudgetPercent`), expanding into unused hydration capacity ([#63](https://github.com/open-horizon-labs/oh-omp/issues/63))
 
 ## [13.9.10] - 2026-03-08
 ### Added

@@ -7,6 +7,7 @@ import { ptree, truncate } from "@oh-my-pi/pi-utils";
 import { type Static, Type } from "@sinclair/typebox";
 import { parseHTML } from "linkedom";
 import { renderPromptTemplate } from "../config/prompt-templates";
+import type { Settings } from "../config/settings";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import { type Theme, theme } from "../modes/theme/theme";
 import fetchDescription from "../prompts/tools/fetch.md" with { type: "text" };
@@ -15,6 +16,7 @@ import { renderStatusLine } from "../tui";
 import { CachedOutputBlock } from "../tui/output-block";
 import { formatDimensionNote, resizeImage } from "../utils/image-resize";
 import { ensureTool } from "../utils/tools-manager";
+import { extractWithParallel, findParallelApiKey, getParallelExtractContent } from "../web/parallel";
 import { specialHandlers } from "../web/scrapers";
 import type { RenderResult } from "../web/scrapers/types";
 import { finalizeOutput, loadPage, MAX_OUTPUT_CHARS } from "../web/scrapers/types";
@@ -465,12 +467,13 @@ function parseFeedToMarkdown(content: string, maxItems = 10): string {
 }
 
 /**
- * Render HTML to markdown using jina, trafilatura, lynx (in order of preference)
+ * Render HTML to markdown using Parallel, jina, trafilatura, lynx (in order of preference)
  */
 async function renderHtmlToText(
 	url: string,
 	html: string,
 	timeout: number,
+	settings: Settings,
 	userSignal?: AbortSignal,
 ): Promise<{ content: string; ok: boolean; method: string }> {
 	const signal = ptree.combineSignals(userSignal, timeout * 1000);
@@ -481,6 +484,28 @@ async function renderHtmlToText(
 		stderr: "full" as const,
 		signal,
 	};
+
+	// Try Parallel extract first when credentials are configured
+	if (settings.get("providers.parallelFetch") && (await findParallelApiKey())) {
+		try {
+			const parallelResult = await extractWithParallel([url], {
+				objective: "Extract the main content",
+				excerpts: true,
+				fullContent: false,
+				signal,
+			});
+			const firstDocument = parallelResult.results[0];
+			if (firstDocument) {
+				const content = getParallelExtractContent(firstDocument);
+				if (content.trim().length > 100 && !isLowQualityOutput(content)) {
+					return { content, ok: true, method: "parallel" };
+				}
+			}
+		} catch {
+			// Parallel extract failed, continue to next method
+			signal?.throwIfAborted();
+		}
+	}
 
 	// Try jina first (reader API)
 	try {
@@ -608,7 +633,13 @@ async function handleSpecialUrls(
 /**
  * Main render function implementing the full pipeline
  */
-async function renderUrl(url: string, timeout: number, raw: boolean, signal?: AbortSignal): Promise<FetchRenderResult> {
+async function renderUrl(
+	url: string,
+	timeout: number,
+	raw: boolean,
+	settings: Settings,
+	signal?: AbortSignal,
+): Promise<FetchRenderResult> {
 	const notes: string[] = [];
 	const fetchedAt = new Date().toISOString();
 	if (signal?.aborted) {
@@ -714,7 +745,7 @@ async function renderUrl(url: string, timeout: number, raw: boolean, signal?: Ab
 				}
 
 				const resized = await resizeImage(
-					{ type: "image", data: binary.buffer.toBase64(), mimeType: imageMimeType },
+					{ type: "image", data: Buffer.from(binary.buffer).toBase64(), mimeType: imageMimeType },
 					{ maxBytes: MAX_INLINE_IMAGE_OUTPUT_BYTES },
 				);
 				const isDecodedImage =
@@ -952,7 +983,7 @@ async function renderUrl(url: string, timeout: number, raw: boolean, signal?: Ab
 		}
 
 		// 5E: Render HTML with lynx or html2text
-		const htmlResult = await renderHtmlToText(finalUrl, rawContent, timeout, signal);
+		const htmlResult = await renderHtmlToText(finalUrl, rawContent, timeout, settings, signal);
 		if (!htmlResult.ok) {
 			notes.push("html rendering failed (lynx/html2text unavailable)");
 			const output = finalizeOutput(rawContent);
@@ -1092,7 +1123,7 @@ export class FetchTool implements AgentTool<typeof fetchSchema, FetchToolDetails
 			throw new ToolAbortError();
 		}
 
-		const result = await renderUrl(url, effectiveTimeout, raw, signal);
+		const result = await renderUrl(url, effectiveTimeout, raw, this.session.settings, signal);
 		const truncation = truncateHead(result.content, {
 			maxBytes: DEFAULT_MAX_BYTES,
 			maxLines: FETCH_DEFAULT_MAX_LINES,

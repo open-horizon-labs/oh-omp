@@ -361,9 +361,9 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.ui.requestRender();
 		});
 
-		// Subscribe to terminal Mode 2031 dark/light appearance change notifications.
-		// When the OS or terminal switches between dark and light mode, the terminal
-		// sends a DSR and we re-evaluate which theme to use.
+		// Subscribe to terminal dark/light appearance changes.
+		// The terminal queries background color via OSC 11 at startup and on
+		// Mode 2031 notifications, computing luminance to detect dark/light.
 		this.ui.terminal.onAppearanceChange(mode => {
 			onTerminalAppearanceChange(mode);
 		});
@@ -503,8 +503,12 @@ export class InteractiveMode implements InteractiveModeContext {
 		switch (todo.status) {
 			case "completed":
 				return theme.fg("success", `${prefix}${checkbox.checked} ${chalk.strikethrough(todo.content)}`);
-			case "in_progress":
-				return theme.fg("accent", `${prefix}${checkbox.unchecked} ${todo.content}`);
+			case "in_progress": {
+				const main = theme.fg("accent", `${prefix}${checkbox.unchecked} ${todo.content}`);
+				if (!todo.details) return main;
+				const detailLines = todo.details.split("\n").map(line => theme.fg("dim", `${prefix}  ${line}`));
+				return [main, ...detailLines].join("\n");
+			}
 			case "abandoned":
 				return theme.fg("error", `${prefix}${checkbox.unchecked} ${chalk.strikethrough(todo.content)}`);
 			default:
@@ -1041,8 +1045,8 @@ export class InteractiveMode implements InteractiveModeContext {
 		return this.#commandController.handleShareCommand();
 	}
 
-	handleCopyCommand() {
-		return this.#commandController.handleCopyCommand();
+	handleCopyCommand(sub?: string) {
+		return this.#commandController.handleCopyCommand(sub);
 	}
 
 	handleSessionCommand(): Promise<void> {

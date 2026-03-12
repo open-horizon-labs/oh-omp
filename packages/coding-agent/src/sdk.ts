@@ -1629,7 +1629,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			if (pendingActionStore.hasPending) {
 				return { type: "function", name: "resolve" };
 			}
-			return undefined;
+			return session?.consumeNextToolChoiceOverride();
 		},
 	});
 	cursorEventEmitter = event => agent.emitExternalEvent(event);

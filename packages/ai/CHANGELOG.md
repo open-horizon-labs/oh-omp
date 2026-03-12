@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+## [13.11.0] - 2026-03-12
+### Added
+
+- Added support for Parallel AI provider with API key authentication
+- Added `PARALLEL_API_KEY` environment variable support for Parallel provider configuration
+- Added automatic websocket reconnection handling for connection limit errors, with fallback to SSE replay when content has already been emitted
+
+### Changed
+
+- Enhanced `CodexProviderStreamError` to include an optional error code field for better error categorization and handling
+
+### Fixed
+
+- Improved retry logic to handle HTTP/2 stream errors and internal_error responses from Anthropic API
+
 ## [13.9.16] - 2026-03-10
 ### Added
 

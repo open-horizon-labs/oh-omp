@@ -316,8 +316,7 @@ export class InputController {
 			const hasUserMessages = this.ctx.session.messages.some((m: AgentMessage) => m.role === "user");
 			if (!hasUserMessages && !this.ctx.sessionManager.getSessionName() && !$env.PI_NO_TITLE) {
 				const registry = this.ctx.session.modelRegistry;
-				const smolModel = this.ctx.settings.getModelRole("smol");
-				generateSessionTitle(text, registry, smolModel, this.ctx.session.sessionId)
+				generateSessionTitle(text, registry, this.ctx.settings, this.ctx.session.sessionId)
 					.then(async title => {
 						if (title) {
 							await this.ctx.sessionManager.setSessionName(title);
@@ -575,7 +574,7 @@ export class InputController {
 
 	async cycleRoleModel(options?: { temporary?: boolean }): Promise<void> {
 		try {
-			const roleOrder = ["slow", "default", "smol"] as const;
+			const roleOrder = ["smol", "default", "slow"] as const;
 			const result = await this.ctx.session.cycleRoleModels(roleOrder, options);
 			if (!result) {
 				this.ctx.showStatus("Only one role model available");

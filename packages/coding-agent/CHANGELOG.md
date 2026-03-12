@@ -15,6 +15,58 @@
 - Safety margin reduced from 10% to 5% of context window (configurable via `assembler.safetyMarginPercent`) ([#63](https://github.com/open-horizon-labs/oh-omp/issues/63))
 - Hydration gains a hard cap at 50% of allocatable budget (configurable via `assembler.hydrationBudgetPercent`), replacing the previous uncapped model ([#63](https://github.com/open-horizon-labs/oh-omp/issues/63))
 - Messages gain a guaranteed minimum floor of 50% of allocatable budget (configurable via `assembler.messageBudgetPercent`), expanding into unused hydration capacity ([#63](https://github.com/open-horizon-labs/oh-omp/issues/63))
+
+## [13.11.0] - 2026-03-12
+### Added
+
+- Added Parallel as a web search provider with support for fast and research modes
+- Added Parallel extract API integration for URL content fetching and YouTube video extraction
+- Added `providers.parallelFetch` setting to enable/disable Parallel extract for URL fetching
+- Added `/login parallel` command support for Parallel API authentication
+- Added subcommands to `/copy` command: `code` (copy last code block), `all` (copy all code blocks), `cmd` (copy last bash/python command), and `last` (copy full message)
+- Added support for copying last executed bash or python command via `/copy cmd` subcommand
+- Added `assignment` field to task progress and result objects to track the raw per-task assignment text separately from the full templated task
+- Added `details` field to todo items for storing implementation specifics, file paths, and edge cases (shown only when task is active)
+- Added support for multi-line details in todo items with automatic indentation in interactive and reminder displays
+- Added `todo.eager` setting to automatically create a comprehensive todo list after the first user message
+- Added `buildNamedToolChoice` utility function to build provider-aware tool choice constraints for named tools
+- Support for comma/space-separated path lists in `find`, `grep`, `ast_grep`, and `ast_edit` tools (e.g., `apps/,packages/,phases/` or `apps/ packages/ phases/`)
+- New `resolveMultiSearchPath` and `resolveMultiFindPattern` functions to handle multi-path search inputs with automatic common base path detection
+
+### Changed
+
+- Updated HTML-to-text rendering to prefer Parallel extract when credentials are available, before falling back to jina, trafilatura, or lynx
+- Updated YouTube scraper to prefer Parallel extract when credentials are available, before falling back to yt-dlp
+- Updated web search provider priority order to include Parallel between Exa and Kagi
+- Updated hashline tool documentation with explicit guidance on `replace` operation semantics, clarifying that `lines` must not extend past `end` to avoid unintended line duplication
+- Improved diagnostic message formatting to group errors by file path with indented details for better readability
+- Modified eager todo prelude to use hidden custom message type instead of visible developer message, preventing duplicate prompt text in session history
+- Updated eager todo prompt to remove dynamic user request injection, simplifying the template and preventing request repetition in displayed messages
+- Modified eager todo enforcement to prepend the todo reminder to the first user turn instead of executing it as a separate synthetic turn, reducing unnecessary prompt calls
+- Updated task rendering to display assignment text instead of full task template when available, reducing noise in progress and result displays
+- Modified task section rendering to show trimmed assignment text without stripping context blocks, simplifying the display logic
+- Updated todo item display to show `details` field indented below active tasks in both interactive mode and todo reminder component
+- Modified tool choice resolution to support per-turn tool choice overrides via `consumeNextToolChoiceOverride()`
+- Updated tool documentation to clarify that `path` parameter accepts files, directories, glob patterns, or comma/space-separated path lists
+- Refactored path resolution logic in `find`, `grep`, `ast_grep`, and `ast_edit` tools to use unified multi-path handling
+
+### Fixed
+
+- Fixed hashline line normalization to trim trailing whitespace and strip carriage returns instead of removing all whitespace, preserving intentional spacing in code
+- Fixed noop detection in hashline replace operations to check array length equality before comparing lines, preventing false noop classification when single-line replacements expand to multiple lines
+- Fixed path resolution to accept bare directory names without trailing slashes in comma/space-separated path lists (e.g., `apps packages phases`)
+- Per-role `modelRoles` thinking selectors now propagate through commit/title helper model selection, legacy commit analysis, and agentic commit sessions while preserving default thinking inheritance when no role override is configured
+
+## [13.10.1] - 2026-03-10
+### Added
+
+- Exported `submitInteractiveInput()` function for programmatic submission of user input in interactive mode
+- Added proactive OAuth token refresh for MCP server connections with 5-minute expiry buffer
+- Added reactive 401/403 retry with automatic token refresh on HTTP MCP transports
+- Added `refreshMCPOAuthToken()` for standard OAuth 2.0 refresh_token grants
+- Persisted `tokenUrl`, `clientId`, and `clientSecret` in MCP auth config for cross-session token refresh
+### Fixed
+- Respected `PI_CONFIG_DIR` when discovering native user config paths for slash commands and related config directories ([#349](https://github.com/can1357/oh-my-pi/issues/349))
 ## [13.10.0] - 2026-03-10
 ### Fixed
 
@@ -84,7 +136,6 @@
 ### Fixed
 
 - Canonicalized bash executor working directories before handing them to brush so `pwd` stays aligned with canonical Git worktree paths in symlinked workspaces
->>>>>>> upstream/main
 
 ## [13.9.10] - 2026-03-08
 ### Added

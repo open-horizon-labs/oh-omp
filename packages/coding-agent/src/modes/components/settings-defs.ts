@@ -212,7 +212,7 @@ const OPTION_PROVIDERS: Partial<Record<SettingPath, OptionProvider>> = {
 			label: "Auto",
 			description: "Preferred web-search provider",
 		},
-		{ value: "exa", label: "Exa", description: "Requires EXA_API_KEY" },
+		{ value: "exa", label: "Exa", description: "Uses Exa API when EXA_API_KEY is set; falls back to Exa MCP" },
 		{ value: "brave", label: "Brave", description: "Requires BRAVE_API_KEY" },
 		{ value: "jina", label: "Jina", description: "Requires JINA_API_KEY" },
 		{ value: "kimi", label: "Kimi", description: "Requires MOONSHOT_SEARCH_API_KEY or MOONSHOT_API_KEY" },
@@ -222,6 +222,7 @@ const OPTION_PROVIDERS: Partial<Record<SettingPath, OptionProvider>> = {
 		{ value: "tavily", label: "Tavily", description: "Requires TAVILY_API_KEY" },
 		{ value: "kagi", label: "Kagi", description: "Requires KAGI_API_KEY and Kagi Search API beta access" },
 		{ value: "synthetic", label: "Synthetic", description: "Requires SYNTHETIC_API_KEY" },
+		{ value: "parallel", label: "Parallel", description: "Requires PARALLEL_API_KEY" },
 	],
 	"providers.image": [
 		{ value: "auto", label: "Auto", description: "Priority: OpenRouter > Gemini" },

@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [13.11.0] - 2026-03-12
+### Fixed
+
+- Fixed OSC 11 background color detection to correctly handle partial escape sequences that arrive mid-buffer, preventing user input from being swallowed
+- Fixed race condition where overlapping OSC 11 queries would be incorrectly cancelled by DA1 sentinels from previous queries
+
 ## [13.7.5] - 2026-03-04
 ### Changed
 

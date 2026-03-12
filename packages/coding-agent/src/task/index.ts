@@ -224,6 +224,7 @@ export class TaskTool implements AgentTool<TaskSchema, TaskToolDetails, Theme> {
 				agentSource: fallbackAgentSource,
 				status: "pending",
 				task: renderedTask.task,
+				assignment: renderedTask.assignment,
 				description: renderedTask.description,
 				recentTools: [],
 				recentOutput: [],
@@ -732,6 +733,7 @@ export class TaskTool implements AgentTool<TaskSchema, TaskToolDetails, Theme> {
 					agentSource: agent.source,
 					status: "pending",
 					task: t.task,
+					assignment: t.assignment,
 					recentTools: [],
 					recentOutput: [],
 					toolCount: 0,
@@ -749,6 +751,7 @@ export class TaskTool implements AgentTool<TaskSchema, TaskToolDetails, Theme> {
 						cwd: this.session.cwd,
 						agent,
 						task: task.task,
+						assignment: task.assignment,
 						description: task.description,
 						index,
 						id: task.id,
@@ -801,6 +804,7 @@ export class TaskTool implements AgentTool<TaskSchema, TaskToolDetails, Theme> {
 						worktree: isolationDir,
 						agent,
 						task: task.task,
+						assignment: task.assignment,
 						description: task.description,
 						index,
 						id: task.id,
@@ -834,11 +838,10 @@ export class TaskTool implements AgentTool<TaskSchema, TaskToolDetails, Theme> {
 							const commitMsg =
 								commitStyle === "ai" && this.session.modelRegistry
 									? async (diff: string) => {
-											const smolModel = this.session.settings.getModelRole("smol");
 											return generateCommitMessage(
 												diff,
 												this.session.modelRegistry!,
-												smolModel,
+												this.session.settings,
 												this.session.getSessionId?.() ?? undefined,
 											);
 										}
@@ -887,6 +890,7 @@ export class TaskTool implements AgentTool<TaskSchema, TaskToolDetails, Theme> {
 						agent: agent.name,
 						agentSource: agent.source,
 						task: task.task,
+						assignment: task.assignment,
 						description: task.description,
 						exitCode: 1,
 						output: "",
@@ -930,6 +934,7 @@ export class TaskTool implements AgentTool<TaskSchema, TaskToolDetails, Theme> {
 					agent: agentName,
 					agentSource: agent.source,
 					task: task.task,
+					assignment: task.assignment,
 					description: task.description,
 					exitCode: 1,
 					output: "",
@@ -1081,11 +1086,10 @@ export class TaskTool implements AgentTool<TaskSchema, TaskToolDetails, Theme> {
 						const commitMsg =
 							commitStyle === "ai" && this.session.modelRegistry
 								? async (diff: string) => {
-										const smolModel = this.session.settings.getModelRole("smol");
 										return generateCommitMessage(
 											diff,
 											this.session.modelRegistry!,
-											smolModel,
+											this.session.settings,
 											this.session.getSessionId?.() ?? undefined,
 										);
 									}

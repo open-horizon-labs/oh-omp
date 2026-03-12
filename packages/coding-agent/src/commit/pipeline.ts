@@ -1,4 +1,5 @@
 import * as path from "node:path";
+import type { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type { Api, Model } from "@oh-my-pi/pi-ai";
 import { getProjectDir, logger } from "@oh-my-pi/pi-utils";
 import { ModelRegistry } from "../config/model-registry";
@@ -45,17 +46,16 @@ async function runLegacyCommitCommand(args: CommitCommandArgs): Promise<void> {
 	const modelRegistry = new ModelRegistry(authStorage);
 	await modelRegistry.refresh();
 
-	const { model: primaryModel, apiKey: primaryApiKey } = await resolvePrimaryModel(
-		args.model,
-		settings,
-		modelRegistry,
-	);
-	const { model: smolModel, apiKey: smolApiKey } = await resolveSmolModel(
-		settings,
-		modelRegistry,
-		primaryModel,
-		primaryApiKey,
-	);
+	const {
+		model: primaryModel,
+		apiKey: primaryApiKey,
+		thinkingLevel: primaryThinkingLevel,
+	} = await resolvePrimaryModel(args.model, settings, modelRegistry);
+	const {
+		model: smolModel,
+		apiKey: smolApiKey,
+		thinkingLevel: smolThinkingLevel,
+	} = await resolveSmolModel(settings, modelRegistry, primaryModel, primaryApiKey);
 
 	const git = new ControlledGit(cwd);
 	let stagedFiles = await git.getStagedFiles();
@@ -75,6 +75,7 @@ async function runLegacyCommitCommand(args: CommitCommandArgs): Promise<void> {
 			cwd,
 			model: primaryModel,
 			apiKey: primaryApiKey,
+			thinkingLevel: primaryThinkingLevel,
 			stagedFiles,
 			dryRun: args.dryRun,
 			maxDiffChars: commitSettings.changelogMaxDiffChars,
@@ -101,8 +102,10 @@ async function runLegacyCommitCommand(args: CommitCommandArgs): Promise<void> {
 		userContext: args.context,
 		primaryModel,
 		primaryApiKey,
+		primaryThinkingLevel,
 		smolModel,
 		smolApiKey,
+		smolThinkingLevel,
 		commitSettings,
 	});
 
@@ -116,6 +119,7 @@ async function runLegacyCommitCommand(args: CommitCommandArgs): Promise<void> {
 		stat,
 		model: primaryModel,
 		apiKey: primaryApiKey,
+		thinkingLevel: primaryThinkingLevel,
 		userContext: args.context,
 	});
 
@@ -144,8 +148,10 @@ async function generateAnalysis(input: {
 	userContext?: string;
 	primaryModel: Model<Api>;
 	primaryApiKey: string;
+	primaryThinkingLevel?: ThinkingLevel;
 	smolModel: Model<Api>;
 	smolApiKey: string;
+	smolThinkingLevel?: ThinkingLevel;
 	commitSettings: {
 		mapReduceEnabled: boolean;
 		mapReduceMinFiles: number;
@@ -166,8 +172,10 @@ async function generateAnalysis(input: {
 		return runMapReduceAnalysis({
 			model: input.primaryModel,
 			apiKey: input.primaryApiKey,
+			thinkingLevel: input.primaryThinkingLevel,
 			smolModel: input.smolModel,
 			smolApiKey: input.smolApiKey,
+			smolThinkingLevel: input.smolThinkingLevel,
 			diff: input.diff,
 			stat: input.stat,
 			scopeCandidates: input.scopeCandidates,
@@ -185,6 +193,7 @@ async function generateAnalysis(input: {
 	return generateConventionalAnalysis({
 		model: input.primaryModel,
 		apiKey: input.primaryApiKey,
+		thinkingLevel: input.primaryThinkingLevel,
 		contextFiles: input.contextFiles,
 		userContext: input.userContext,
 		typesDescription: TYPES_DESCRIPTION,
@@ -200,6 +209,7 @@ async function generateSummaryWithRetry(input: {
 	stat: string;
 	model: Model<Api>;
 	apiKey: string;
+	thinkingLevel?: ThinkingLevel;
 	userContext?: string;
 }): Promise<{ summary: string }> {
 	let context = input.userContext;
@@ -207,6 +217,7 @@ async function generateSummaryWithRetry(input: {
 		const result = await generateSummary({
 			model: input.model,
 			apiKey: input.apiKey,
+			thinkingLevel: input.thinkingLevel,
 			commitType: input.analysis.type,
 			scope: input.analysis.scope,
 			details: input.analysis.details.map(detail => detail.text),

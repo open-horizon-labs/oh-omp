@@ -91,6 +91,7 @@ import { getCurrentThemeName, theme } from "../modes/theme/theme";
 import { normalizeDiff, normalizeToLF, ParseError, previewPatch, stripBom } from "../patch";
 import type { PlanModeState } from "../plan-mode/state";
 import autoHandoffThresholdFocusPrompt from "../prompts/system/auto-handoff-threshold-focus.md" with { type: "text" };
+import eagerTodoPrompt from "../prompts/system/eager-todo.md" with { type: "text" };
 import handoffDocumentPrompt from "../prompts/system/handoff-document.md" with { type: "text" };
 import planModeActivePrompt from "../prompts/system/plan-mode-active.md" with { type: "text" };
 import planModeReferencePrompt from "../prompts/system/plan-mode-reference.md" with { type: "text" };
@@ -108,6 +109,7 @@ import { getLatestTodoPhasesFromEntries, type TodoItem, type TodoPhase } from ".
 import { parseCommandArgs } from "../utils/command-args";
 import { resolveFileDisplayMode } from "../utils/file-display-mode";
 import { extractFileMentions, generateFileMentionMessages } from "../utils/file-mentions";
+import { buildNamedToolChoice } from "../utils/tool-choice";
 import {
 	type CompactionResult,
 	calculateContextTokens,
@@ -344,6 +346,7 @@ export class AgentSession {
 	// Todo completion reminder state
 	#todoReminderCount = 0;
 	#todoPhases: TodoPhase[] = [];
+	#nextToolChoiceOverride: ToolChoice | undefined = undefined;
 
 	// Bash execution state
 	#bashAbortController: AbortController | undefined = undefined;
@@ -461,6 +464,12 @@ export class AgentSession {
 	/** Most recent effective-prompt snapshot captured during composition. */
 	get lastPromptSnapshot(): EffectivePromptSnapshot | null {
 		return this.#getLastPromptSnapshot?.() ?? null;
+	}
+
+	consumeNextToolChoiceOverride(): ToolChoice | undefined {
+		const toolChoice = this.#nextToolChoiceOverride;
+		this.#nextToolChoiceOverride = undefined;
+		return toolChoice;
 	}
 
 	/** Provider-scoped mutable state store for transport/session caches. */
@@ -788,7 +797,11 @@ export class AgentSession {
 				this.#checkpointState = undefined;
 				this.#pendingRewindReport = undefined;
 			}
-			// Check for incomplete todos (unless there was an error or abort)
+			// Check for incomplete todos only after a final assistant stop, not intermediate tool-use turns.
+			const hasToolCalls = msg.content.some(content => content.type === "toolCall");
+			if (hasToolCalls) {
+				return;
+			}
 			if (msg.stopReason !== "error" && msg.stopReason !== "aborted") {
 				if (this.#enforceRewindBeforeYield()) {
 					return;
@@ -1346,6 +1359,7 @@ export class AgentSession {
 		if (!this.#extensionRunner) return;
 		if (event.type === "agent_start") {
 			this.#turnIndex = 0;
+			this.#nextToolChoiceOverride = undefined;
 			await this.#extensionRunner.emit({ type: "agent_start" });
 		} else if (event.type === "agent_end") {
 			await this.#extensionRunner.emit({ type: "agent_end", messages: event.messages });
@@ -1927,6 +1941,8 @@ export class AgentSession {
 			return;
 		}
 
+		const eagerTodoPrelude = !options?.synthetic ? this.#createEagerTodoPrelude() : undefined;
+
 		const userContent: (TextContent | ImageContent)[] = [{ type: "text", text: expandedText }];
 		if (options?.images) {
 			userContent.push(...options.images);
@@ -1936,7 +1952,20 @@ export class AgentSession {
 			? { role: "developer" as const, content: userContent, attribution: "agent" as const, timestamp: Date.now() }
 			: { role: "user" as const, content: userContent, attribution: "user" as const, timestamp: Date.now() };
 
-		await this.#promptWithMessage(message, expandedText, options);
+		if (eagerTodoPrelude) {
+			this.#nextToolChoiceOverride = eagerTodoPrelude.toolChoice;
+		}
+
+		try {
+			await this.#promptWithMessage(message, expandedText, {
+				...options,
+				prependMessages: eagerTodoPrelude ? [eagerTodoPrelude.message] : undefined,
+			});
+		} finally {
+			if (eagerTodoPrelude) {
+				this.#nextToolChoiceOverride = undefined;
+			}
+		}
 		if (!options?.synthetic) {
 			await this.#enforcePlanModeToolDecision();
 		}
@@ -1979,6 +2008,7 @@ export class AgentSession {
 		message: AgentMessage,
 		expandedText: string,
 		options?: Pick<PromptOptions, "toolChoice" | "images"> & {
+			prependMessages?: AgentMessage[];
 			skipPostPromptRecoveryWait?: boolean;
 		},
 	): Promise<void> {
@@ -2019,6 +2049,9 @@ export class AgentSession {
 			const planModeMessage = await this.#buildPlanModeMessage();
 			if (planModeMessage) {
 				messages.push(planModeMessage);
+			}
+			if (options?.prependMessages) {
+				messages.push(...options.prependMessages);
 			}
 
 			messages.push(message);
@@ -3337,6 +3370,51 @@ export class AgentSession {
 			this.agent.setTools(previousTools);
 		}
 	}
+
+	#createEagerTodoPrelude(): { message: AgentMessage; toolChoice: ToolChoice } | undefined {
+		const eagerTodosEnabled = this.settings.get("todo.eager");
+		const todosEnabled = this.settings.get("todo.enabled");
+		if (!eagerTodosEnabled || !todosEnabled) {
+			return undefined;
+		}
+
+		if (this.#planModeState?.enabled) {
+			return undefined;
+		}
+		if (this.getTodoPhases().length > 0) {
+			return undefined;
+		}
+
+		if (!this.#toolRegistry.has("todo_write")) {
+			logger.warn("Eager todo enforcement skipped because todo_write is unavailable", {
+				activeToolNames: this.agent.state.tools.map(tool => tool.name),
+			});
+			return undefined;
+		}
+
+		const todoWriteToolChoice = buildNamedToolChoice("todo_write", this.model);
+		if (!todoWriteToolChoice) {
+			logger.warn("Eager todo enforcement skipped because the current model does not support forcing todo_write", {
+				modelApi: this.model?.api,
+				modelId: this.model?.id,
+			});
+			return undefined;
+		}
+
+		const eagerTodoReminder = renderPromptTemplate(eagerTodoPrompt);
+
+		return {
+			message: {
+				role: "custom",
+				customType: "eager-todo-prelude",
+				content: eagerTodoReminder,
+				display: false,
+				attribution: "agent",
+				timestamp: Date.now(),
+			},
+			toolChoice: todoWriteToolChoice,
+		};
+	}
 	/**
 	 * Check if agent stopped with incomplete todos and prompt to continue.
 	 */
@@ -4568,8 +4646,8 @@ export class AgentSession {
 		}
 
 		for (const msg of this.messages) {
-			if (msg.role === "user") {
-				lines.push("## User\n");
+			if (msg.role === "user" || msg.role === "developer") {
+				lines.push(msg.role === "developer" ? "## Developer\n" : "## User\n");
 				if (typeof msg.content === "string") {
 					lines.push(msg.content);
 				} else {
@@ -4693,8 +4771,8 @@ export class AgentSession {
 		lines.push("");
 
 		for (const msg of this.messages) {
-			if (msg.role === "user") {
-				lines.push("## User");
+			if (msg.role === "user" || msg.role === "developer") {
+				lines.push(msg.role === "developer" ? "## Developer" : "## User");
 				lines.push("");
 				if (typeof msg.content === "string") {
 					lines.push(msg.content);

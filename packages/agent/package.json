@@ -1,7 +1,7 @@
 {
 	"type": "module",
 	"name": "@oh-my-pi/pi-agent-core",
-	"version": "13.10.0",
+	"version": "13.11.0",
 	"description": "General-purpose agent with transport abstraction, state management, and attachment support",
 	"homepage": "https://github.com/open-horizon-labs/oh-omp",
 	"author": "Can Boluk",

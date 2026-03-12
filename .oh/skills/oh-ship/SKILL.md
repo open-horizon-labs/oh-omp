@@ -55,17 +55,18 @@ If the failure is deeper (logic breakage from upstream changes), stop and report
 
 ### 3. Tag hygiene
 
-Upstream tags (`v13.x`, etc.) must NOT exist in the fork. They pollute `git describe` and break version comparison in the release script.
+Upstream tags (`v13.x`, etc.) must NOT exist in the fork. They pollute `git describe` and break version comparison.
 
-If upstream tags appear after a fetch (they shouldn't with normal `git fetch upstream` -- but if `--tags` was used or tags leaked in):
+`git fetch upstream` can import upstream tags into the local repo. These must be cleaned **locally only** — never batch-push tags to origin.
 
 ```bash
-# Delete all tags except the fork's own v0.x.x tags
-git tag | grep -v '^v0\.' | xargs git tag -d
-git push origin --tags --prune
+# Delete leaked upstream tags locally
+git tag | grep -v '^v0\.[0-9]' | xargs git tag -d
 ```
 
-The fork's tags follow `v0.x.x` semver. Only these should exist locally and on `origin`.
+**NEVER use `git push --tags` or `git push --tags --prune`** — these push ALL local tags (including any upstream tags from `git fetch`) to origin. Always push release tags individually: `git push origin vX.Y.Z`.
+
+The fork's tags follow `v0.x.y` semver. Only these should exist locally and on `origin`.
 
 ### 4. Determine version
 

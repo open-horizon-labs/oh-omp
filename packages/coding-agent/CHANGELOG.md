@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Synced with upstream v13.11.0 (Parallel web search provider, `/copy` subcommands, eager todo, hashline fixes, multi-path search)
+- Updated installation instructions for fork package
+
+## [0.3.0] - 2026-03-10
+
 ### Added
 
 - Surface assembly metadata to the LLM as a compact developer message each turn, including turn composition (kept/stubbed/dropped counts with affected ranges) and budget usage with headroom ([#58](https://github.com/open-horizon-labs/oh-omp/issues/58))

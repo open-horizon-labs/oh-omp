@@ -600,14 +600,56 @@ Use these sections under `## [Unreleased]`:
 
 ## Releasing
 
-1. **Update CHANGELOGs**: Ensure all changes since last release are documented in the `[Unreleased]` section of each affected package's CHANGELOG.md
+This is a fork with its own version scheme (`v0.x.y`), independent of upstream's version numbers. Releases are manual.
 
-2. **Run release script**:
-   ```bash
-   bun run release
-   ```
+### Procedure
 
-The script handles: version bump, CHANGELOG finalization, commit, tag, publish, and adding new `[Unreleased]` sections.
+1. **Sync upstream**: `git fetch upstream && git merge upstream/main`
+2. **Resolve conflicts** (see merge strategy below)
+3. **Verify**: `bun check` must pass clean
+4. **Tag hygiene**: delete any upstream tags that leaked locally (`git tag | grep -v '^v0\.' | xargs git tag -d`)
+5. **Finalize CHANGELOG**: move `[Unreleased]` entries into a version section, add fresh `[Unreleased]` for new version
+6. **Bump version**: update `npm/oh-omp/package.json` (version + optionalDependencies versions)
+7. **Update `upstream.json`**: set `commit` to upstream HEAD and `synced_at` to today
+8. **Commit**: `release: v0.x.y` with summary of upstream sync and fork changes
+9. **Tag**: `git tag -a v0.x.y -m "v0.x.y — <summary>"`
+10. **Push**: `git push origin main --tags` (never push to upstream)
+
+### Upstream Merge Strategy
+
+The fork **intentionally removes** these upstream subsystems:
+
+- **Auto-compaction** (`#checkCompaction`, `#runAutoCompaction`, `compaction.enabled`, `skipCompactionCheck`, auto-compaction events)
+- **Context promotion** (`#tryContextPromotion`, `#resolveContextPromotionTarget`)
+- **Tool output pruning** (`#pruneToolOutputs`)
+- **Compaction model candidates** (`#getCompactionModelCandidates`)
+
+These are replaced by the assembler pipeline (ADR 0003). When upstream modifies code in these subsystems, merge conflicts arise because our fork deleted that code.
+
+**Conflict resolution rules:**
+
+- Conflicts touching removed subsystems: **take ours** (the fork's deletion stands)
+- Conflicts adding genuinely new features (e.g., `consumeNextToolChoiceOverride`, `prependMessages`): **take both** (keep our code, add the new feature)
+- Conflicts mixing new features with removed subsystems: **take ours, then manually add the feature** without the compaction/handoff wiring
+- `bun.lock`: take theirs, then `bun install`
+- `CHANGELOG.md`: keep fork's `[Unreleased]` entries, add upstream version sections below
+- New upstream tests referencing `compaction.enabled` or other removed settings: remove those references
+
+### CHANGELOG Structure
+
+The fork CHANGELOG has a dual structure:
+
+- `[Unreleased]` — fork-specific changes (assembler, budget, provenance)
+- `[0.x.y]` sections — fork release history
+- `[13.x.y]` sections — upstream release notes (preserved for reference)
+
+When releasing, entries under `[Unreleased]` move into a new `[0.x.y]` section. A fresh `[Unreleased]` is added with a summary of the upstream sync.
+
+### Version Bumping
+
+- **Patch** (`0.x.Y`): upstream sync, docs, config changes, bug fixes
+- **Minor** (`0.X.0`): new fork-specific features (assembler capabilities, new tiers, new hooks)
+- **Major**: reserved for breaking changes to the fork's extension API or context assembly contract
 
 <!-- RNA MCP tool guidance -->
 ## Code Exploration (use RNA MCP tools, not grep/Read)

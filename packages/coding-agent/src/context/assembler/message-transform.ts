@@ -93,15 +93,16 @@ const DEFAULT_MAX_LATENCY_MS = 2000;
 const DEFAULT_SAFETY_MARGIN_PERCENT = 5;
 const DEFAULT_MESSAGE_BUDGET_PERCENT = 50;
 const DEFAULT_HYDRATION_BUDGET_PERCENT = 50;
-
+const DEFAULT_TURN_BUFFER_PERCENT = 20;
 export function deriveBudget(input: BudgetDerivationInput): MemoryAssemblyBudget {
 	const safetyPercent = input.safetyMarginPercent ?? DEFAULT_SAFETY_MARGIN_PERCENT;
 	const messagePercent = input.messageBudgetPercent ?? DEFAULT_MESSAGE_BUDGET_PERCENT;
+	const turnBufferPercent = input.turnBufferPercent ?? DEFAULT_TURN_BUFFER_PERCENT;
 	const hydrationPercent = input.hydrationBudgetPercent ?? DEFAULT_HYDRATION_BUDGET_PERCENT;
-
+	const turnBuffer = Math.floor((input.contextWindow * turnBufferPercent) / 100);
 	const totalCosts = input.systemPromptTokens + input.toolDefinitionTokens + input.currentTurnTokens;
 	const safetyReserve = Math.floor((input.contextWindow * safetyPercent) / 100);
-	const allocatable = Math.max(0, input.contextWindow - totalCosts - safetyReserve);
+	const allocatable = Math.max(0, input.contextWindow - totalCosts - safetyReserve - turnBuffer);
 
 	// Warn when fixed costs dominate and the allocatable budget is critically low.
 	// Threshold: less than 10% of the context window is available for messages + hydration.
@@ -110,6 +111,7 @@ export function deriveBudget(input: BudgetDerivationInput): MemoryAssemblyBudget
 			contextWindow: input.contextWindow,
 			totalCosts,
 			safetyReserve,
+			turnBuffer,
 			allocatable,
 			usagePercent: Math.round((totalCosts / input.contextWindow) * 100),
 		});

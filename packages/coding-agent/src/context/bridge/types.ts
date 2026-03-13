@@ -76,6 +76,10 @@ export interface BridgeConfig {
 	now?: string;
 	/** Maximum number of locator entries to retain before eviction. */
 	maxLocatorEntries?: number;
+	/** Session ID for FTS5 indexing scope. */
+	sessionId?: string;
+	/** FTS5 tool result store for keyword search. */
+	toolResultStore?: import("../recall/tool-result-store").ToolResultStore;
 }
 
 /** Default max locator entries. */

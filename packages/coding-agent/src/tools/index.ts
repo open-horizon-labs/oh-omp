@@ -166,6 +166,8 @@ export interface ToolSession {
 	recallStore?: RecallStore;
 	/** TaskStore for persistent LLM-native task tracking. */
 	taskStore?: TaskStore;
+	/** FTS5 tool result store for keyword search over past tool results. */
+	toolResultStore?: import("../context/recall/tool-result-store").ToolResultStore;
 	/** Memex license key for embedding queries (available when recall infrastructure is initialized). */
 	memexLicense?: string;
 }

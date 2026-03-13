@@ -6,6 +6,7 @@ Search the recall store for relevant past context. The recall store is global an
 - Use `project` filter to scope results: `current` for this project only, or omit/`all` for cross-project search
 - Default returns 5 results; increase `limit` for broader searches (max 20)
 - Results are diversity-ranked to avoid repetitive matches
+- Use `mode: "keyword"` to search tool results by exact text (BM25 ranking). Use for error codes, file paths, exact values. Default mode is `"semantic"` (vector search).
 </instruction>
 
 <output>

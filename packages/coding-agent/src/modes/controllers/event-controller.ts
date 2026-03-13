@@ -135,7 +135,17 @@ export class EventController {
 					this.ctx.ui.requestRender();
 				} else if (event.message.role === "user") {
 					this.#resetReadGroup();
-					this.ctx.addMessageToChat(event.message);
+					const text = this.ctx.getUserMessageText(event.message);
+					const imageCount =
+						typeof event.message.content === "string"
+							? 0
+							: event.message.content.filter(b => b.type !== "text").length;
+					const sig = `${text}\u0000${imageCount}`;
+					if (this.ctx.optimisticUserMessageSignature === sig) {
+						this.ctx.optimisticUserMessageSignature = undefined;
+					} else {
+						this.ctx.addMessageToChat(event.message);
+					}
 					if (!event.message.synthetic) {
 						this.ctx.editor.setText("");
 						this.ctx.updatePendingMessagesDisplay();

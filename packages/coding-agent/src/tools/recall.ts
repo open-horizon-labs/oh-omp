@@ -5,10 +5,12 @@ import { renderPromptTemplate } from "../config/prompt-templates";
 import { embed } from "../context/recall/embed";
 import { mmrRerank } from "../context/recall/mmr";
 import type { RecallStore } from "../context/recall/store";
+import type { SearchResult as KeywordSearchResult, ToolResultStore } from "../context/recall/tool-result-store";
 import type { MmrCandidate, RecallSearchResult } from "../context/recall/types";
 import { parseMCPToolName } from "../mcp/tool-bridge";
 import recallDescription from "../prompts/tools/recall.md" with { type: "text" };
 import type { ToolSession } from ".";
+
 import { shortenPath } from "./render-utils";
 
 const recallSchema = Type.Object({
@@ -24,6 +26,12 @@ const recallSchema = Type.Object({
 	project: Type.Optional(
 		Type.Union([Type.Literal("current"), Type.Literal("all")], {
 			description: "Search scope: 'current' (this project only) or 'all' (cross-project, default)",
+		}),
+	),
+	mode: Type.Optional(
+		Type.Union([Type.Literal("semantic"), Type.Literal("keyword")], {
+			description:
+				"Search mode: 'semantic' (default, vector search) or 'keyword' (exact text match over tool results)",
 		}),
 	),
 });
@@ -42,13 +50,15 @@ export class RecallTool implements AgentTool<typeof recallSchema> {
 	readonly parameters = recallSchema;
 
 	#store: RecallStore;
+	#toolResultStore?: ToolResultStore;
 	#license: string;
 	#cwd: string;
 	#sessionId: string;
 
-	constructor(store: RecallStore, license: string, cwd: string, sessionId: string) {
+	constructor(store: RecallStore, license: string, cwd: string, sessionId: string, toolResultStore?: ToolResultStore) {
 		this.description = renderPromptTemplate(recallDescription);
 		this.#store = store;
+		this.#toolResultStore = toolResultStore;
 		this.#license = license;
 		this.#cwd = cwd;
 		this.#sessionId = sessionId;
@@ -57,13 +67,15 @@ export class RecallTool implements AgentTool<typeof recallSchema> {
 	static createIf(session: ToolSession): RecallTool | null {
 		if (!session.recallStore || !session.memexLicense) return null;
 		const sessionId = session.getSessionId?.() ?? "unknown";
-		return new RecallTool(session.recallStore, session.memexLicense, session.cwd, sessionId);
+		return new RecallTool(session.recallStore, session.memexLicense, session.cwd, sessionId, session.toolResultStore);
 	}
 
 	async execute(_toolCallId: string, params: RecallParams, _signal?: AbortSignal): Promise<AgentToolResult> {
+		if (params.mode === "keyword") {
+			return this.#keywordSearch(params);
+		}
 		const limit = Math.min(Math.max(params.limit ?? DEFAULT_LIMIT, 1), MAX_LIMIT);
 		const overfetchLimit = limit * OVERFETCH_FACTOR;
-
 		// Build LanceDB SQL filter clauses
 		const clauses: string[] = [];
 		if (params.role) clauses.push(`role = '${params.role}'`);
@@ -133,6 +145,36 @@ export class RecallTool implements AgentTool<typeof recallSchema> {
 			content: [{ type: "text", text: formatted }],
 		};
 	}
+
+	#keywordSearch(params: RecallParams): AgentToolResult {
+		if (!this.#toolResultStore) {
+			return {
+				content: [{ type: "text", text: "Keyword search not available. ToolResultStore not initialized." }],
+			};
+		}
+
+		const limit = Math.min(Math.max(params.limit ?? DEFAULT_LIMIT, 1), MAX_LIMIT);
+		const sessionId = params.project === "current" ? this.#sessionId : undefined;
+
+		const results = this.#toolResultStore.search(params.query, { limit, sessionId });
+
+		if (results.length === 0) {
+			return {
+				content: [{ type: "text", text: "No matching tool results found." }],
+			};
+		}
+
+		const formatted = results.map(r => formatKeywordResult(r, this.#sessionId)).join("\n\n---\n\n");
+
+		logger.debug("Recall keyword: returned results", {
+			query: params.query.slice(0, 80),
+			returned: results.length,
+		});
+
+		return {
+			content: [{ type: "text", text: formatted }],
+		};
+	}
 }
 
 function formatResult(r: RecallSearchResult, currentSessionId: string): string {
@@ -172,4 +214,14 @@ function formatResult(r: RecallSearchResult, currentSessionId: string): string {
 	}
 
 	return `${header}\n${r.text}`;
+}
+
+function formatKeywordResult(r: KeywordSearchResult, currentSessionId: string): string {
+	const isCurrentSession = r.sessionId === currentSessionId;
+	const sessionTag = isCurrentSession ? "current" : `session:${r.sessionId.slice(0, 8)}`;
+	let header = `Turn ${r.turnNumber} [tool:${r.toolName}] ${sessionTag}`;
+	if (r.paths.length > 0) {
+		header += ` paths: ${r.paths.slice(0, 5).join(", ")}`;
+	}
+	return `${header}\n${r.snippet}`;
 }

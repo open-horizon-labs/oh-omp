@@ -25,6 +25,7 @@ import {
 import { type AssemblerSettings, Settings, type SkillsSettings } from "./config/settings";
 import { CursorExecHandlers } from "./cursor";
 import "./discovery";
+import * as path from "node:path";
 import { resolveConfigValue } from "./config/resolve-config-value";
 import {
 	deriveBudget,
@@ -47,6 +48,7 @@ import {
 	RecallStore,
 	resolveMemexLicense,
 } from "./context/recall";
+import { ToolResultStore } from "./context/recall/tool-result-store";
 import { initializeWithSettings } from "./discovery";
 import { TtsrManager } from "./export/ttsr";
 import {
@@ -870,6 +872,20 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		taskStore = undefined;
 	}
 
+	// Initialize FTS5 tool result store for keyword search.
+	let toolResultStore: ToolResultStore | undefined;
+	try {
+		toolResultStore = ToolResultStore.open(path.join(agentDir, "tool-results.db"));
+		toolResultStore.cleanup(30 * 24 * 60 * 60 * 1000); // 30 days
+		postmortem.register("tool-result-store-close", () => toolResultStore!.close());
+		logger.debug("ToolResultStore initialized");
+	} catch (err) {
+		logger.debug("ToolResultStore not available", {
+			error: err instanceof Error ? err.message : String(err),
+		});
+		toolResultStore = undefined;
+	}
+
 	const toolSession: ToolSession = {
 		cwd,
 		hasUI: options.hasUI ?? false,
@@ -915,6 +931,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		pendingActionStore,
 		recallStore,
 		taskStore,
+		toolResultStore,
 		memexLicense,
 	};
 
@@ -1394,7 +1411,10 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 
 	// Pre-create bridge so it's available to transformContext.
 	// Event subscription is wired after session creation below.
-	const assemblerBridge = new ToolResultBridge();
+	const assemblerBridge = new ToolResultBridge({
+		sessionId: sessionManager.getSessionId(),
+		toolResultStore,
+	});
 
 	// Initialize recall ingest pipeline and passive hydrator.
 	// Reuses the RecallStore + license initialized earlier (before tool creation).
@@ -1452,6 +1472,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 						safetyMarginPercent: assemblerSettings.safetyMarginPercent,
 						messageBudgetPercent: assemblerSettings.messageBudgetPercent,
 						hydrationBudgetPercent: assemblerSettings.hydrationBudgetPercent,
+						turnBufferPercent: assemblerSettings.turnBufferPercent,
 					})
 				: undefined;
 

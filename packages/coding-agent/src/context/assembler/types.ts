@@ -32,9 +32,12 @@ export interface BudgetDerivationInput {
 	 * transform (e.g., injected fragments). The message array — including the current
 	 * turn — is bounded separately by transformMessages. Pass 0 unless reserving
 	 * space for content injected outside the message array.
+	 *
+	 * For dynamic per-turn content, use turnBufferPercent instead (reserves a
+	 * percentage of context window for current turn).
 	 */
 	currentTurnTokens: number;
-	/** Percentage of context window held as safety reserve (0-100, default: 5). */
+	turnBufferPercent?: number;
 	safetyMarginPercent?: number;
 	/** Guaranteed minimum percentage of allocatable budget for messages (0-100, default: 50). */
 	messageBudgetPercent?: number;

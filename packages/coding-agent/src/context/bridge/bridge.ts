@@ -40,8 +40,9 @@ import { type BridgeConfig, DEFAULT_MAX_LOCATOR_ENTRIES, type ResultProfile } fr
 export class ToolResultBridge {
 	readonly #contract: MemoryContractV1;
 	readonly #stm: ShortTermMemoryRecord;
-	readonly #config: Required<BridgeConfig>;
+	readonly #config: BridgeConfig & { now: string; maxLocatorEntries: number };
 	readonly #editedPaths = new Set<string>();
+	#resultCounter = 0;
 
 	constructor(config: BridgeConfig = {}) {
 		const now = config.now ?? new Date().toISOString();
@@ -49,6 +50,8 @@ export class ToolResultBridge {
 		this.#config = {
 			now: now,
 			maxLocatorEntries: config.maxLocatorEntries ?? DEFAULT_MAX_LOCATOR_ENTRIES,
+			sessionId: config.sessionId,
+			toolResultStore: config.toolResultStore,
 		};
 
 		this.#contract = {
@@ -140,6 +143,23 @@ export class ToolResultBridge {
 
 		// Accumulate STM state
 		this.#accumulateSTM(profile);
+
+		// Index into FTS5 for keyword search.
+		const resultStore = this.#config.toolResultStore;
+		if (resultStore) {
+			const text = extractTextContent(result);
+			if (text) {
+				const turnNumber = ++this.#resultCounter;
+				resultStore.index({
+					content: text,
+					toolName: profile.toolName,
+					sessionId: this.#config.sessionId ?? "",
+					turnNumber,
+					paths: profile.touchedPaths,
+				});
+			}
+		}
+
 		return profile;
 	}
 
@@ -321,4 +341,38 @@ function extractArtifactId(result: unknown): string | null {
 	if (typeof result !== "string") return null;
 	const match = result.match(/artifact:\/\/([^\s/]+)/);
 	return match ? match[1] : null;
+}
+
+/** Extract text content from a tool result for FTS5 indexing. */
+function extractTextContent(result: unknown): string | null {
+	if (typeof result === "string") return result || null;
+
+	const blocks = extractTextBlocks(result);
+	if (blocks.length > 0) return blocks.join("\n");
+
+	if (result && typeof result === "object" && "content" in result) {
+		const withContent = result as { content?: unknown };
+		const nestedBlocks = extractTextBlocks(withContent.content);
+		if (nestedBlocks.length > 0) return nestedBlocks.join("\n");
+	}
+
+	return null;
+}
+
+function extractTextBlocks(value: unknown): string[] {
+	if (!Array.isArray(value)) return [];
+	const parts: string[] = [];
+	for (const block of value) {
+		if (typeof block === "string") {
+			parts.push(block);
+			continue;
+		}
+		if (block && typeof block === "object" && "type" in block) {
+			const textBlock = block as { type: string; text?: string };
+			if (textBlock.type === "text" && typeof textBlock.text === "string" && textBlock.text.length > 0) {
+				parts.push(textBlock.text);
+			}
+		}
+	}
+	return parts;
 }

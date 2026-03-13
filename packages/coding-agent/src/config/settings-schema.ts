@@ -395,6 +395,17 @@ export const SETTINGS_SCHEMA = {
 			condition: "isAssemblerMode",
 		},
 	},
+	"assembler.turnBufferPercent": {
+		type: "number",
+		default: 20,
+		ui: {
+			tab: "agent",
+			label: "Turn buffer %",
+			description: "Percentage of context window reserved for current turn (tool calls, results, new messages)",
+			submenu: true,
+			condition: "isAssemblerMode",
+		},
+	},
 
 	// ─────────────────────────────────────────────────────────────────────────
 	// Secrets settings
@@ -1493,6 +1504,7 @@ export interface AssemblerSettings {
 	messageBudgetPercent: number;
 	hydrationBudgetPercent: number;
 	hotWindowTurns: number;
+	turnBufferPercent: number;
 }
 
 /** Map group prefix -> typed settings interface */

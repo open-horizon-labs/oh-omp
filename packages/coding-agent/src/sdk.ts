@@ -1450,6 +1450,9 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		const assemblerSettings = settings.getGroup("assembler") as AssemblerSettings;
 		const hotWindowTurns = assemblerSettings.hotWindowTurns;
 
+		const resolveToolResultStub = (message: { toolName?: string; toolCallId?: string }) =>
+			assemblerBridge.getToolResultStubPointer(message.toolName, message.toolCallId);
+
 		const assemblerTransform = async (messages: AgentMessage[]): Promise<AgentMessage[]> => {
 			// Derive budget from current model context window and measured costs.
 			// agent.state is read each turn to reflect model/tool changes mid-session.
@@ -1460,7 +1463,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			// Step 1: Apply message transform (hot window + content replacement).
 			// This strips tool_result content from older turns before budget derivation
 			// so the budget reflects actual post-transform message costs.
-			const firstPass = transformMessages(messages, { hotWindowTurns });
+			const firstPass = transformMessages(messages, { hotWindowTurns, resolveToolResultStub });
 			const transformedMessages = firstPass.messages;
 
 			const budget = currentModel
@@ -1535,7 +1538,11 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			let boundedMessages: AgentMessage[];
 			let finalTransformMetadata: TransformMetadata;
 			if (maxMessageTokens !== undefined) {
-				const boundedPass = transformMessages(messages, { maxTokens: maxMessageTokens, hotWindowTurns });
+				const boundedPass = transformMessages(messages, {
+					maxTokens: maxMessageTokens,
+					hotWindowTurns,
+					resolveToolResultStub,
+				});
 				boundedMessages = boundedPass.messages;
 				finalTransformMetadata = boundedPass.metadata;
 			} else {

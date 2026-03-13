@@ -9,7 +9,9 @@
  * determined by the context-manager mode).
  */
 
+import * as path from "node:path";
 import { logger } from "@oh-my-pi/pi-utils";
+import type { ToolResultStubPointer } from "../assembler/message-transform";
 import type {
 	MemoryAssemblyBudget,
 	MemoryContractV1,
@@ -84,6 +86,21 @@ export class ToolResultBridge {
 	/** The populated memory contract. */
 	get contract(): MemoryContractV1 {
 		return this.#contract;
+	}
+
+	getToolResultStubPointer(
+		toolName: string | undefined,
+		toolCallId: string | undefined,
+	): ToolResultStubPointer | null {
+		if (!toolName || !toolCallId) return null;
+		const key = `${toolName}:${toolCallId}`;
+		for (let i = this.#contract.locatorMap.length - 1; i >= 0; i--) {
+			const locator = this.#contract.locatorMap[i];
+			if (locator?.key === key) {
+				return { text: buildLocatorStubPointer(locator) };
+			}
+		}
+		return { text: `[ref:${toolName}]` };
 	}
 
 	/**
@@ -375,4 +392,36 @@ function extractTextBlocks(value: unknown): string[] {
 		}
 	}
 	return parts;
+}
+
+function buildLocatorStubPointer(locator: MemoryLocatorEntry): string {
+	const source = locator.provenance.source.replace(/^tool:/, "");
+	const target = pickLocatorTarget(locator);
+	return target ? `[ref:${source}:${target}]` : `[ref:${source}]`;
+}
+
+function pickLocatorTarget(locator: MemoryLocatorEntry): string | null {
+	const params = locator.how.params as Record<string, unknown> | undefined;
+	const pattern = typeof params?.pattern === "string" ? compactPattern(params.pattern) : null;
+	const filePath = typeof params?.filePath === "string" ? compactPath(params.filePath) : null;
+	const wherePath = locator.where && locator.where !== "unknown" ? compactPath(locator.where) : null;
+	const artifactId = typeof params?.artifactId === "string" ? `artifact:${params.artifactId.slice(0, 8)}` : null;
+
+	if (pattern) return pattern;
+	if (filePath) return filePath;
+	if (wherePath) return wherePath;
+	if (artifactId) return artifactId;
+	return null;
+}
+
+function compactPath(filePath: string): string {
+	const normalized = filePath.replace(/\\/g, "/");
+	const parts = normalized.split("/").filter(Boolean);
+	if (parts.length >= 2) return parts.slice(-2).join("/");
+	return path.basename(normalized);
+}
+
+function compactPattern(pattern: string): string {
+	const singleLine = pattern.replace(/\s+/g, " ").trim();
+	return singleLine.length <= 24 ? singleLine : `${singleLine.slice(0, 21)}...`;
 }

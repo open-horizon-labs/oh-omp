@@ -242,6 +242,25 @@ describe("transformMessages — hot window", () => {
 		expect(toolResults[3].content).toEqual([{ type: "text", text: "recent bash output" }]);
 	});
 
+	test("resolver injects compact pointer for stubbed tool results", () => {
+		const messages: AgentMessage[] = [
+			makeUser("start"),
+			makeAssistant([{ id: "tc-1", name: "read" }]),
+			makeToolResult("tc-1", "content A"),
+			makeUser("a"),
+			makeUser("b"),
+			makeUser("c"),
+		];
+
+		const { messages: result } = transformMessages(messages, {
+			hotWindowTurns: 3,
+			resolveToolResultStub: message => ({ text: `[ref:${message.toolName}:src/file.ts]` }),
+		});
+
+		const toolResult = result.find((m): m is ToolResultMessage => m.role === "toolResult")!;
+		expect(toolResult.content).toEqual([{ type: "text", text: "[ref:read:src/file.ts]" }]);
+	});
+
 	test("custom hotWindowTurns = 1 keeps only last turn verbatim", () => {
 		const messages: AgentMessage[] = [
 			makeUser("start"),
@@ -944,20 +963,19 @@ describe("formatStubText", () => {
 		expect(formatStubText([])).toBe(TOOL_RESULT_STUB_TEXT);
 	});
 
-	test("includes single source tag", () => {
+	test("uses compact ref for single source tag", () => {
 		const stub = formatStubText(["tool:grep"]);
-		expect(stub).toContain("source: tool:grep");
-		expect(stub).toContain("Content replaced");
+		expect(stub).toBe("[ref:grep]");
 	});
 
-	test("includes multiple source tags", () => {
+	test("uses primary source tag when multiple exist", () => {
 		const stub = formatStubText(["tool:read", "tool:grep"]);
-		expect(stub).toContain("source: tool:read, tool:grep");
+		expect(stub).toBe("[ref:read]");
 	});
 
-	test("includes MCP source tag", () => {
+	test("keeps mcp source tag compact", () => {
 		const stub = formatStubText(["mcp:rna"]);
-		expect(stub).toContain("source: mcp:rna");
+		expect(stub).toBe("[ref:mcp:rna]");
 	});
 });
 

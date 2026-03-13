@@ -132,18 +132,33 @@ export function deriveBudget(input: BudgetDerivationInput): MemoryAssemblyBudget
 /** Default number of recent turns kept verbatim before content replacement. */
 export const DEFAULT_HOT_WINDOW_TURNS = 3;
 
-/** Stub text injected into tool_result messages beyond the hot window. */
-export const TOOL_RESULT_STUB_TEXT = "[Content available in assembled context]";
+/** Compact fallback stub injected into tool_result messages beyond the hot window. */
+export const TOOL_RESULT_STUB_TEXT = "[ref]";
 
-/** Format stub text with source provenance tags. */
-export function formatStubText(sourceTags?: string[]): string {
+export interface ToolResultStubPointer {
+	text: string;
+}
+
+/** Format stub text as a compact actionable pointer. */
+export function formatStubText(
+	sourceTags?: string[],
+	pointer?: ToolResultStubPointer | null,
+	toolName?: string,
+): string {
+	if (pointer?.text) return pointer.text;
+	if (toolName) return `[ref:${toolName}]`;
 	if (!sourceTags || sourceTags.length === 0) return TOOL_RESULT_STUB_TEXT;
-	return `[source: ${sourceTags.join(", ")} | Content replaced \u2014 available via re-execution]`;
+
+	const primary = sourceTags[0]?.replace(/^tool:/, "")?.replace(/^mcp:/, "mcp:");
+	return primary ? `[ref:${primary}]` : TOOL_RESULT_STUB_TEXT;
 }
 
 export interface MessageTransformOptions {
 	/** Number of recent turns to keep verbatim (default: {@link DEFAULT_HOT_WINDOW_TURNS}). */
 	hotWindowTurns?: number;
+
+	/** Resolve compact pointer text for a stubbed tool_result message. */
+	resolveToolResultStub?: (message: ToolResultMessage) => ToolResultStubPointer | null;
 
 	/**
 	 * Maximum token budget for the output message array.
@@ -344,13 +359,18 @@ export function segmentIntoTurns(messages: AgentMessage[]): Turn[] {
  * Returns a new array of messages with tool_result content replaced.
  * Assistant messages and other message types are passed through unchanged.
  */
-function replaceToolResultContent(turn: Turn, sourceTags?: string[]): Turn {
+function replaceToolResultContent(
+	turn: Turn,
+	options: Pick<MessageTransformOptions, "resolveToolResultStub">,
+	sourceTags?: string[],
+): Turn {
 	if (!turn.hasToolResults) return turn;
 
-	const stubText = formatStubText(sourceTags);
 	const replaced = turn.messages.map((msg): AgentMessage => {
 		if (msg.role !== "toolResult") return msg;
 
+		const pointer = options.resolveToolResultStub?.(msg) ?? null;
+		const stubText = formatStubText(sourceTags, pointer, msg.toolName);
 		const stubContent: TextContent[] = [{ type: "text", text: stubText }];
 		return {
 			...msg,
@@ -458,7 +478,7 @@ export function transformMessages(messages: AgentMessage[], options: MessageTran
 	const transformedTurns = originalTurns.map((turn, idx) => {
 		if (idx >= hotWindowStart) return turn; // hot window: keep verbatim
 		const tags = extractSourceTags(turn.messages);
-		return replaceToolResultContent(turn, tags);
+		return replaceToolResultContent(turn, options, tags);
 	});
 
 	// Pre-compute transformed token costs (only differs from original for stubbed turns)

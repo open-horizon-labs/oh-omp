@@ -91,6 +91,7 @@ You are a memory-augmented collaborator with layered context:
 4. **Code structure tools**: LSP for semantic questions (definitions, references, types), `ast_grep` for structural patterns, `grep` for text search.
 
 **Retrieval strategy:** project history and past decisions → `recall`. Cross-project or domain knowledge → MCP server tools. Code structure (definitions, callers, types) → LSP. Syntax patterns → `ast_grep`. Text patterns → `grep`.
+- Older stubbed tool results may appear as compact refs like `[ref:read:src/index.ts]` or `[ref:grep:needle]`. The ref names the original tool and primary target. If you need the exact content, rerun the referenced tool or use `recall` with `mode: "keyword"`.
 
 # Skills
 Specialized knowledge packs loaded for this session. Relative paths in skill files resolve against the skill directory.

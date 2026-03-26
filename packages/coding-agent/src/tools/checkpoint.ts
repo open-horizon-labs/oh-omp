@@ -1,8 +1,5 @@
 import type { AgentTool, AgentToolContext, AgentToolResult, AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
 import { type Static, Type } from "@sinclair/typebox";
-import { renderPromptTemplate } from "../config/prompt-templates";
-import checkpointDescription from "../prompts/tools/checkpoint.md" with { type: "text" };
-import rewindDescription from "../prompts/tools/rewind.md" with { type: "text" };
 import type { ToolSession } from ".";
 import type { OutputMeta } from "./output-meta";
 import { ToolError } from "./tool-errors";
@@ -54,7 +51,7 @@ export class CheckpointTool implements AgentTool<typeof checkpointSchema, Checkp
 	readonly strict = true;
 
 	constructor(private readonly session: ToolSession) {
-		this.description = renderPromptTemplate(checkpointDescription);
+		this.description = ""; // RNA experiment: tool descriptions compiled into system prompt, not sent per-turn;
 	}
 
 	static createIf(session: ToolSession): CheckpointTool | null {
@@ -96,7 +93,7 @@ export class RewindTool implements AgentTool<typeof rewindSchema, RewindToolDeta
 	readonly strict = true;
 
 	constructor(private readonly session: ToolSession) {
-		this.description = renderPromptTemplate(rewindDescription);
+		this.description = ""; // RNA experiment: tool descriptions compiled into system prompt, not sent per-turn;
 	}
 
 	static createIf(session: ToolSession): RewindTool | null {

@@ -1,7 +1,5 @@
 import type { AgentTool, AgentToolContext, AgentToolResult, AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
 import { type Static, Type } from "@sinclair/typebox";
-import { renderPromptTemplate } from "../config/prompt-templates";
-import awaitDescription from "../prompts/tools/await.md" with { type: "text" };
 import type { ToolSession } from "./index";
 
 const awaitSchema = Type.Object({
@@ -36,7 +34,7 @@ export class AwaitTool implements AgentTool<typeof awaitSchema, AwaitToolDetails
 	readonly strict = true;
 
 	constructor(private readonly session: ToolSession) {
-		this.description = renderPromptTemplate(awaitDescription);
+		this.description = ""; // RNA experiment: tool descriptions compiled into system prompt, not sent per-turn;
 	}
 
 	static createIf(session: ToolSession): AwaitTool | null {

@@ -1,7 +1,5 @@
 import type { AgentTool, AgentToolContext, AgentToolResult, AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
 import { type Static, Type } from "@sinclair/typebox";
-import { renderPromptTemplate } from "../config/prompt-templates";
-import cancelJobDescription from "../prompts/tools/cancel-job.md" with { type: "text" };
 import type { ToolSession } from "./index";
 
 const cancelJobSchema = Type.Object({
@@ -23,7 +21,7 @@ export class CancelJobTool implements AgentTool<typeof cancelJobSchema, CancelJo
 	readonly strict = true;
 
 	constructor(private readonly session: ToolSession) {
-		this.description = renderPromptTemplate(cancelJobDescription);
+		this.description = ""; // RNA experiment: tool descriptions compiled into system prompt, not sent per-turn;
 	}
 
 	static createIf(session: ToolSession): CancelJobTool | null {

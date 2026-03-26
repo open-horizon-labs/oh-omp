@@ -6,11 +6,9 @@ import { type Component, Text } from "@oh-my-pi/pi-tui";
 import { ptree, truncate } from "@oh-my-pi/pi-utils";
 import { type Static, Type } from "@sinclair/typebox";
 import { parseHTML } from "linkedom";
-import { renderPromptTemplate } from "../config/prompt-templates";
 import type { Settings } from "../config/settings";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import { type Theme, theme } from "../modes/theme/theme";
-import fetchDescription from "../prompts/tools/fetch.md" with { type: "text" };
 import { DEFAULT_MAX_BYTES, truncateHead } from "../session/streaming-output";
 import { renderStatusLine } from "../tui";
 import { CachedOutputBlock } from "../tui/output-block";
@@ -1104,7 +1102,7 @@ export class FetchTool implements AgentTool<typeof fetchSchema, FetchToolDetails
 	readonly strict = true;
 
 	constructor(private readonly session: ToolSession) {
-		this.description = renderPromptTemplate(fetchDescription);
+		this.description = ""; // RNA experiment: tool descriptions compiled into system prompt, not sent per-turn;
 	}
 
 	async execute(

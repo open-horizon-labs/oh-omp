@@ -5,12 +5,10 @@ import type { Component } from "@oh-my-pi/pi-tui";
 import { ImageProtocol, TERMINAL, Text } from "@oh-my-pi/pi-tui";
 import { $env, getProjectDir, isEnoent } from "@oh-my-pi/pi-utils";
 import { Type } from "@sinclair/typebox";
-import { renderPromptTemplate } from "../config/prompt-templates";
 import { type BashResult, executeBash } from "../exec/bash-executor";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import { truncateToVisualLines } from "../modes/components/visual-truncate";
 import type { Theme } from "../modes/theme/theme";
-import bashDescription from "../prompts/tools/bash.md" with { type: "text" };
 import { DEFAULT_MAX_BYTES, TailBuffer } from "../session/streaming-output";
 import { renderStatusLine } from "../tui";
 import { CachedOutputBlock } from "../tui/output-block";
@@ -218,11 +216,7 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 	constructor(private readonly session: ToolSession) {
 		this.#asyncEnabled = this.session.settings.get("async.enabled");
 		this.parameters = this.#asyncEnabled ? bashSchemaWithAsync : bashSchemaBase;
-		this.description = renderPromptTemplate(bashDescription, {
-			asyncEnabled: this.#asyncEnabled,
-			hasAstGrep: this.session.settings.get("astGrep.enabled"),
-			hasAstEdit: this.session.settings.get("astEdit.enabled"),
-		});
+		this.description = ""; // RNA experiment: tool descriptions compiled into system prompt, not sent per-turn;
 	}
 
 	#formatResultOutput(result: BashResult | BashInteractiveResult, headLines?: number, tailLines?: number): string {

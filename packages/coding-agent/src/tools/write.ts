@@ -10,12 +10,10 @@ import type { Component } from "@oh-my-pi/pi-tui";
 import { Text } from "@oh-my-pi/pi-tui";
 import { untilAborted } from "@oh-my-pi/pi-utils";
 import { type Static, Type } from "@sinclair/typebox";
-import { renderPromptTemplate } from "../config/prompt-templates";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import { createLspWritethrough, type FileDiagnosticsResult, type WritethroughCallback, writethroughNoop } from "../lsp";
 import { getLanguageFromPath, type Theme } from "../modes/theme/theme";
 import { stripHashlinePrefixes } from "../patch";
-import writeDescription from "../prompts/tools/write.md" with { type: "text" };
 import type { ToolSession } from "../sdk";
 import { Ellipsis, Hasher, type RenderCache, renderStatusLine, truncateToWidth } from "../tui";
 import { resolveFileDisplayMode } from "../utils/file-display-mode";
@@ -107,7 +105,7 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 		this.#writethrough = enableLsp
 			? createLspWritethrough(session.cwd, { enableFormat, enableDiagnostics })
 			: writethroughNoop;
-		this.description = renderPromptTemplate(writeDescription);
+		this.description = ""; // RNA experiment: tool descriptions compiled into system prompt, not sent per-turn;
 	}
 
 	async execute(

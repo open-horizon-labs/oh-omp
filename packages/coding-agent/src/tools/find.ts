@@ -7,10 +7,8 @@ import { Text } from "@oh-my-pi/pi-tui";
 import { isEnoent, untilAborted } from "@oh-my-pi/pi-utils";
 import type { Static } from "@sinclair/typebox";
 import { Type } from "@sinclair/typebox";
-import { renderPromptTemplate } from "../config/prompt-templates";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import type { Theme } from "../modes/theme/theme";
-import findDescription from "../prompts/tools/find.md" with { type: "text" };
 import { type TruncationResult, truncateHead } from "../session/streaming-output";
 import {
 	Ellipsis,
@@ -121,7 +119,7 @@ export class FindTool implements AgentTool<typeof findSchema, FindToolDetails> {
 		options?: FindToolOptions,
 	) {
 		this.#customOps = options?.operations;
-		this.description = renderPromptTemplate(findDescription);
+		this.description = ""; // RNA experiment: tool descriptions compiled into system prompt, not sent per-turn;
 	}
 
 	async execute(

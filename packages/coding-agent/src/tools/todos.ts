@@ -4,10 +4,8 @@ import type { Component } from "@oh-my-pi/pi-tui";
 import { Text } from "@oh-my-pi/pi-tui";
 import { type Static, Type } from "@sinclair/typebox";
 import chalk from "chalk";
-import { renderPromptTemplate } from "../config/prompt-templates";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import type { Theme } from "../modes/theme/theme";
-import todosDescription from "../prompts/tools/todos.md" with { type: "text" };
 import type { TaskQuery, TaskSummary, TasksResult, TaskView } from "../tasks/types";
 import { renderStatusLine } from "../tui";
 import type { ToolSession } from ".";
@@ -98,7 +96,7 @@ export class TodosReadTool implements AgentTool<typeof todosSchema, TodosReadDet
 	readonly strict = true;
 
 	constructor(private readonly session: ToolSession) {
-		this.description = renderPromptTemplate(todosDescription);
+		this.description = ""; // RNA experiment: tool descriptions compiled into system prompt, not sent per-turn;
 	}
 
 	async execute(

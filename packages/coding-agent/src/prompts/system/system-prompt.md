@@ -175,13 +175,13 @@ Your code tools are backed by RNA, a structural code intelligence layer that ind
 
 **Use `mcp_rna_server_search` directly for operations the existing tools can't express:**
 
-| Operation | Query |
-|-----------|-------|
-| Call graph: who calls X? | `mcp_rna_server_search(node="<id>", mode="neighbors", direction="incoming", compact=true)` |
-| Dependencies: what does X call? | `mcp_rna_server_search(node="<id>", mode="neighbors", direction="outgoing", compact=true)` |
-| Function body | `mcp_rna_server_search(node="<id>", include_body=true, minify_body=true)` |
-| Impact analysis | `mcp_rna_server_search(node="<id>", mode="impact", hops=3)` |
-| Codebase overview | `mcp_rna_server_repo_map` |
+|Operation|Query|
+|---|---|
+|Call graph: who calls X?|`mcp_rna_server_search(node="<id>", mode="neighbors", direction="incoming", compact=true)`|
+|Dependencies: what does X call?|`mcp_rna_server_search(node="<id>", mode="neighbors", direction="outgoing", compact=true)`|
+|Function body|`mcp_rna_server_search(node="<id>", include_body=true, minify_body=true)`|
+|Impact analysis|`mcp_rna_server_search(node="<id>", mode="impact", hops=3)`|
+|Codebase overview|`mcp_rna_server_repo_map`|
 
 **Node IDs** appear in RNA results (e.g., `packages/foo/bar.ts:fnName:function`). Copy them for follow-up queries.
 

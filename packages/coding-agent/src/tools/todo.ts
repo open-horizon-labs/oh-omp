@@ -4,10 +4,8 @@ import type { Component } from "@oh-my-pi/pi-tui";
 import { Text } from "@oh-my-pi/pi-tui";
 import { type Static, Type } from "@sinclair/typebox";
 import chalk from "chalk";
-import { renderPromptTemplate } from "../config/prompt-templates";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import type { Theme } from "../modes/theme/theme";
-import todoDescription from "../prompts/tools/todo.md" with { type: "text" };
 import type { TaskStore } from "../tasks/store";
 import type { Task } from "../tasks/types";
 import { renderStatusLine } from "../tui";
@@ -89,7 +87,7 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoWriteDetails> 
 
 	constructor(session: ToolSession) {
 		this.#session = session;
-		this.description = renderPromptTemplate(todoDescription);
+		this.description = ""; // RNA experiment: tool descriptions compiled into system prompt, not sent per-turn;
 	}
 
 	async execute(

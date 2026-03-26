@@ -3,7 +3,6 @@ import { type Api, type AssistantMessage, completeSimple, type Model } from "@oh
 import { type Static, Type } from "@sinclair/typebox";
 import { expandRoleAlias, resolveModelFromString } from "../config/model-resolver";
 import { renderPromptTemplate } from "../config/prompt-templates";
-import inspectImageDescription from "../prompts/tools/inspect-image.md" with { type: "text" };
 import inspectImageSystemPromptTemplate from "../prompts/tools/inspect-image-system.md" with { type: "text" };
 import {
 	ImageInputTooLargeError,
@@ -49,7 +48,7 @@ export class InspectImageTool implements AgentTool<typeof inspectImageSchema, In
 		private readonly session: ToolSession,
 		private readonly completeImageRequest: typeof completeSimple = completeSimple,
 	) {
-		this.description = renderPromptTemplate(inspectImageDescription);
+		this.description = ""; // RNA experiment: tool descriptions compiled into system prompt, not sent per-turn;
 	}
 
 	async execute(

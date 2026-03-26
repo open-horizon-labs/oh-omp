@@ -1,14 +1,12 @@
 import type { AgentTool, AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import { logger } from "@oh-my-pi/pi-utils";
 import { type Static, Type } from "@sinclair/typebox";
-import { renderPromptTemplate } from "../config/prompt-templates";
 import { embed } from "../context/recall/embed";
 import { mmrRerank } from "../context/recall/mmr";
 import type { RecallStore } from "../context/recall/store";
 import type { SearchResult as KeywordSearchResult, ToolResultStore } from "../context/recall/tool-result-store";
 import type { MmrCandidate, RecallSearchResult } from "../context/recall/types";
 import { parseMCPToolName } from "../mcp/tool-bridge";
-import recallDescription from "../prompts/tools/recall.md" with { type: "text" };
 import type { ToolSession } from ".";
 
 import { shortenPath } from "./render-utils";
@@ -56,7 +54,7 @@ export class RecallTool implements AgentTool<typeof recallSchema> {
 	#sessionId: string;
 
 	constructor(store: RecallStore, license: string, cwd: string, sessionId: string, toolResultStore?: ToolResultStore) {
-		this.description = renderPromptTemplate(recallDescription);
+		this.description = ""; // RNA experiment: tool descriptions compiled into system prompt, not sent per-turn;
 		this.#store = store;
 		this.#toolResultStore = toolResultStore;
 		this.#license = license;

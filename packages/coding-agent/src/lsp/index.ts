@@ -1326,7 +1326,7 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 			let output: string;
 
 			// RNA experiment: try RNA structural search for navigation actions
-			const RNA_ACTIONS = new Set(["definition", "type_definition", "implementation", "references", "hover"]);
+			const RNA_ACTIONS = new Set(["definition", "type_definition", "implementation", "hover"]);
 			if (symbol && RNA_ACTIONS.has(action)) {
 				const rnaResult = await tryRnaForLsp(action, symbol, file, this.session.cwd);
 				if (rnaResult) {

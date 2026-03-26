@@ -267,7 +267,7 @@ function getPythonModeFromEnv(): PythonToolMode | null {
  */
 export async function createTools(session: ToolSession, toolNames?: string[]): Promise<Tool[]> {
 	const includeSubmitResult = session.requireSubmitResultTool === true;
-	const _enableLsp = session.enableLsp ?? true; // RNA experiment: lsp hard-disabled in isToolAllowed
+	const _enableLsp = session.enableLsp ?? true;
 	const requestedTools =
 		toolNames && toolNames.length > 0 ? [...new Set(toolNames.map(name => name.toLowerCase()))] : undefined;
 	if (requestedTools && !requestedTools.includes("exit_plan_mode")) {
@@ -344,7 +344,7 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 	}
 	const allTools: Record<string, ToolFactory> = { ...BUILTIN_TOOLS, ...HIDDEN_TOOLS };
 	const isToolAllowed = (name: string) => {
-		if (name === "lsp") return false; // RNA experiment: force mcp_rna_server_search instead
+		if (name === "lsp") return session.settings.get("lsp.enabled"); // RNA experiment: RNA-first with LSP fallthrough
 		if (name === "bash") return allowBash;
 		if (name === "python") return allowPython;
 		if (name === "todo_write") return false; // Replaced by todo/todos tools — kept for upstream sync
@@ -359,7 +359,7 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 		if (name === "fetch") return session.settings.get("fetch.enabled");
 		if (name === "web_search") return session.settings.get("web_search.enabled");
 		if (name === "search_tool_bm25") return session.settings.get("mcp.discoveryMode");
-		if (name === "lsp") return false; // RNA experiment: duplicate guard (upstream has two checks)
+		if (name === "lsp") return session.settings.get("lsp.enabled"); // RNA experiment: duplicate guard (upstream has two checks)
 		if (name === "calc") return session.settings.get("calc.enabled");
 		if (name === "browser") return session.settings.get("browser.enabled");
 		if (name === "checkpoint" || name === "rewind") return session.settings.get("checkpoint.enabled");

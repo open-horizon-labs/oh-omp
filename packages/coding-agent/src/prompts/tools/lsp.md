@@ -1,5 +1,4 @@
-Interacts with Language Server Protocol servers for code intelligence.
-
+Interacts with Language Server Protocol servers for code intelligence. Navigation actions (definition, references, hover, type_definition, implementation) try RNA structural search first and fall through to LSP if RNA returns nothing.
 <operations>
 - `diagnostics`: Get errors/warnings for file, glob, or entire workspace (no file)
 - `definition`: Go to symbol definition → file path + position + 3-line source context

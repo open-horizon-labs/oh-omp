@@ -1,4 +1,4 @@
-Finds files using fast pattern matching that works with any codebase size.
+Finds files using fast pattern matching that works with any codebase size. For non-glob patterns (file name lookups), tries RNA structural index first for instant results with file context.
 
 <instruction>
 - Pattern includes the search path: `src/**/*.ts`, `lib/*.json`, `**/*.md`

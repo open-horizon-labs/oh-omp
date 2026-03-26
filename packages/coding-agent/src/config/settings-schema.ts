@@ -1031,6 +1031,17 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	// RNA
+	"rna.enabled": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "tools",
+			label: "RNA",
+			description: "Route read/grep/lsp through RNA structural search before falling through to native tools",
+		},
+	},
+
 	// LSP
 	"lsp.enabled": {
 		type: "boolean",

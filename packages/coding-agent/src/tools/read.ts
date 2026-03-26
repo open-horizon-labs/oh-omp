@@ -527,7 +527,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 			".gd",
 			".gdscript",
 		]);
-		if (!offset && CODE_EXTENSIONS.has(ext)) {
+		if (!offset && CODE_EXTENSIONS.has(ext) && this.session.settings.get("rna.enabled")) {
 			const rnaResult = await tryRnaFileMap(absolutePath, this.session.cwd);
 			if (rnaResult) {
 				return toolResult({})

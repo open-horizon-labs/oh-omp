@@ -202,7 +202,7 @@ export class GrepTool implements AgentTool<typeof grepSchema, GrepToolDetails> {
 			const internalLimit = Math.min(effectiveLimit * 5, 2000);
 
 			// RNA experiment: try structural search first for identifier-like patterns
-			if (looksLikeIdentifier(normalizedPattern)) {
+			if (this.session.settings.get("rna.enabled") && looksLikeIdentifier(normalizedPattern)) {
 				const rnaResult = await tryRnaSearch(normalizedPattern, this.session.cwd, searchDir?.trim() || undefined);
 				if (rnaResult) {
 					const details: GrepToolDetails = {

@@ -34,6 +34,7 @@ import { applyListLimit } from "./list-limit";
 import { formatFullOutputReference, formatStyledTruncationWarning, type OutputMeta } from "./output-meta";
 import { resolveReadPath } from "./path-utils";
 import { formatAge, formatBytes, shortenPath, wrapBrackets } from "./render-utils";
+import { compressRnaOutput } from "./rna-format";
 import { ToolAbortError, ToolError, throwIfAborted } from "./tool-errors";
 import { toolResult } from "./tool-result";
 
@@ -48,7 +49,6 @@ function isRemoteMountPath(absolutePath: string): boolean {
 }
 
 // RNA experiment: return structural file map from RNA (all symbols in a file)
-const RNA_INTERESTING_KINDS = new Set(["function", "trait", "struct", "type_alias", "enum", "module"]);
 async function tryRnaFileMap(filePath: string, cwd: string): Promise<string | null> {
 	try {
 		const relPath = path.relative(cwd, filePath);
@@ -71,19 +71,8 @@ async function tryRnaFileMap(filePath: string, cwd: string): Promise<string | nu
 		const stdout = await new Response(proc.stdout).text();
 		const exitCode = await proc.exited;
 		if (exitCode !== 0 || !stdout.trim()) return null;
-		// Keep only structural symbols, strip index metadata and search headers
-		const lines = stdout.split("\n");
-		const filtered = lines.filter(line => {
-			const trimmed = line.trim();
-			if (!trimmed) return false;
-			// Strip RNA metadata: "## Search: ...", "### Code symbols ...", "*Index: ..."
-			if (trimmed.startsWith("##") || trimmed.startsWith("*Index:")) return false;
-			// Keep only interesting symbol kinds
-			const kind = trimmed.replace(/^- \*\*/, "").split("**")[0] ?? "";
-			return RNA_INTERESTING_KINDS.has(kind);
-		});
-		const result = filtered.join("\n").trim();
-		return result || null;
+		const result = compressRnaOutput(stdout);
+		return result;
 	} catch {
 		return null; // RNA not available, fall through to regular read
 	}

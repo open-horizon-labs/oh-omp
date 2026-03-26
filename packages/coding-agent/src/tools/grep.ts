@@ -23,6 +23,7 @@ import {
 	resolveToCwd,
 } from "./path-utils";
 import { formatCount, formatEmptyMessage, formatErrorMessage, PREVIEW_LIMITS } from "./render-utils";
+import { compressRnaOutput } from "./rna-format";
 import { ToolError } from "./tool-errors";
 import { toolResult } from "./tool-result";
 
@@ -45,17 +46,8 @@ async function tryRnaSearch(pattern: string, cwd: string, fileFilter?: string): 
 		const stdout = await new Response(proc.stdout).text();
 		const exitCode = await proc.exited;
 		if (exitCode !== 0 || !stdout.trim()) return null;
-		// Strip index metadata and markdown-only results
-		const lines = stdout.split("\n");
-		const filtered = lines.filter(line => {
-			const trimmed = line.trim();
-			if (!trimmed) return false;
-			if (trimmed.startsWith("##") || trimmed.startsWith("*Index:")) return false;
-			if (trimmed.startsWith("- **markdown**")) return false;
-			return true;
-		});
-		const result = filtered.join("\n").trim();
-		return result || null;
+		const result = compressRnaOutput(stdout, { stripMarkdown: true });
+		return result;
 	} catch {
 		return null; // RNA not available, fall through to ripgrep
 	}

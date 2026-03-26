@@ -6,6 +6,7 @@ import type { BunFile } from "bun";
 import { type Theme, theme } from "../modes/theme/theme";
 import type { ToolSession } from "../tools";
 import { resolveToCwd } from "../tools/path-utils";
+import { compressRnaOutput } from "../tools/rna-format";
 import { ToolAbortError, throwIfAborted } from "../tools/tool-errors";
 import { clampTimeout } from "../tools/tool-timeouts";
 import {
@@ -109,16 +110,7 @@ async function tryRnaForLsp(
 		const exitCode = await proc.exited;
 		if (exitCode !== 0 || !stdout.trim()) return null;
 
-		// Strip index metadata and markdown-only results
-		const lines = stdout.split("\n");
-		const filtered = lines.filter(line => {
-			const trimmed = line.trim();
-			if (!trimmed) return false;
-			if (trimmed.startsWith("##") || trimmed.startsWith("*Index:")) return false;
-			if (trimmed.startsWith("- **markdown**")) return false;
-			return true;
-		});
-		const result = filtered.join("\n").trim();
+		const result = compressRnaOutput(stdout, { stripMarkdown: true });
 		return result ? `[RNA ${action}]\n${result}` : null;
 	} catch {
 		return null; // RNA not available, fall through to LSP

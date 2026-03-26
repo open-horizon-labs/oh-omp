@@ -454,6 +454,47 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 		const mimeType = await detectSupportedImageMimeTypeFromFile(absolutePath);
 		const ext = path.extname(absolutePath).toLowerCase();
 
+		// RNA experiment: code files require targeted reads (offset). Use RNA for understanding.
+		const CODE_EXTENSIONS = new Set([
+			".ts",
+			".tsx",
+			".js",
+			".jsx",
+			".mjs",
+			".cjs",
+			".py",
+			".rb",
+			".rs",
+			".go",
+			".java",
+			".kt",
+			".scala",
+			".c",
+			".cpp",
+			".cc",
+			".h",
+			".hpp",
+			".cs",
+			".swift",
+			".zig",
+			".lua",
+			".php",
+			".vue",
+			".svelte",
+			".astro",
+			".gd",
+			".gdscript",
+		]);
+		if (!offset && CODE_EXTENSIONS.has(ext)) {
+			const shortPath = shortenPath(readPath);
+			throw new ToolError(
+				`Whole-file reads of code files are not allowed. To understand this file's structure:\n` +
+					`  mcp_rna_server_search(file="${shortPath}", compact=true)\n` +
+					`Then read specific line ranges for editing:\n` +
+					`  read(path="${readPath}", offset=<start_line>, limit=<line_count>)`,
+			);
+		}
+
 		// Read the file based on type
 		let content: (TextContent | ImageContent)[];
 		let details: ReadToolDetails = {};

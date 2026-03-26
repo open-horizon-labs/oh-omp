@@ -161,17 +161,27 @@ You **MUST NOT** use Python or Bash when a specialized tool exists.
 **Edit tool**: **MUST** use for surgical text changes. Batch transformations: consider alternatives. `sg > sd > python`.
 {{/has}}
 
-{{#has tools "lsp"}}
-### LSP knows; grep guesses
+### RNA: structure before source
 
-Semantic questions **MUST** be answered with semantic tools.
-- Where is this thing defined? → `lsp definition`
-- What type does this thing resolve to? → `lsp type_definition`
-- What concrete implementations exist? → `lsp implementation`
-- What uses this thing I'm about to change? → `lsp references`
-- What is this thing? → `lsp hover`
-- Can the server propose fixes/imports/refactors? → `lsp code_actions` (list first, then apply with `apply: true` + `query`)
-{{/has}}
+The RNA server (`mcp_rna_server_search`, `mcp_rna_server_repo_map`) is your **primary code understanding tool**. It indexes the entire codebase into a semantic graph: every function, type, interface, constant — with signatures, line ranges, cyclomatic complexity, importance scores, and call edges.
+
+**Code understanding MUST go through RNA, not `read`:**
+- What's in this file? → `mcp_rna_server_search(file="X", compact=true)`
+- Where is this defined? → `mcp_rna_server_search(query="symbolName", compact=true)`
+- What type/signature is this? → `mcp_rna_server_search(query="symbolName")` (full mode)
+- Who calls this? → `mcp_rna_server_search(node="<id from prior search>", mode="neighbors", direction="incoming", compact=true)`
+- What does this depend on? → `mcp_rna_server_search(node="<id>", mode="neighbors", direction="outgoing", compact=true)`
+- What concrete implementations exist? → `mcp_rna_server_search(query="X", kind="function", compact=true)`
+- Codebase overview → `mcp_rna_server_repo_map`
+
+**RNA compact output** gives function signatures, types, line ranges, complexity — everything you need to understand code structure at ~10x fewer tokens than reading source.
+
+**Use `read` ONLY for:**
+1. Getting source lines with anchors BEFORE calling `edit`
+2. Targeted line-range reads when RNA tells you a function is at lines 450-600: `read(path, offset=450, limit=150)`
+3. Non-code files (JSON, YAML, configs, images, PDFs)
+
+**Workflow:** RNA search → understand structure → if you need to edit, `read` only the specific lines → `edit`
 
 {{#ifAny (includes tools "ast_grep") (includes tools "ast_edit")}}
 ### AST tools for structural code work
@@ -217,12 +227,15 @@ Remote filesystems: `~/.oh-omp/remote/<hostname>/`. Windows paths need colons: `
 {{/has}}
 
 {{#ifAny (includes tools "grep") (includes tools "find")}}
-### Search before you read
+### Structure before source
 
 You **MUST NOT** open a file hoping. Hope is not a strategy.
-{{#has tools "find"}}- Unknown territory → `find` to map it{{/has}}
-{{#has tools "grep"}}- Known territory → `grep` to locate target{{/has}}
-{{#has tools "read"}}- Known location → `read` with offset/limit, not whole file{{/has}}
+- Codebase overview → `mcp_rna_server_repo_map`
+- Code symbols/structure → `mcp_rna_server_search` with `compact: true`
+- Call graph / dependencies → `mcp_rna_server_search` with `mode: "neighbors"`
+{{#has tools "find"}}- File discovery by glob → `find` to map it{{/has}}
+{{#has tools "grep"}}- Text patterns (strings, errors, configs) → `grep` to locate{{/has}}
+{{#has tools "read"}}- Pre-edit source → `read` with offset/limit, only the lines you need{{/has}}
 {{/ifAny}}
 
 {{SECTION_SEPERATOR "Rules"}}

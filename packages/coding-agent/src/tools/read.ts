@@ -49,6 +49,42 @@ function isRemoteMountPath(absolutePath: string): boolean {
 	return absolutePath.startsWith(REMOTE_MOUNT_PREFIX);
 }
 
+// RNA experiment: call RNA CLI for structural file view, return stdout or null
+async function tryRnaSearch(filePath: string, cwd: string): Promise<string | null> {
+	try {
+		// Use the file's relative path for the --file filter
+		const relPath = path.relative(cwd, filePath);
+		const proc = Bun.spawn(
+			[
+				"repo-native-alignment",
+				"search",
+				"--file",
+				relPath,
+				"--compact",
+				"--search-mode",
+				"keyword",
+				"--limit",
+				"50",
+				"--repo",
+				cwd,
+			],
+			{ cwd, stdout: "pipe", stderr: "pipe" },
+		);
+		const stdout = await new Response(proc.stdout).text();
+		const exitCode = await proc.exited;
+		if (exitCode !== 0 || !stdout.trim()) return null;
+		// Filter out markdown section results
+		const lines = stdout.split("\n");
+		const filtered = lines.filter(
+			line => !line.includes("markdown") || line.includes("function") || line.includes("trait"),
+		);
+		const result = filtered.join("\n").trim();
+		return result || null;
+	} catch {
+		return null; // RNA not available, fall through to regular read
+	}
+}
+
 function prependLineNumbers(text: string, startNum: number): string {
 	const textLines = text.split("\n");
 	const lastLineNum = startNum + textLines.length - 1;
@@ -454,7 +490,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 		const mimeType = await detectSupportedImageMimeTypeFromFile(absolutePath);
 		const ext = path.extname(absolutePath).toLowerCase();
 
-		// RNA experiment: code files require targeted reads (offset). Use RNA for understanding.
+		// RNA experiment: whole-file reads of code files go through RNA structural search
 		const CODE_EXTENSIONS = new Set([
 			".ts",
 			".tsx",
@@ -486,13 +522,13 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 			".gdscript",
 		]);
 		if (!offset && CODE_EXTENSIONS.has(ext)) {
-			const shortPath = shortenPath(readPath);
-			throw new ToolError(
-				`Whole-file reads of code files are not allowed. To understand this file's structure:\n` +
-					`  mcp_rna_server_search(file="${shortPath}", compact=true)\n` +
-					`Then read specific line ranges for editing:\n` +
-					`  read(path="${readPath}", offset=<start_line>, limit=<line_count>)`,
-			);
+			const rnaResult = await tryRnaSearch(absolutePath, this.session.cwd);
+			if (rnaResult) {
+				return toolResult({})
+					.text(`[RNA structural view of ${shortenPath(readPath)}]\n${rnaResult}`)
+					.done();
+			}
+			// RNA returned nothing — fall through to regular read
 		}
 
 		// Read the file based on type

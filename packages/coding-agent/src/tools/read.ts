@@ -49,10 +49,10 @@ function isRemoteMountPath(absolutePath: string): boolean {
 	return absolutePath.startsWith(REMOTE_MOUNT_PREFIX);
 }
 
-// RNA experiment: call RNA CLI for structural file view, return stdout or null
-async function tryRnaSearch(filePath: string, cwd: string): Promise<string | null> {
+// RNA experiment: return structural file map from RNA (all symbols in a file)
+const RNA_INTERESTING_KINDS = new Set(["function", "trait", "struct", "type_alias", "enum", "module"]);
+async function tryRnaFileMap(filePath: string, cwd: string): Promise<string | null> {
 	try {
-		// Use the file's relative path for the --file filter
 		const relPath = path.relative(cwd, filePath);
 		const proc = Bun.spawn(
 			[
@@ -64,7 +64,7 @@ async function tryRnaSearch(filePath: string, cwd: string): Promise<string | nul
 				"--search-mode",
 				"keyword",
 				"--limit",
-				"50",
+				"100",
 				"--repo",
 				cwd,
 			],
@@ -73,11 +73,17 @@ async function tryRnaSearch(filePath: string, cwd: string): Promise<string | nul
 		const stdout = await new Response(proc.stdout).text();
 		const exitCode = await proc.exited;
 		if (exitCode !== 0 || !stdout.trim()) return null;
-		// Filter out markdown section results
+		// Keep only structural symbols, strip index metadata and search headers
 		const lines = stdout.split("\n");
-		const filtered = lines.filter(
-			line => !line.includes("markdown") || line.includes("function") || line.includes("trait"),
-		);
+		const filtered = lines.filter(line => {
+			const trimmed = line.trim();
+			if (!trimmed) return false;
+			// Strip RNA metadata: "## Search: ...", "### Code symbols ...", "*Index: ..."
+			if (trimmed.startsWith("##") || trimmed.startsWith("*Index:")) return false;
+			// Keep only interesting symbol kinds
+			const kind = trimmed.replace(/^- \*\*/, "").split("**")[0] ?? "";
+			return RNA_INTERESTING_KINDS.has(kind);
+		});
 		const result = filtered.join("\n").trim();
 		return result || null;
 	} catch {
@@ -522,7 +528,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 			".gdscript",
 		]);
 		if (!offset && CODE_EXTENSIONS.has(ext)) {
-			const rnaResult = await tryRnaSearch(absolutePath, this.session.cwd);
+			const rnaResult = await tryRnaFileMap(absolutePath, this.session.cwd);
 			if (rnaResult) {
 				return toolResult({})
 					.text(`[RNA structural view of ${shortenPath(readPath)}]\n${rnaResult}`)

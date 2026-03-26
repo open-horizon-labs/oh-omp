@@ -111,11 +111,15 @@ async function tryRnaForLsp(
 		const exitCode = await proc.exited;
 		if (exitCode !== 0 || !stdout.trim()) return null;
 
-		// Filter out markdown results
+		// Strip index metadata and markdown-only results
 		const lines = stdout.split("\n");
-		const filtered = lines.filter(
-			line => !line.includes("markdown") || line.includes("function") || line.includes("trait"),
-		);
+		const filtered = lines.filter(line => {
+			const trimmed = line.trim();
+			if (!trimmed) return false;
+			if (trimmed.startsWith("##") || trimmed.startsWith("*Index:")) return false;
+			if (trimmed.startsWith("- **markdown**")) return false;
+			return true;
+		});
 		const result = filtered.join("\n").trim();
 		return result ? `[RNA ${action}]\n${result}` : null;
 	} catch {

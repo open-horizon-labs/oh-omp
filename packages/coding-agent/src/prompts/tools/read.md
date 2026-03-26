@@ -1,4 +1,4 @@
-Reads files. For code files without `offset`, returns RNA structural view (signatures, types, line ranges, node IDs). For code files with `offset`, returns source lines with anchors for editing. For non-code files, returns content normally.
+Reads files. Code files return RNA structural view by default (signatures, types, line ranges, node IDs). Specify `offset` to get actual source lines with edit anchors. Non-code files return content normally.
 
 <instruction>
 - Reads up to {{DEFAULT_LIMIT}} lines default
@@ -16,14 +16,14 @@ Reads files. For code files without `offset`, returns RNA structural view (signa
 
 <when-to-use>
 **Code files — two modes:**
-- `read(path="file.ts")` → returns RNA structural view: function signatures, types, line ranges, and node IDs. Use this to understand what's in a file.
-- `read(path="file.ts", offset=50, limit=100)` → returns actual source lines with edit anchors. Use this when you need to edit specific lines.
+- `read(path="file.ts")` → RNA structural view with signatures, types, and node IDs. Use to understand a file.
+- `read(path="file.ts", offset=50, limit=100)` → actual source lines with edit anchors. Use when editing.
 
-**Follow-up from RNA results:**
-- Node IDs in read output can be used with `mcp_rna_server_search(node="<id>", include_body=true, minify_body=true)` to get function bodies
-- Or `mcp_rna_server_search(node="<id>", mode="neighbors", direction="incoming")` for call graph
+**Follow-up from structural view:**
+- Node IDs in results can be used with `mcp_rna_server_search(node="<id>", include_body=true, minify_body=true)` for function bodies
+- Or `mcp_rna_server_search(node="<id>", mode="neighbors")` for call graph
 
-**Non-code files:** JSON, YAML, configs, images, PDFs, markdown — read works normally.
+**Non-code files:** JSON, YAML, configs, images, PDFs, markdown — works normally.
 **Directory listings:** `read(path="dir/")` — works normally.
 </when-to-use>
 
@@ -31,8 +31,7 @@ Reads files. For code files without `offset`, returns RNA structural view (signa
 - Code files without offset: RNA structural view with signatures and node IDs
 - Code files with offset: source lines with edit anchors
 - Non-code files: file content as text
-- Images: visual content
-- PDFs: extracted text
+- Images: visual content; PDFs: extracted text
 - Missing files: closest filename matches for correction
 </output>
 

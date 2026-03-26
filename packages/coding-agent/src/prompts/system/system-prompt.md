@@ -161,36 +161,35 @@ You **MUST NOT** use Python or Bash when a specialized tool exists.
 **Edit tool**: **MUST** use for surgical text changes. Batch transformations: consider alternatives. `sg > sd > python`.
 {{/has}}
 
-### RNA: structure before source
+### RNA-backed code understanding
 
-The RNA server (`mcp_rna_server_search`, `mcp_rna_server_repo_map`) is your **primary code understanding tool**. It indexes the entire codebase into a semantic graph: every function, type, interface, constant — with signatures, line ranges, cyclomatic complexity, importance scores, and call edges.
+Your code tools are backed by RNA, a structural code intelligence layer that indexes the entire codebase into a semantic graph with signatures, line ranges, complexity scores, and call edges.
 
-**Code understanding MUST go through RNA, not `read`:**
+**Tools work transparently — use them normally:**
+- `read("file.ts")` — returns RNA structural view: signatures, types, line ranges, node IDs
+- `read("file.ts", offset=50, limit=100)` — returns actual source with edit anchors
+- `grep("symbolName")` — returns RNA structural results for identifier patterns
+- `grep("log.*Error")` — falls through to text search for regex patterns
+- `lsp(action="definition", symbol="X")` — tries RNA first, falls through to LSP
+- `lsp(action="diagnostics")` — goes straight to LSP (RNA can't do this)
 
-| Question | RNA query |
-|----------|-----------|
-| What's in this file? | `mcp_rna_server_search(file="X", compact=true, include_markdown=false)` |
-| Where is this defined? | `mcp_rna_server_search(query="symbolName", compact=true, include_markdown=false)` |
-| What type/signature? | `mcp_rna_server_search(query="symbolName", include_markdown=false)` (full mode) |
-| Who calls this? | `mcp_rna_server_search(node="<id>", mode="neighbors", direction="incoming", compact=true)` |
-| What does this depend on? | `mcp_rna_server_search(node="<id>", mode="neighbors", direction="outgoing", compact=true)` |
-| Read a function body | `mcp_rna_server_search(node="<id>", include_body=true, minify_body=true)` |
+**Use `mcp_rna_server_search` directly for operations the existing tools can't express:**
+
+| Operation | Query |
+|-----------|-------|
+| Call graph: who calls X? | `mcp_rna_server_search(node="<id>", mode="neighbors", direction="incoming", compact=true)` |
+| Dependencies: what does X call? | `mcp_rna_server_search(node="<id>", mode="neighbors", direction="outgoing", compact=true)` |
+| Function body | `mcp_rna_server_search(node="<id>", include_body=true, minify_body=true)` |
+| Impact analysis | `mcp_rna_server_search(node="<id>", mode="impact", hops=3)` |
 | Codebase overview | `mcp_rna_server_repo_map` |
 
-**Critical parameters:**
-- `include_markdown=false` — always set this for code queries. Without it, planning docs flood results.
-- `compact=true` — signatures + location only, ~10x fewer tokens than source.
-- `include_body=true` — returns function body as a code block. Requires `node` or `nodes` parameter (search first to get an ID).
-- `minify_body=true` — strips comments, shortens locals to 3-char names with a legend. Use with `include_body` for maximum density.
-- `kind="function"` — filter to functions only. Also: `trait` (interfaces), `type_alias`, `struct`, `enum`, `module`.
+**Node IDs** appear in RNA results (e.g., `packages/foo/bar.ts:fnName:function`). Copy them for follow-up queries.
 
-**Node ID workflow:** Graph traversal (`mode`, `include_body`) requires a node ID. Get one from any search result — it's the last line of each result, like `packages/foo/bar.ts:functionName:function`. Use it in subsequent queries.
-
-**Use `read` ONLY for:**
-1. Getting source lines with anchors BEFORE calling `edit` — use `offset` and `limit` from RNA line ranges
-2. Non-code files (JSON, YAML, configs, images, PDFs)
-
-**Workflow:** RNA search (compact, include_markdown=false) → understand structure → RNA include_body if you need implementation details → if you need to edit, `read(path, offset=<start>, limit=<count>)` → `edit`
+**Key parameters for direct RNA queries:**
+- `include_markdown=false` — always set for code queries (planning docs flood results otherwise)
+- `compact=true` — signatures only, ~10x fewer tokens
+- `include_body=true` + `minify_body=true` — function body with stripped comments and shortened locals
+- `kind="function"` — filter by symbol kind. Also: `trait`, `type_alias`, `struct`, `enum`, `module`
 
 {{#ifAny (includes tools "ast_grep") (includes tools "ast_edit")}}
 ### AST tools for structural code work
@@ -240,11 +239,12 @@ Remote filesystems: `~/.oh-omp/remote/<hostname>/`. Windows paths need colons: `
 
 You **MUST NOT** open a file hoping. Hope is not a strategy.
 - Codebase overview → `mcp_rna_server_repo_map`
-- Code symbols/structure → `mcp_rna_server_search` with `compact: true, include_markdown: false`
+- What's in a file → `read("file.ts")` (returns RNA structural view)
+- Find a symbol → `grep("symbolName")` (returns RNA structural results)
 - Call graph / dependencies → `mcp_rna_server_search` with `mode: "neighbors"`
-- Function bodies → `mcp_rna_server_search` with `node: "<id>", include_body: true, minify_body: true`
+- Function body → `mcp_rna_server_search` with `node: "<id>", include_body: true, minify_body: true`
 {{#has tools "find"}}- File discovery by glob → `find` to map it{{/has}}
-{{#has tools "read"}}- Pre-edit source → `read` with offset/limit from RNA line ranges, only the lines you need{{/has}}
+- Pre-edit source → `read("file.ts", offset=<start>, limit=<count>)` — only the lines you need to edit
 {{/ifAny}}
 
 {{SECTION_SEPERATOR "Rules"}}

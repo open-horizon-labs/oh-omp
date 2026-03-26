@@ -166,22 +166,31 @@ You **MUST NOT** use Python or Bash when a specialized tool exists.
 The RNA server (`mcp_rna_server_search`, `mcp_rna_server_repo_map`) is your **primary code understanding tool**. It indexes the entire codebase into a semantic graph: every function, type, interface, constant — with signatures, line ranges, cyclomatic complexity, importance scores, and call edges.
 
 **Code understanding MUST go through RNA, not `read`:**
-- What's in this file? → `mcp_rna_server_search(file="X", compact=true)`
-- Where is this defined? → `mcp_rna_server_search(query="symbolName", compact=true)`
-- What type/signature is this? → `mcp_rna_server_search(query="symbolName")` (full mode)
-- Who calls this? → `mcp_rna_server_search(node="<id from prior search>", mode="neighbors", direction="incoming", compact=true)`
-- What does this depend on? → `mcp_rna_server_search(node="<id>", mode="neighbors", direction="outgoing", compact=true)`
-- What concrete implementations exist? → `mcp_rna_server_search(query="X", kind="function", compact=true)`
-- Codebase overview → `mcp_rna_server_repo_map`
 
-**RNA compact output** gives function signatures, types, line ranges, complexity — everything you need to understand code structure at ~10x fewer tokens than reading source.
+| Question | RNA query |
+|----------|-----------|
+| What's in this file? | `mcp_rna_server_search(file="X", compact=true, include_markdown=false)` |
+| Where is this defined? | `mcp_rna_server_search(query="symbolName", compact=true, include_markdown=false)` |
+| What type/signature? | `mcp_rna_server_search(query="symbolName", include_markdown=false)` (full mode) |
+| Who calls this? | `mcp_rna_server_search(node="<id>", mode="neighbors", direction="incoming", compact=true)` |
+| What does this depend on? | `mcp_rna_server_search(node="<id>", mode="neighbors", direction="outgoing", compact=true)` |
+| Read a function body | `mcp_rna_server_search(node="<id>", include_body=true, minify_body=true)` |
+| Codebase overview | `mcp_rna_server_repo_map` |
+
+**Critical parameters:**
+- `include_markdown=false` — always set this for code queries. Without it, planning docs flood results.
+- `compact=true` — signatures + location only, ~10x fewer tokens than source.
+- `include_body=true` — returns function body as a code block. Requires `node` or `nodes` parameter (search first to get an ID).
+- `minify_body=true` — strips comments, shortens locals to 3-char names with a legend. Use with `include_body` for maximum density.
+- `kind="function"` — filter to functions only. Also: `trait` (interfaces), `type_alias`, `struct`, `enum`, `module`.
+
+**Node ID workflow:** Graph traversal (`mode`, `include_body`) requires a node ID. Get one from any search result — it's the last line of each result, like `packages/foo/bar.ts:functionName:function`. Use it in subsequent queries.
 
 **Use `read` ONLY for:**
-1. Getting source lines with anchors BEFORE calling `edit`
-2. Targeted line-range reads when RNA tells you a function is at lines 450-600: `read(path, offset=450, limit=150)`
-3. Non-code files (JSON, YAML, configs, images, PDFs)
+1. Getting source lines with anchors BEFORE calling `edit` — use `offset` and `limit` from RNA line ranges
+2. Non-code files (JSON, YAML, configs, images, PDFs)
 
-**Workflow:** RNA search → understand structure → if you need to edit, `read` only the specific lines → `edit`
+**Workflow:** RNA search (compact, include_markdown=false) → understand structure → RNA include_body if you need implementation details → if you need to edit, `read(path, offset=<start>, limit=<count>)` → `edit`
 
 {{#ifAny (includes tools "ast_grep") (includes tools "ast_edit")}}
 ### AST tools for structural code work
@@ -189,7 +198,7 @@ The RNA server (`mcp_rna_server_search`, `mcp_rna_server_repo_map`) is your **pr
 When AST tools are available, syntax-aware operations take priority over text hacks.
 {{#has tools "ast_grep"}}- Use `ast_grep` for structural discovery (call shapes, declarations, syntax patterns) before text grep when code structure matters{{/has}}
 {{#has tools "ast_edit"}}- Use `ast_edit` for structural codemods/replacements; do not use bash `sed`/`perl`/`awk` for syntax-level rewrites{{/has}}
-- Use `grep` for plain text/regex lookup only when AST shape is irrelevant
+- For text patterns in non-code files, use `read` + manual inspection
 
 #### Pattern syntax
 
@@ -226,16 +235,16 @@ Commands **MUST** match the host shell. linux/bash, macos/zsh: Unix. windows/cmd
 Remote filesystems: `~/.oh-omp/remote/<hostname>/`. Windows paths need colons: `C:/Users/…`
 {{/has}}
 
-{{#ifAny (includes tools "grep") (includes tools "find")}}
+{{#ifAny (includes tools "read") (includes tools "find")}}
 ### Structure before source
 
 You **MUST NOT** open a file hoping. Hope is not a strategy.
 - Codebase overview → `mcp_rna_server_repo_map`
-- Code symbols/structure → `mcp_rna_server_search` with `compact: true`
+- Code symbols/structure → `mcp_rna_server_search` with `compact: true, include_markdown: false`
 - Call graph / dependencies → `mcp_rna_server_search` with `mode: "neighbors"`
+- Function bodies → `mcp_rna_server_search` with `node: "<id>", include_body: true, minify_body: true`
 {{#has tools "find"}}- File discovery by glob → `find` to map it{{/has}}
-{{#has tools "grep"}}- Text patterns (strings, errors, configs) → `grep` to locate{{/has}}
-{{#has tools "read"}}- Pre-edit source → `read` with offset/limit, only the lines you need{{/has}}
+{{#has tools "read"}}- Pre-edit source → `read` with offset/limit from RNA line ranges, only the lines you need{{/has}}
 {{/ifAny}}
 
 {{SECTION_SEPERATOR "Rules"}}

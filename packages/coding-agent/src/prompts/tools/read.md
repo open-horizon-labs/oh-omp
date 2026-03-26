@@ -22,8 +22,9 @@ Reads source lines from files for editing, and reads non-code files.
 - Directory listings: `read(path="dir/")`
 
 **Do NOT use `read` for code understanding.** Use `mcp_rna_server_search` instead:
-- "What functions does this file have?" → `mcp_rna_server_search(file="X", compact=true)`
-- "What's the signature of X?" → `mcp_rna_server_search(query="X", compact=true)`
+- "What functions does this file have?" → `mcp_rna_server_search(file="X", compact=true, include_markdown=false)`
+- "What's the signature of X?" → `mcp_rna_server_search(query="X", compact=true, include_markdown=false)`
+- "How does function X work?" → `mcp_rna_server_search(node="<id>", include_body=true, minify_body=true)`
 - "What calls X?" → `mcp_rna_server_search(node="<id>", mode="neighbors", direction="incoming")`
 - "Show me the codebase" → `mcp_rna_server_repo_map`
 </when-to-use>

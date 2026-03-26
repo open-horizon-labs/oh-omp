@@ -350,7 +350,7 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 		if (name === "todo_write") return false; // Replaced by todo/todos tools — kept for upstream sync
 		if (name === "todo" || name === "todos") return session.settings.get("todo.enabled");
 		if (name === "find") return session.settings.get("find.enabled");
-		if (name === "grep") return false; // RNA experiment: force mcp_rna_server_search instead
+		if (name === "grep") return session.settings.get("grep.enabled"); // RNA experiment: grep wired through RNA first, ripgrep fallthrough
 		if (name === "ast_grep") return session.settings.get("astGrep.enabled");
 		if (name === "ast_edit") return session.settings.get("astEdit.enabled");
 		if (name === "render_mermaid") return session.settings.get("renderMermaid.enabled");

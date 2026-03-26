@@ -28,6 +28,39 @@ import { formatCount, formatEmptyMessage, formatErrorMessage, PREVIEW_LIMITS } f
 import { ToolError } from "./tool-errors";
 import { toolResult } from "./tool-result";
 
+// RNA experiment: identifier pattern heuristic — no regex metacharacters
+const REGEX_META = /[\\.*+?^${}()|[\]]/;
+const looksLikeIdentifier = (pattern: string): boolean => !REGEX_META.test(pattern) && /^[\w.#:/<>@-]+$/.test(pattern);
+
+// RNA experiment: call RNA CLI for structural search, return raw stdout or null
+async function tryRnaSearch(pattern: string, cwd: string, fileFilter?: string): Promise<string | null> {
+	try {
+		const args = ["search", pattern, "--compact", "--search-mode", "keyword", "--limit", "20", "--repo", cwd];
+		if (fileFilter) {
+			args.push("--file", fileFilter);
+		}
+		const proc = Bun.spawn(["repo-native-alignment", ...args], {
+			cwd,
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		const stdout = await new Response(proc.stdout).text();
+		const exitCode = await proc.exited;
+		if (exitCode !== 0 || !stdout.trim()) return null;
+		// Filter out markdown section results — keep only lines that look like code symbols
+		// RNA compact output for code: "  fn_name  kind  file:L1-L2  cc:N  edges:N"
+		// RNA compact output for markdown: "  ## Section Name  markdown  file  section"
+		const lines = stdout.split("\n");
+		const filtered = lines.filter(
+			line => !line.includes("markdown") || line.includes("function") || line.includes("trait"),
+		);
+		const result = filtered.join("\n").trim();
+		return result || null;
+	} catch {
+		return null; // RNA not available, fall through to ripgrep
+	}
+}
+
 const grepSchema = Type.Object({
 	pattern: Type.String({ description: "Regex pattern to search for" }),
 	path: Type.Optional(Type.String({ description: "File or directory to search (default: cwd)" })),
@@ -165,6 +198,21 @@ export class GrepTool implements AgentTool<typeof grepSchema, GrepToolDetails> {
 			const effectiveOutputMode = "content";
 			const effectiveLimit = normalizedLimit ?? DEFAULT_MATCH_LIMIT;
 			const internalLimit = Math.min(effectiveLimit * 5, 2000);
+
+			// RNA experiment: try structural search first for identifier-like patterns
+			if (looksLikeIdentifier(normalizedPattern)) {
+				const rnaResult = await tryRnaSearch(normalizedPattern, this.session.cwd, searchDir?.trim() || undefined);
+				if (rnaResult) {
+					const details: GrepToolDetails = {
+						scopePath,
+						matchCount: rnaResult.split("\n").filter(l => l.trim()).length,
+						fileCount: 0,
+						files: [],
+						truncated: false,
+					};
+					return toolResult(details).text(`[RNA structural search]\n${rnaResult}`).done();
+				}
+			}
 
 			// Run grep
 			let result: GrepResult;

@@ -20,7 +20,7 @@ import type { TextContent, ToolResultMessage } from "@oh-my-pi/pi-ai";
 import { logger } from "@oh-my-pi/pi-utils";
 import { parseMCPToolName } from "../../mcp/tool-bridge";
 import type { MemoryAssemblyBudget, MemoryLocatorEntry } from "../memory-contract";
-import type { BudgetDerivationInput, CodecContext, ContentCodec } from "./types";
+import type { BudgetDerivationInput, CodecContext, ContentCodec, FileReadEntry } from "./types";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Token estimation & budget derivation
@@ -394,12 +394,71 @@ interface ContentReplacementResult {
 	codecUsed: boolean;
 }
 
+/** Read tool names for history tracking. */
+const READ_TOOL_NAMES_SET = new Set(["proxy_read", "read"]);
+
+/**
+ * Update the read history after processing a tool result.
+ * Only tracks file reads (proxy_read/read). Uses Bun.hash for fast content identity.
+ */
+function updateReadHistory(
+	history: Map<string, FileReadEntry>,
+	msg: ToolResultMessage,
+	locator: MemoryLocatorEntry | undefined,
+	turnIndex: number,
+): void {
+	const toolName = msg.toolName;
+	if (!toolName) return;
+	const baseName = toolName.replace(/^proxy_/, "");
+	if (!READ_TOOL_NAMES_SET.has(baseName) && !READ_TOOL_NAMES_SET.has(toolName)) return;
+
+	const filePath = locator?.where;
+	if (!filePath) return;
+
+	// Extract text content for hashing
+	const content = msg.content;
+	let text = "";
+	if (typeof content === "string") {
+		text = content;
+	} else if (Array.isArray(content)) {
+		for (const block of content) {
+			if (typeof block === "string") text += block;
+			else if (block && typeof block === "object" && "type" in block && block.type === "text" && "text" in block)
+				text += block.text;
+		}
+	}
+	if (!text) return;
+
+	history.set(filePath, { turnIndex, contentHash: Bun.hash(text) as number });
+}
+
+/**
+ * Update read history from a turn's messages without modifying content.
+ * Used for hot-window turns that are kept verbatim but whose reads
+ * should be tracked for dedup detection in future transform passes.
+ */
+function updateReadHistoryForTurn(
+	turn: Turn,
+	history: Map<string, FileReadEntry>,
+	turnIndex: number,
+	resolveLocator?: (msg: ToolResultMessage) => MemoryLocatorEntry | undefined,
+): void {
+	for (const msg of turn.messages) {
+		if (msg.role !== "toolResult") continue;
+		const locator = resolveLocator?.(msg);
+		updateReadHistory(history, msg, locator, turnIndex);
+	}
+}
+
 /**
  * Replace tool_result content in a turn, trying codecs first.
  *
  * For each tool_result message:
  *   1. Try codecs in registry order. First match + successful encode wins.
  *   2. If no codec matches, fall back to the default stub.
+ *
+ * After processing, updates `readHistory` with any file reads found in this turn
+ * (for dedup detection in subsequent turns).
  *
  * Returns the replacement turn and whether any codec was used.
  */
@@ -408,6 +467,7 @@ function replaceToolResultContent(
 	options: Pick<MessageTransformOptions, "resolveToolResultStub" | "codecs" | "resolveLocator">,
 	sourceTags: string[],
 	turnIndex: number,
+	readHistory: Map<string, FileReadEntry>,
 ): ContentReplacementResult {
 	if (!turn.hasToolResults) return { turn, codecUsed: false };
 
@@ -424,30 +484,33 @@ function replaceToolResultContent(
 			locator,
 			toolName: msg.toolName,
 			turnIndex,
+			readHistory,
 		};
 
 		// Try codecs first
+		let result: ToolResultMessage | undefined;
 		if (codecs.length > 0) {
 			const encoded = tryCodecEncode(msg, codecs, ctx);
 			if (encoded) {
 				codecUsed = true;
-				return {
-					...msg,
-					content: encoded,
-					details: undefined,
-				} as ToolResultMessage;
+				result = { ...msg, content: encoded, details: undefined } as ToolResultMessage;
 			}
 		}
 
 		// Fall back to stub
-		const pointer = options.resolveToolResultStub?.(msg) ?? null;
-		const stubText = formatStubText(sourceTags, pointer, msg.toolName);
-		const stubContent: TextContent[] = [{ type: "text", text: stubText }];
-		return {
-			...msg,
-			content: stubContent,
-			details: undefined,
-		} as ToolResultMessage;
+		if (!result) {
+			const pointer = options.resolveToolResultStub?.(msg) ?? null;
+			const stubText = formatStubText(sourceTags, pointer, msg.toolName);
+			const stubContent: TextContent[] = [{ type: "text", text: stubText }];
+			result = { ...msg, content: stubContent, details: undefined } as ToolResultMessage;
+		}
+
+		// Update read history for dedup detection in subsequent turns.
+		// Track all reads (even those that were dedup'd or stubbed) so future
+		// turns can detect unchanged content.
+		updateReadHistory(readHistory, msg, locator, turnIndex);
+
+		return result;
 	});
 
 	return {
@@ -548,13 +611,22 @@ export function transformMessages(messages: AgentMessage[], options: MessageTran
 	const originalTokens = originalTurns.map(estimateTurnTokens);
 
 	// 2. Apply content replacement beyond hot window (codec-aware)
+	//    Build read history incrementally for dedup detection across turns.
 	const hotWindowStart = Math.max(0, totalTurns - hotWindowTurns);
+	const readHistory = new Map<string, FileReadEntry>();
 
-	const replacementResults: ContentReplacementResult[] = originalTurns.map((turn, idx) => {
-		if (idx >= hotWindowStart) return { turn, codecUsed: false }; // hot window: keep verbatim
-		const tags = extractSourceTags(turn.messages);
-		return replaceToolResultContent(turn, options, tags, idx);
-	});
+	const replacementResults: ContentReplacementResult[] = [];
+	for (let idx = 0; idx < totalTurns; idx++) {
+		const turn = originalTurns[idx];
+		if (idx >= hotWindowStart) {
+			// Hot window: keep verbatim, but still update history for future passes.
+			updateReadHistoryForTurn(turn, readHistory, idx, options.resolveLocator);
+			replacementResults.push({ turn, codecUsed: false });
+		} else {
+			const tags = extractSourceTags(turn.messages);
+			replacementResults.push(replaceToolResultContent(turn, options, tags, idx, readHistory));
+		}
+	}
 
 	const transformedTurns = replacementResults.map(r => r.turn);
 

@@ -390,7 +390,14 @@ preserving anchors. Model retains declaration structure + edit capability withou
 Pattern-match on hashline content for TS/JS declaration forms.
 3-5x compression on typical source reads. No external dependencies.
 
-### Phase 3: Dedup Detection — TODO
+### Phase 3: Dedup Detection
+**Solution:** Dedup-as-codec with read history in CodecContext.
+Pass `readHistory: Map<filePath, {turnIndex, contentHash}>` through CodecContext.
+Dedup codec runs before read-codec. Same file + same hash → `[unchanged since T{n}:read:path]`.
+Different hash → fall through to read-codec (fresh skeleton).
+Codecs stay stateless; history built by the transform loop and passed in.
+~4K tokens/session savings on re-reads.
+
 ### Phase 4: Additional Codecs (grep, bash, lsp, config) — TODO
 
 

@@ -45,6 +45,14 @@ export interface BudgetDerivationInput {
 	hydrationBudgetPercent?: number;
 }
 
+/** Entry in the per-file read history, tracking content identity across turns. */
+export interface FileReadEntry {
+	/** Turn index where this file was first read (or last changed). */
+	turnIndex: number;
+	/** Hash of the tool result content for identity comparison. */
+	contentHash: number;
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Content codecs for signal-only context compression
 // ═══════════════════════════════════════════════════════════════════════════
@@ -67,6 +75,12 @@ export interface CodecContext {
 	toolName?: string;
 	/** Index of this turn in the conversation (0-based). */
 	turnIndex: number;
+	/**
+	 * History of file reads processed so far in this transform pass.
+	 * Keyed by file path → { turnIndex where first seen, content hash }.
+	 * Built incrementally by the transform loop; codecs read but do not mutate.
+	 */
+	readHistory?: ReadonlyMap<string, FileReadEntry>;
 }
 
 /**

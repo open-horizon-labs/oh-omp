@@ -359,6 +359,33 @@ Metadata: `MemoryLocatorEntry` carries provenance, params, recipe.
 5. **Dedup** → **In `replaceToolResultContent`, before codec dispatch.** Same path + same fileHash as prior turn → `[unchanged:T{n}:read:path]`. Skip codec entirely.
 
 
+## Execute
+**Updated:** 2025-07-12
+**Status:** in-progress
+
+### Phase 1: Codec Infrastructure — SHIPPED ✓
+Commit: `a39687e87` on `experiment/rna-replaces-tools`
+
+- `ContentCodec` interface + `CodecContext` type in `types.ts`
+- `codecs[]` + `resolveLocator` added to `MessageTransformOptions`
+- `replaceToolResultContent` refactored: tries codecs before stub fallback
+- `"compressed"` added to `TurnDecisionAction`, `compressedCount` to `TransformMetadata`
+- All consumers updated: assembly-summary, prompt-inspector, RPC types, 5 test files
+- Zero behavior change when no codecs registered
+
+### Phase 2: Read Codec — SHIPPED ✓
+Commit: `dac1fcf41` on `experiment/rna-replaces-tools`
+
+- `readCodec` in `codecs/read-codec.ts`: handles `proxy_read`/`read` tool results
+- RNA structural views preserved as-is with `[warm:read:path]` marker
+- Source reads compressed to `[warm:read:path | lines X-Y of Z]`
+- `getLocatorEntry()` added to `ContextBridge`
+- Wired into `sdk.ts` transformMessages call
+
+### Phase 3: Dedup Detection — TODO
+### Phase 4: Additional Codecs (grep, bash, lsp, config) — TODO
+
+
 ## Solution Space
 **Updated:** 2026-03-26
 

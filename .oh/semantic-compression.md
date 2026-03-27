@@ -382,6 +382,14 @@ Commit: `dac1fcf41` on `experiment/rna-replaces-tools`
 - `getLocatorEntry()` added to `ContextBridge`
 - Wired into `sdk.ts` transformMessages call
 
+
+### Phase 2b: Anchor-Aware Skeleton for Source Reads
+**Solution:** Option D from solution space analysis.
+Extract structural lines (declarations, scope boundaries) from hashline-formatted source reads,
+preserving anchors. Model retains declaration structure + edit capability without full source.
+Pattern-match on hashline content for TS/JS declaration forms.
+3-5x compression on typical source reads. No external dependencies.
+
 ### Phase 3: Dedup Detection — TODO
 ### Phase 4: Additional Codecs (grep, bash, lsp, config) — TODO
 

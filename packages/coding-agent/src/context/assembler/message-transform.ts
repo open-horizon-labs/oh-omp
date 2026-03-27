@@ -19,8 +19,8 @@ import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { TextContent, ToolResultMessage } from "@oh-my-pi/pi-ai";
 import { logger } from "@oh-my-pi/pi-utils";
 import { parseMCPToolName } from "../../mcp/tool-bridge";
-import type { MemoryAssemblyBudget } from "../memory-contract";
-import type { BudgetDerivationInput } from "./types";
+import type { MemoryAssemblyBudget, MemoryLocatorEntry } from "../memory-contract";
+import type { BudgetDerivationInput, CodecContext, ContentCodec } from "./types";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Token estimation & budget derivation
@@ -161,6 +161,20 @@ export interface MessageTransformOptions {
 	resolveToolResultStub?: (message: ToolResultMessage) => ToolResultStubPointer | null;
 
 	/**
+	 * Ordered content codec registry. Codecs are tried in order; first match wins.
+	 * When a codec matches and produces content, that replaces the tool result
+	 * instead of a stub. If no codec matches or encode returns null, the default
+	 * stub is used.
+	 */
+	codecs?: ContentCodec[];
+
+	/**
+	 * Resolve locator metadata for a tool result message.
+	 * Used to provide codec context (file path, params, etc).
+	 */
+	resolveLocator?: (message: ToolResultMessage) => MemoryLocatorEntry | undefined;
+
+	/**
 	 * Maximum token budget for the output message array.
 	 * When set, oldest turns are dropped (as complete groups) until
 	 * the estimated token count fits. Omit to skip budget bounding.
@@ -179,7 +193,7 @@ export interface MessageTransformOptions {
  * - `stubbed` — Turn included but tool_result content replaced with stubs.
  * - `dropped` — Turn removed entirely to fit the token budget.
  */
-export type TurnDecisionAction = "kept" | "stubbed" | "dropped";
+export type TurnDecisionAction = "kept" | "stubbed" | "compressed" | "dropped";
 
 /**
  * Structured metadata for a single turn's transformation outcome.
@@ -201,9 +215,10 @@ export interface TurnDecision {
 	 *   - `"hot-window"`       — within the hot window, kept verbatim.
 	 *   - `"no-tool-results"`   — beyond hot window but no tool results to stub.
 	 *   - `"beyond-hot-window"` — tool results replaced with stubs.
+	 *   - `"codec-compressed"`  — tool results replaced with codec warm representation.
 	 *   - `"budget-exceeded"`   — dropped to fit the token budget.
 	 */
-	reason: "hot-window" | "no-tool-results" | "beyond-hot-window" | "budget-exceeded";
+	reason: "hot-window" | "no-tool-results" | "beyond-hot-window" | "codec-compressed" | "budget-exceeded";
 
 	/** Number of messages in this turn. */
 	messageCount: number;
@@ -239,6 +254,9 @@ export interface TransformMetadata {
 
 	/** Number of turns with tool results stubbed. */
 	stubbedCount: number;
+
+	/** Number of turns with tool results replaced by codec warm representations. */
+	compressedCount: number;
 
 	/** Number of turns dropped for budget. */
 	droppedCount: number;
@@ -350,25 +368,78 @@ export function segmentIntoTurns(messages: AgentMessage[]): Turn[] {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Content replacement
+// Content replacement (codec-aware)
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * Replace tool_result content with a stub in a turn's messages.
+ * Try to encode a tool result message using the codec registry.
+ * Returns the encoded content if a codec matched and produced output, null otherwise.
+ */
+function tryCodecEncode(msg: ToolResultMessage, codecs: ContentCodec[], ctx: CodecContext): TextContent[] | null {
+	for (const codec of codecs) {
+		if (codec.matches(msg, ctx)) {
+			const encoded = codec.encode(msg, ctx);
+			if (encoded) return encoded;
+		}
+	}
+	return null;
+}
+
+/**
+ * Result of content replacement for a single turn.
+ * Tracks whether any message was compressed via a codec.
+ */
+interface ContentReplacementResult {
+	turn: Turn;
+	codecUsed: boolean;
+}
+
+/**
+ * Replace tool_result content in a turn, trying codecs first.
  *
- * Returns a new array of messages with tool_result content replaced.
- * Assistant messages and other message types are passed through unchanged.
+ * For each tool_result message:
+ *   1. Try codecs in registry order. First match + successful encode wins.
+ *   2. If no codec matches, fall back to the default stub.
+ *
+ * Returns the replacement turn and whether any codec was used.
  */
 function replaceToolResultContent(
 	turn: Turn,
-	options: Pick<MessageTransformOptions, "resolveToolResultStub">,
-	sourceTags?: string[],
-): Turn {
-	if (!turn.hasToolResults) return turn;
+	options: Pick<MessageTransformOptions, "resolveToolResultStub" | "codecs" | "resolveLocator">,
+	sourceTags: string[],
+	turnIndex: number,
+): ContentReplacementResult {
+	if (!turn.hasToolResults) return { turn, codecUsed: false };
+
+	const codecs = options.codecs ?? [];
+	let codecUsed = false;
 
 	const replaced = turn.messages.map((msg): AgentMessage => {
 		if (msg.role !== "toolResult") return msg;
 
+		// Build codec context for this message
+		const locator = options.resolveLocator?.(msg);
+		const ctx: CodecContext = {
+			sourceTags,
+			locator,
+			toolName: msg.toolName,
+			turnIndex,
+		};
+
+		// Try codecs first
+		if (codecs.length > 0) {
+			const encoded = tryCodecEncode(msg, codecs, ctx);
+			if (encoded) {
+				codecUsed = true;
+				return {
+					...msg,
+					content: encoded,
+					details: undefined,
+				} as ToolResultMessage;
+			}
+		}
+
+		// Fall back to stub
 		const pointer = options.resolveToolResultStub?.(msg) ?? null;
 		const stubText = formatStubText(sourceTags, pointer, msg.toolName);
 		const stubContent: TextContent[] = [{ type: "text", text: stubText }];
@@ -379,7 +450,10 @@ function replaceToolResultContent(
 		} as ToolResultMessage;
 	});
 
-	return { messages: replaced, hasToolResults: turn.hasToolResults };
+	return {
+		turn: { messages: replaced, hasToolResults: turn.hasToolResults },
+		codecUsed,
+	};
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -456,6 +530,7 @@ export function transformMessages(messages: AgentMessage[], options: MessageTran
 				totalTurns: 0,
 				keptCount: 0,
 				stubbedCount: 0,
+				compressedCount: 0,
 				droppedCount: 0,
 				tokensBefore: 0,
 				tokensAfter: 0,
@@ -472,14 +547,16 @@ export function transformMessages(messages: AgentMessage[], options: MessageTran
 	// Pre-compute original token costs per turn
 	const originalTokens = originalTurns.map(estimateTurnTokens);
 
-	// 2. Apply content replacement beyond hot window
+	// 2. Apply content replacement beyond hot window (codec-aware)
 	const hotWindowStart = Math.max(0, totalTurns - hotWindowTurns);
 
-	const transformedTurns = originalTurns.map((turn, idx) => {
-		if (idx >= hotWindowStart) return turn; // hot window: keep verbatim
+	const replacementResults: ContentReplacementResult[] = originalTurns.map((turn, idx) => {
+		if (idx >= hotWindowStart) return { turn, codecUsed: false }; // hot window: keep verbatim
 		const tags = extractSourceTags(turn.messages);
-		return replaceToolResultContent(turn, options, tags);
+		return replaceToolResultContent(turn, options, tags, idx);
 	});
+
+	const transformedTurns = replacementResults.map(r => r.turn);
 
 	// Pre-compute transformed token costs (only differs from original for stubbed turns)
 	const transformedTokens = transformedTurns.map(estimateTurnTokens);
@@ -512,6 +589,7 @@ export function transformMessages(messages: AgentMessage[], options: MessageTran
 	const decisions: TurnDecision[] = [];
 	let keptCount = 0;
 	let stubbedCount = 0;
+	let compressedCount = 0;
 	let droppedCount = 0;
 	let totalTokensBefore = 0;
 	let totalTokensAfter = 0;
@@ -550,12 +628,13 @@ export function transformMessages(messages: AgentMessage[], options: MessageTran
 			totalTokensAfter += tokensBefore;
 			keptCount++;
 		} else if (originalTurns[i].hasToolResults) {
-			// Beyond hot window with tool results: stubbed
+			// Beyond hot window with tool results: compressed or stubbed
 			const tokensAfter = transformedTokens[i];
+			const wasCompressed = replacementResults[i].codecUsed;
 			decisions.push({
 				turnIndex: i,
-				action: "stubbed",
-				reason: "beyond-hot-window",
+				action: wasCompressed ? "compressed" : "stubbed",
+				reason: wasCompressed ? "codec-compressed" : "beyond-hot-window",
 				messageCount: originalTurns[i].messages.length,
 				hasToolResults: true,
 				tokensBefore,
@@ -563,7 +642,8 @@ export function transformMessages(messages: AgentMessage[], options: MessageTran
 				sourceTags,
 			});
 			totalTokensAfter += tokensAfter;
-			stubbedCount++;
+			if (wasCompressed) compressedCount++;
+			else stubbedCount++;
 		} else {
 			// Beyond hot window, no tool results: kept as-is
 			decisions.push({
@@ -592,6 +672,7 @@ export function transformMessages(messages: AgentMessage[], options: MessageTran
 			totalTurns,
 			keptCount,
 			stubbedCount,
+			compressedCount,
 			droppedCount,
 			tokensBefore: totalTokensBefore,
 			tokensAfter: totalTokensAfter,

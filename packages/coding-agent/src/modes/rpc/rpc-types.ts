@@ -313,13 +313,14 @@ export interface RpcPromptDecisionReport {
 		totalTurns: number;
 		keptCount: number;
 		stubbedCount: number;
+		compressedCount: number;
 		droppedCount: number;
 		tokensBefore: number;
 		tokensAfter: number;
 	} | null;
 	decisions: Array<{
 		turnIndex: number;
-		action: "kept" | "stubbed" | "dropped";
+		action: "kept" | "stubbed" | "compressed" | "dropped";
 		reason: string;
 		messageCount: number;
 		hasToolResults: boolean;

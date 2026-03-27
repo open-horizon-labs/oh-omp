@@ -195,6 +195,7 @@ export function buildPromptDecisionReport(
 			totalTurns: metadata.totalTurns,
 			keptCount: metadata.keptCount,
 			stubbedCount: metadata.stubbedCount,
+			compressedCount: metadata.compressedCount,
 			droppedCount: metadata.droppedCount,
 			tokensBefore: metadata.tokensBefore,
 			tokensAfter: metadata.tokensAfter,

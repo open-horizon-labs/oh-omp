@@ -231,6 +231,7 @@ function projectMessagesSection(snapshot: EffectivePromptSnapshot): InspectorSec
 		? {
 				included: meta.keptCount,
 				stubbed: meta.stubbedCount,
+				compressed: meta.compressedCount,
 				dropped: meta.droppedCount,
 			}
 		: undefined;
@@ -240,6 +241,7 @@ function projectMessagesSection(snapshot: EffectivePromptSnapshot): InspectorSec
 		const parts: string[] = [];
 		if (meta.keptCount > 0) parts.push(`${meta.keptCount} kept`);
 		if (meta.stubbedCount > 0) parts.push(`${meta.stubbedCount} stubbed`);
+		if (meta.compressedCount > 0) parts.push(`${meta.compressedCount} compressed`);
 		if (meta.droppedCount > 0) parts.push(`${meta.droppedCount} dropped`);
 		summaryParts.push(parts.join(", "));
 	}
@@ -264,6 +266,10 @@ function projectMessagesSection(snapshot: EffectivePromptSnapshot): InspectorSec
 				if (meta.keptCount > 0) lines.push(`    ${theme.fg("success", `${meta.keptCount} kept verbatim`)}`);
 				if (meta.stubbedCount > 0)
 					lines.push(`    ${theme.fg("warning", `${meta.stubbedCount} stubbed (tool results replaced)`)}`);
+				if (meta.compressedCount > 0)
+					lines.push(
+						`    ${theme.fg("accent", `${meta.compressedCount} compressed (codec warm representations)`)}`,
+					);
 				if (meta.droppedCount > 0)
 					lines.push(`    ${theme.fg("error", `${meta.droppedCount} dropped (budget exceeded)`)}`);
 
@@ -487,6 +493,8 @@ function renderDecisionBadge(decision: TurnDecision): string {
 			return theme.fg("success", "kept");
 		case "stubbed":
 			return theme.fg("warning", "stubbed");
+		case "compressed":
+			return theme.fg("accent", "compressed");
 		case "dropped":
 			return theme.fg("error", "dropped");
 	}

@@ -103,6 +103,7 @@ function makeTransformMetadata(overrides?: Partial<TransformMetadata>): Transfor
 		totalTurns: 1,
 		keptCount: 1,
 		stubbedCount: 0,
+		compressedCount: 0,
 		droppedCount: 0,
 		tokensBefore: 50,
 		tokensAfter: 50,
@@ -371,6 +372,7 @@ describe("buildPromptDecisionReport", () => {
 			totalTurns: 3,
 			keptCount: 1,
 			stubbedCount: 1,
+			compressedCount: 0,
 			droppedCount: 1,
 			tokensBefore: 300,
 			tokensAfter: 150,
@@ -389,6 +391,7 @@ describe("buildPromptDecisionReport", () => {
 			totalTurns: 3,
 			keptCount: 1,
 			stubbedCount: 1,
+			compressedCount: 0,
 			droppedCount: 1,
 			tokensBefore: 300,
 			tokensAfter: 150,
@@ -410,6 +413,7 @@ describe("buildPromptDecisionReport", () => {
 			totalTurns: 4,
 			keptCount: 2,
 			stubbedCount: 1,
+			compressedCount: 0,
 			droppedCount: 1,
 		});
 		const snapshot = makeSnapshot({
@@ -495,6 +499,7 @@ describe("buildPromptDecisionReport", () => {
 			],
 			totalTurns: 6,
 			stubbedCount: 1,
+			compressedCount: 0,
 		});
 		const snapshot = makeSnapshot({
 			messages: {

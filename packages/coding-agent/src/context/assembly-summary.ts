@@ -42,6 +42,9 @@ export function formatAssemblySummary(snapshot: EffectivePromptSnapshot): string
 			const range = describeStubbedRange(meta.decisions);
 			turnParts.push(range ? `${meta.stubbedCount} stubbed (${range})` : `${meta.stubbedCount} stubbed`);
 		}
+		if (meta.compressedCount > 0) {
+			turnParts.push(`${meta.compressedCount} compressed`);
+		}
 		if (meta.droppedCount > 0) turnParts.push(`${meta.droppedCount} dropped`);
 		parts.push(turnParts.join(", "));
 	}

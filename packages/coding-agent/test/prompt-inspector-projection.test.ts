@@ -107,6 +107,7 @@ function makeTransformMetadata(overrides?: Partial<TransformMetadata>): Transfor
 		totalTurns: 1,
 		keptCount: 1,
 		stubbedCount: 0,
+		compressedCount: 0,
 		droppedCount: 0,
 		tokensBefore: 50,
 		tokensAfter: 50,
@@ -351,6 +352,7 @@ describe("projectSnapshot", () => {
 			transformMetadata: makeTransformMetadata({
 				keptCount: 3,
 				stubbedCount: 2,
+				compressedCount: 0,
 				droppedCount: 1,
 			}),
 		});
@@ -528,6 +530,7 @@ describe("projection edge cases", () => {
 			transformMetadata: makeTransformMetadata({
 				keptCount: 3,
 				stubbedCount: 0,
+				compressedCount: 0,
 				droppedCount: 0,
 				decisions: [
 					{

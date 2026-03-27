@@ -191,6 +191,7 @@ describe("transformMessages — hot window", () => {
 		expect(result.metadata.decisions).toEqual([]);
 		expect(result.metadata.keptCount).toBe(0);
 		expect(result.metadata.stubbedCount).toBe(0);
+		expect(result.metadata.compressedCount).toBe(0);
 		expect(result.metadata.droppedCount).toBe(0);
 		expect(result.metadata.tokensBefore).toBe(0);
 		expect(result.metadata.tokensAfter).toBe(0);
@@ -598,6 +599,7 @@ describe("transformMessages — decision metadata", () => {
 		expect(metadata.totalTurns).toBe(2);
 		expect(metadata.keptCount).toBe(2);
 		expect(metadata.stubbedCount).toBe(0);
+		expect(metadata.compressedCount).toBe(0);
 		expect(metadata.droppedCount).toBe(0);
 
 		for (const decision of metadata.decisions) {
@@ -639,6 +641,7 @@ describe("transformMessages — decision metadata", () => {
 		}
 
 		expect(metadata.stubbedCount).toBe(1);
+		expect(metadata.compressedCount).toBe(0);
 		expect(metadata.keptCount).toBe(4);
 	});
 
@@ -746,7 +749,9 @@ describe("transformMessages — decision metadata", () => {
 
 		const { metadata } = transformMessages(messages, { maxTokens: 400, hotWindowTurns: 1 });
 
-		expect(metadata.keptCount + metadata.stubbedCount + metadata.droppedCount).toBe(metadata.totalTurns);
+		expect(metadata.keptCount + metadata.stubbedCount + metadata.compressedCount + metadata.droppedCount).toBe(
+			metadata.totalTurns,
+		);
 	});
 
 	test("no-tool-results reason for non-tool turns beyond hot window", () => {

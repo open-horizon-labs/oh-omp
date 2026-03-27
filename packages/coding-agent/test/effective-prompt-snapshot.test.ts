@@ -93,6 +93,7 @@ function makeTransformMetadata(overrides?: Partial<TransformMetadata>): Transfor
 		totalTurns: 1,
 		keptCount: 1,
 		stubbedCount: 0,
+		compressedCount: 0,
 		droppedCount: 0,
 		tokensBefore: 50,
 		tokensAfter: 50,
@@ -253,6 +254,7 @@ describe("captureEffectivePromptSnapshot", () => {
 			totalTurns: 5,
 			keptCount: 3,
 			stubbedCount: 1,
+			compressedCount: 0,
 			droppedCount: 1,
 		});
 		const input = makeInput({ transformMetadata: metadata });
@@ -343,6 +345,7 @@ describe("captureEffectivePromptSnapshot", () => {
 			totalTurns: 10,
 			keptCount: 3,
 			stubbedCount: 5,
+			compressedCount: 0,
 			droppedCount: 2,
 			tokensBefore: 50_000,
 			tokensAfter: 20_000,

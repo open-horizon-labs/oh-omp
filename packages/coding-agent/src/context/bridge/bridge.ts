@@ -103,6 +103,16 @@ export class ToolResultBridge {
 		return { text: `[ref:${toolName}]` };
 	}
 
+	getLocatorEntry(toolName: string | undefined, toolCallId: string | undefined): MemoryLocatorEntry | undefined {
+		if (!toolName || !toolCallId) return undefined;
+		const key = `${toolName}:${toolCallId}`;
+		for (let i = this.#contract.locatorMap.length - 1; i >= 0; i--) {
+			const locator = this.#contract.locatorMap[i];
+			if (locator?.key === key) return locator;
+		}
+		return undefined;
+	}
+
 	/**
 	 * Rebuild working memory from current STM state.
 	 *

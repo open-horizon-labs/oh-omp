@@ -72,6 +72,8 @@ export interface CodecContext {
 	toolName?: string;
 	/** File path extracted from the tool call's input arguments. */
 	toolCallPath?: string;
+	/** Full arguments from the tool call's input (for arg extraction by codecs). */
+	toolCallArgs: Record<string, unknown>;
 	/** Index of this turn in the conversation (0-based). */
 	turnIndex: number;
 	/**

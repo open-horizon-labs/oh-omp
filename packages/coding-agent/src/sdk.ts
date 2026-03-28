@@ -35,7 +35,7 @@ import {
 	type TransformMetadata,
 	transformMessages,
 } from "./context/assembler";
-import { dedupCodec, readCodec } from "./context/assembler/codecs";
+import { dedupCodec, readCodec, warmCodec } from "./context/assembler/codecs";
 import { formatAssemblySummary } from "./context/assembly-summary";
 import { ToolResultBridge } from "./context/bridge";
 import { captureEffectivePromptSnapshot, type EffectivePromptSnapshot } from "./context/effective-prompt-snapshot";
@@ -1602,7 +1602,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		const resolveToolResultStub = (message: { toolName?: string; toolCallId?: string }) =>
 			assemblerBridge.getToolResultStubPointer(message.toolName, message.toolCallId);
 
-		const codecs = [dedupCodec, readCodec]; // Order matters: dedup checks first
+		const codecs = [dedupCodec, readCodec, warmCodec]; // Order matters: dedup → read → warm (catch-all)
 
 		const assemblerTransform = async (messages: AgentMessage[]): Promise<AgentMessage[]> => {
 			// Derive budget from current model context window and measured costs.

@@ -382,21 +382,26 @@ function tryCodecEncode(msg: ToolResultMessage, codecs: ContentCodec[], ctx: Cod
 }
 
 /**
- * Extract the `path` argument from the tool_use block that matches a tool result.
- * Walks the turn's assistant messages to find the tool call by ID.
+ * Extract tool call info (path + full arguments) from the tool_use block
+ * that matches a tool result. Walks the turn's assistant messages.
  */
-function extractToolCallPath(turn: Turn, toolCallId: string | undefined): string | undefined {
-	if (!toolCallId) return undefined;
+function extractToolCallInfo(
+	turn: Turn,
+	toolCallId: string | undefined,
+): { path?: string; args: Record<string, unknown> } {
+	const empty = { args: {} };
+	if (!toolCallId) return empty;
 	for (const msg of turn.messages) {
 		if (msg.role !== "assistant" || !Array.isArray(msg.content)) continue;
 		for (const block of msg.content) {
 			if (block.type === "toolCall" && block.id === toolCallId) {
-				const args = block.arguments as Record<string, unknown> | undefined;
-				if (args && typeof args.path === "string") return args.path;
+				const args = (block.arguments as Record<string, unknown> | undefined) ?? {};
+				const path = typeof args.path === "string" ? args.path : undefined;
+				return { path, args };
 			}
 		}
 	}
-	return undefined;
+	return empty;
 }
 
 /**
@@ -444,7 +449,7 @@ function updateReadHistory(
 function updateReadHistoryForTurn(turn: Turn, history: Map<string, FileReadEntry>, turnIndex: number): void {
 	for (const msg of turn.messages) {
 		if (msg.role !== "toolResult") continue;
-		const toolCallPath = extractToolCallPath(turn, msg.toolCallId);
+		const { path: toolCallPath } = extractToolCallInfo(turn, msg.toolCallId);
 		updateReadHistory(history, msg, turnIndex, toolCallPath);
 	}
 }
@@ -477,11 +482,12 @@ function replaceToolResultContent(
 		if (msg.role !== "toolResult") return msg;
 
 		// Build codec context for this message
-		const toolCallPath = extractToolCallPath(turn, msg.toolCallId);
+		const { path: toolCallPath, args: toolCallArgs } = extractToolCallInfo(turn, msg.toolCallId);
 		const ctx: CodecContext = {
 			sourceTags,
 			toolName: msg.toolName,
 			toolCallPath,
+			toolCallArgs,
 			turnIndex,
 			readHistory,
 		};

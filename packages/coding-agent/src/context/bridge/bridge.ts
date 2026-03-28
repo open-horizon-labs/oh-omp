@@ -103,22 +103,6 @@ export class ToolResultBridge {
 		return { text: `[ref:${toolName}]` };
 	}
 
-	getLocatorEntry(toolName: string | undefined, toolCallId: string | undefined): MemoryLocatorEntry | undefined {
-		if (!toolName || !toolCallId) return undefined;
-		const key = `${toolName}:${toolCallId}`;
-		for (let i = this.#contract.locatorMap.length - 1; i >= 0; i--) {
-			const locator = this.#contract.locatorMap[i];
-			if (locator?.key === key) return locator;
-		}
-		logger.debug(
-			`[locator] miss: key=${key} mapSize=${this.#contract.locatorMap.length} sampleKeys=${this.#contract.locatorMap
-				.slice(-3)
-				.map(l => l.key)
-				.join(", ")}`,
-		);
-		return undefined;
-	}
-
 	/**
 	 * Rebuild working memory from current STM state.
 	 *

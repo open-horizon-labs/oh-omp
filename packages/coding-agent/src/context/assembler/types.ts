@@ -58,19 +58,16 @@ export interface FileReadEntry {
 // ═══════════════════════════════════════════════════════════════════════════
 
 import type { TextContent, ToolResultMessage } from "@oh-my-pi/pi-ai";
-import type { MemoryLocatorEntry } from "../memory-contract";
 
 /**
  * Metadata passed to content codecs during the encoding phase.
  *
  * Carries provenance tags (what tool produced this result) and the
- * optional locator entry (where the original content is stored).
+ * file path extracted from tool call arguments.
  */
 export interface CodecContext {
 	/** Source provenance tags for this turn (e.g. "tool:read", "mcp:rna-server"). */
 	sourceTags: string[];
-	/** Locator metadata for the tool result, if available. */
-	locator?: MemoryLocatorEntry;
 	/** Tool name from the original tool result message. */
 	toolName?: string;
 	/** File path extracted from the tool call's input arguments. */

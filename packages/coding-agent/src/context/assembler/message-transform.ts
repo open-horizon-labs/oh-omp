@@ -19,7 +19,7 @@ import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { TextContent, ToolResultMessage } from "@oh-my-pi/pi-ai";
 import { logger } from "@oh-my-pi/pi-utils";
 import { parseMCPToolName } from "../../mcp/tool-bridge";
-import type { MemoryAssemblyBudget, MemoryLocatorEntry } from "../memory-contract";
+import type { MemoryAssemblyBudget } from "../memory-contract";
 import { contentHash, extractText, isReadTool } from "./codecs/shared";
 import type { BudgetDerivationInput, CodecContext, ContentCodec, FileReadEntry } from "./types";
 
@@ -168,12 +168,6 @@ export interface MessageTransformOptions {
 	 * stub is used.
 	 */
 	codecs?: ContentCodec[];
-
-	/**
-	 * Resolve locator metadata for a tool result message.
-	 * Used to provide codec context (file path, params, etc).
-	 */
-	resolveLocator?: (message: ToolResultMessage) => MemoryLocatorEntry | undefined;
 
 	/**
 	 * Maximum token budget for the output message array.
@@ -380,7 +374,7 @@ function tryCodecEncode(msg: ToolResultMessage, codecs: ContentCodec[], ctx: Cod
 	for (const codec of codecs) {
 		const matched = codec.matches(msg, ctx);
 		logger.debug(
-			`[codec] ${codec.name}: matches=${matched} toolName=${ctx.toolName} locator=${ctx.locator?.where ?? "none"}`,
+			`[codec] ${codec.name}: matches=${matched} toolName=${ctx.toolName} path=${ctx.toolCallPath ?? "none"}`,
 		);
 		if (matched) {
 			const encoded = codec.encode(msg, ctx);
@@ -425,13 +419,12 @@ interface ContentReplacementResult {
 function updateReadHistory(
 	history: Map<string, FileReadEntry>,
 	msg: ToolResultMessage,
-	locator: MemoryLocatorEntry | undefined,
 	turnIndex: number,
 	toolCallPath?: string,
 ): void {
 	if (!isReadTool(msg.toolName)) return;
 
-	const filePath = toolCallPath ?? locator?.where;
+	const filePath = toolCallPath;
 	if (!filePath) return;
 
 	const text = extractText(msg);
@@ -452,17 +445,11 @@ function updateReadHistory(
  * Used for hot-window turns that are kept verbatim but whose reads
  * should be tracked for dedup detection in future transform passes.
  */
-function updateReadHistoryForTurn(
-	turn: Turn,
-	history: Map<string, FileReadEntry>,
-	turnIndex: number,
-	resolveLocator?: (msg: ToolResultMessage) => MemoryLocatorEntry | undefined,
-): void {
+function updateReadHistoryForTurn(turn: Turn, history: Map<string, FileReadEntry>, turnIndex: number): void {
 	for (const msg of turn.messages) {
 		if (msg.role !== "toolResult") continue;
-		const locator = resolveLocator?.(msg);
 		const toolCallPath = extractToolCallPath(turn, msg.toolCallId);
-		updateReadHistory(history, msg, locator, turnIndex, toolCallPath);
+		updateReadHistory(history, msg, turnIndex, toolCallPath);
 	}
 }
 
@@ -480,7 +467,7 @@ function updateReadHistoryForTurn(
  */
 function replaceToolResultContent(
 	turn: Turn,
-	options: Pick<MessageTransformOptions, "resolveToolResultStub" | "codecs" | "resolveLocator">,
+	options: Pick<MessageTransformOptions, "resolveToolResultStub" | "codecs">,
 	sourceTags: string[],
 	turnIndex: number,
 	readHistory: Map<string, FileReadEntry>,
@@ -495,11 +482,9 @@ function replaceToolResultContent(
 		if (msg.role !== "toolResult") return msg;
 
 		// Build codec context for this message
-		const locator = options.resolveLocator?.(msg);
 		const toolCallPath = extractToolCallPath(turn, msg.toolCallId);
 		const ctx: CodecContext = {
 			sourceTags,
-			locator,
 			toolName: msg.toolName,
 			toolCallPath,
 			turnIndex,
@@ -527,7 +512,7 @@ function replaceToolResultContent(
 		// Update read history for dedup detection in subsequent turns.
 		// Track all reads (even those that were dedup'd or stubbed) so future
 		// turns can detect unchanged content.
-		updateReadHistory(readHistory, msg, locator, turnIndex, toolCallPath);
+		updateReadHistory(readHistory, msg, turnIndex, toolCallPath);
 
 		return result;
 	});
@@ -639,7 +624,7 @@ export function transformMessages(messages: AgentMessage[], options: MessageTran
 		const turn = originalTurns[idx];
 		if (idx >= hotWindowStart) {
 			// Hot window: keep verbatim, but still update history for future passes.
-			updateReadHistoryForTurn(turn, readHistory, idx, options.resolveLocator);
+			updateReadHistoryForTurn(turn, readHistory, idx);
 			replacementResults.push({ turn, codecUsed: false });
 		} else {
 			const tags = extractSourceTags(turn.messages);

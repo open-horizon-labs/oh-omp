@@ -1602,9 +1602,6 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		const resolveToolResultStub = (message: { toolName?: string; toolCallId?: string }) =>
 			assemblerBridge.getToolResultStubPointer(message.toolName, message.toolCallId);
 
-		const resolveLocator = (message: { toolName?: string; toolCallId?: string }) =>
-			assemblerBridge.getLocatorEntry(message.toolName, message.toolCallId);
-
 		const codecs = [dedupCodec, readCodec]; // Order matters: dedup checks first
 
 		const assemblerTransform = async (messages: AgentMessage[]): Promise<AgentMessage[]> => {
@@ -1621,7 +1618,6 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				hotWindowTurns,
 				resolveToolResultStub,
 				codecs,
-				resolveLocator,
 			});
 			const transformedMessages = firstPass.messages;
 
@@ -1702,7 +1698,6 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 					hotWindowTurns,
 					resolveToolResultStub,
 					codecs,
-					resolveLocator,
 				});
 				boundedMessages = boundedPass.messages;
 				finalTransformMetadata = boundedPass.metadata;

@@ -23,13 +23,13 @@ export const dedupCodec: ContentCodec = {
 	matches(_message: ToolResultMessage, ctx: CodecContext): boolean {
 		if (!isReadTool(ctx.toolName)) return false;
 		if (!ctx.readHistory) return false;
-		const filePath = ctx.locator?.where;
+		const filePath = ctx.toolCallPath;
 		if (!filePath) return false;
 		return ctx.readHistory.has(filePath);
 	},
 
 	encode(message: ToolResultMessage, ctx: CodecContext): TextContent[] | null {
-		const filePath = ctx.locator?.where;
+		const filePath = ctx.toolCallPath;
 		if (!filePath || !ctx.readHistory) return null;
 
 		const prior = ctx.readHistory.get(filePath);

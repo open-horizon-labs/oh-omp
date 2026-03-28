@@ -49,6 +49,9 @@ export class RecallStore {
 			};
 			table = await db.createTable(TABLE_NAME, [seedRow]);
 			await table.delete("timestamp = 0 AND tool_name = '__seed__'");
+			// Create scalar indices for turn-based lookups
+			await table.createIndex("turn").catch(() => {});
+			await table.createIndex("session_id").catch(() => {});
 		}
 
 		logger.debug("RecallStore initialized", { path: dbPath });

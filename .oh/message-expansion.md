@@ -27,3 +27,18 @@
 - Don't change the ingest pipeline unless it's dropping data we need
 - Expansion is a tool call, not automatic — the agent decides when to expand
 - The warm stub must remain the default; expansion is the escape hatch
+
+## Execute
+**Updated:** 2026-03-28
+**Status:** complete
+
+### Changes
+- `packages/coding-agent/src/context/recall/store.ts`: Added `filterByTurn()` — direct WHERE clause on turn + session_id
+- `packages/coding-agent/src/tools/recall.ts`: Added `turn` parameter to schema, `#expandTurn()` method for turn-indexed lookup
+- `packages/coding-agent/src/context/assembler/codecs/warm-codec.ts`: Removed edit skip — warm codec is now universal
+- `packages/coding-agent/src/context/assembler/message-transform.ts`: Generalized `extractToolCallPath` → `extractToolCallInfo` exposing full args via `CodecContext.toolCallArgs`
+
+### Verification
+- Build clean (bun check:ts passes)
+- Warm codec: edits no longer skipped (44 stubbed → 0 expected)
+- Recall tool: `recall({ turn: 47 })` retrieves full original content from LanceDB

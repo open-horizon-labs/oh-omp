@@ -518,12 +518,28 @@ export class StatusLineComponent implements Component {
 		return leftGroup + gapFill + rightGroup;
 	}
 
-	getTopBorder(width: number): { content: string; width: number } {
+	getTopBorder(width: number): { content: string; width: number; secondLine?: { content: string; width: number } } {
 		const content = this.#buildStatusLine(width);
-		return {
+		const result: { content: string; width: number; secondLine?: { content: string; width: number } } = {
 			content,
 			width: visibleWidth(content),
 		};
+
+		// Build second line from assembly segments
+		const ctx = this.#buildSegmentContext(width);
+		const secondLineParts: string[] = [];
+		for (const segId of ["context_mgr"] as const) {
+			const rendered = renderSegment(segId, ctx);
+			if (rendered.visible && rendered.content) {
+				secondLineParts.push(rendered.content);
+			}
+		}
+		if (secondLineParts.length > 0) {
+			const secondContent = secondLineParts.join(" ");
+			result.secondLine = { content: secondContent, width: visibleWidth(secondContent) };
+		}
+
+		return result;
 	}
 
 	render(width: number): string[] {

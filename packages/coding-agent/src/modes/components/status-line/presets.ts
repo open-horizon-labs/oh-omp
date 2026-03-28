@@ -2,18 +2,7 @@ import type { PresetDef, StatusLinePreset } from "./types";
 
 export const STATUS_LINE_PRESETS: Record<StatusLinePreset, PresetDef> = {
 	default: {
-		leftSegments: [
-			"pi",
-			"model",
-			"plan_mode",
-			"path",
-			"git",
-			"pr",
-			"context_mgr",
-			"context_pct",
-			"token_total",
-			"cost",
-		],
+		leftSegments: ["pi", "model", "plan_mode", "path", "git", "pr", "context_pct", "token_total", "cost"],
 		rightSegments: [],
 		separator: "powerline-thin",
 		segmentOptions: {
@@ -44,7 +33,7 @@ export const STATUS_LINE_PRESETS: Record<StatusLinePreset, PresetDef> = {
 	},
 
 	full: {
-		leftSegments: ["pi", "hostname", "model", "plan_mode", "context_mgr", "path", "git", "pr", "subagents"],
+		leftSegments: ["pi", "hostname", "model", "plan_mode", "path", "git", "pr", "subagents"],
 		rightSegments: ["token_in", "token_out", "token_rate", "cache_read", "cost", "context_pct", "time_spent", "time"],
 		separator: "powerline",
 		segmentOptions: {
@@ -57,18 +46,7 @@ export const STATUS_LINE_PRESETS: Record<StatusLinePreset, PresetDef> = {
 
 	nerd: {
 		// Full preset with all Nerd Font icons
-		leftSegments: [
-			"pi",
-			"hostname",
-			"model",
-			"plan_mode",
-			"context_mgr",
-			"path",
-			"git",
-			"pr",
-			"session",
-			"subagents",
-		],
+		leftSegments: ["pi", "hostname", "model", "plan_mode", "path", "git", "pr", "session", "subagents"],
 		rightSegments: [
 			"token_in",
 			"token_out",

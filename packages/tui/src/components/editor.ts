@@ -288,6 +288,8 @@ export interface EditorTopBorder {
 	content: string;
 	/** Visible width of the content */
 	width: number;
+	/** Optional secondary border line (already styled) */
+	secondLine?: { content: string; width: number };
 }
 
 interface HistoryEntry {
@@ -592,6 +594,22 @@ export class Editor implements Component, Focusable {
 			}
 		} else {
 			result.push(topLeft + horizontal.repeat(topFillWidth) + topRight);
+		}
+
+		// Render optional second status line: │ [content] ─────│
+		if (this.#topBorderContent?.secondLine) {
+			const sl = this.#topBorderContent.secondLine;
+			const leftBorder = this.borderColor(`${box.vertical}${" ".repeat(paddingX)}`);
+			const rightBorder = this.borderColor(`${" ".repeat(paddingX)}${box.vertical}`);
+			if (sl.width <= topFillWidth) {
+				const fillWidth = topFillWidth - sl.width;
+				result.push(leftBorder + sl.content + " ".repeat(fillWidth) + rightBorder);
+			} else {
+				const truncated = truncateToWidth(sl.content, topFillWidth - 1);
+				const truncatedWidth = visibleWidth(truncated);
+				const fillWidth = Math.max(0, topFillWidth - truncatedWidth);
+				result.push(leftBorder + truncated + " ".repeat(fillWidth) + rightBorder);
+			}
 		}
 
 		// Render each layout line

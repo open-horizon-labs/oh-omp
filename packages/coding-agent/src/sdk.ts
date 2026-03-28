@@ -1701,6 +1701,8 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 					maxTokens: maxMessageTokens,
 					hotWindowTurns,
 					resolveToolResultStub,
+					codecs,
+					resolveLocator,
 				});
 				boundedMessages = boundedPass.messages;
 				finalTransformMetadata = boundedPass.metadata;

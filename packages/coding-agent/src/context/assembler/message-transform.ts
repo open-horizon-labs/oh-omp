@@ -373,12 +373,8 @@ export function segmentIntoTurns(messages: AgentMessage[]): Turn[] {
 function tryCodecEncode(msg: ToolResultMessage, codecs: ContentCodec[], ctx: CodecContext): TextContent[] | null {
 	for (const codec of codecs) {
 		const matched = codec.matches(msg, ctx);
-		logger.debug(
-			`[codec] ${codec.name}: matches=${matched} toolName=${ctx.toolName} path=${ctx.toolCallPath ?? "none"}`,
-		);
 		if (matched) {
 			const encoded = codec.encode(msg, ctx);
-			logger.debug(`[codec] ${codec.name}: encode=${encoded ? "ok" : "null"}`);
 			if (encoded) return encoded;
 		}
 	}
@@ -475,7 +471,6 @@ function replaceToolResultContent(
 	if (!turn.hasToolResults) return { turn, codecUsed: false };
 
 	const codecs = options.codecs ?? [];
-	logger.debug(`[codec] replaceToolResultContent: ${codecs.length} codecs registered`);
 	let codecUsed = false;
 
 	const replaced = turn.messages.map((msg): AgentMessage => {
@@ -704,7 +699,6 @@ export function transformMessages(messages: AgentMessage[], options: MessageTran
 			totalTokensAfter += tokensBefore;
 			keptCount++;
 		} else if (originalTurns[i].hasToolResults) {
-			logger.debug(`[codec] decision i=${i}: hasToolResults=true codecUsed=${replacementResults[i].codecUsed}`);
 			// Beyond hot window with tool results: compressed or stubbed
 			const tokensAfter = transformedTokens[i];
 			const wasCompressed = replacementResults[i].codecUsed;
@@ -741,10 +735,6 @@ export function transformMessages(messages: AgentMessage[], options: MessageTran
 	// 5. Flatten surviving turns to message array
 	const survivingTurns = dropCount > 0 ? transformedTurns.slice(dropCount) : transformedTurns;
 	const resultMessages = survivingTurns.flatMap(t => t.messages);
-
-	logger.debug(
-		`[codec] SUMMARY: total=${totalTurns} kept=${keptCount} compressed=${compressedCount} stubbed=${stubbedCount} dropped=${droppedCount}`,
-	);
 
 	return {
 		messages: resultMessages,

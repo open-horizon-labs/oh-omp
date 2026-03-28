@@ -392,6 +392,24 @@ function tryCodecEncode(msg: ToolResultMessage, codecs: ContentCodec[], ctx: Cod
 }
 
 /**
+ * Extract the `path` argument from the tool_use block that matches a tool result.
+ * Walks the turn's assistant messages to find the tool call by ID.
+ */
+function extractToolCallPath(turn: Turn, toolCallId: string | undefined): string | undefined {
+	if (!toolCallId) return undefined;
+	for (const msg of turn.messages) {
+		if (msg.role !== "assistant" || !Array.isArray(msg.content)) continue;
+		for (const block of msg.content) {
+			if (block.type === "toolCall" && block.id === toolCallId) {
+				const args = block.arguments as Record<string, unknown> | undefined;
+				if (args && typeof args.path === "string") return args.path;
+			}
+		}
+	}
+	return undefined;
+}
+
+/**
  * Result of content replacement for a single turn.
  * Tracks whether any message was compressed via a codec.
  */
@@ -409,10 +427,11 @@ function updateReadHistory(
 	msg: ToolResultMessage,
 	locator: MemoryLocatorEntry | undefined,
 	turnIndex: number,
+	toolCallPath?: string,
 ): void {
 	if (!isReadTool(msg.toolName)) return;
 
-	const filePath = locator?.where;
+	const filePath = toolCallPath ?? locator?.where;
 	if (!filePath) return;
 
 	const text = extractText(msg);
@@ -442,7 +461,8 @@ function updateReadHistoryForTurn(
 	for (const msg of turn.messages) {
 		if (msg.role !== "toolResult") continue;
 		const locator = resolveLocator?.(msg);
-		updateReadHistory(history, msg, locator, turnIndex);
+		const toolCallPath = extractToolCallPath(turn, msg.toolCallId);
+		updateReadHistory(history, msg, locator, turnIndex, toolCallPath);
 	}
 }
 
@@ -476,10 +496,12 @@ function replaceToolResultContent(
 
 		// Build codec context for this message
 		const locator = options.resolveLocator?.(msg);
+		const toolCallPath = extractToolCallPath(turn, msg.toolCallId);
 		const ctx: CodecContext = {
 			sourceTags,
 			locator,
 			toolName: msg.toolName,
+			toolCallPath,
 			turnIndex,
 			readHistory,
 		};
@@ -505,7 +527,7 @@ function replaceToolResultContent(
 		// Update read history for dedup detection in subsequent turns.
 		// Track all reads (even those that were dedup'd or stubbed) so future
 		// turns can detect unchanged content.
-		updateReadHistory(readHistory, msg, locator, turnIndex);
+		updateReadHistory(readHistory, msg, locator, turnIndex, toolCallPath);
 
 		return result;
 	});

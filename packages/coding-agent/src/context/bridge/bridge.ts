@@ -110,6 +110,12 @@ export class ToolResultBridge {
 			const locator = this.#contract.locatorMap[i];
 			if (locator?.key === key) return locator;
 		}
+		logger.debug(
+			`[locator] miss: key=${key} mapSize=${this.#contract.locatorMap.length} sampleKeys=${this.#contract.locatorMap
+				.slice(-3)
+				.map(l => l.key)
+				.join(", ")}`,
+		);
 		return undefined;
 	}
 

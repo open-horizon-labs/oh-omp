@@ -163,7 +163,7 @@ export const readCodec: ContentCodec = {
 		const text = extractText(message);
 		if (!text) return null;
 
-		const filePath = ctx.locator?.where ?? "unknown";
+		const filePath = ctx.toolCallPath ?? ctx.locator?.where ?? "unknown";
 
 		// Case 1: RNA structural view — already compact. Preserve it.
 		if (isRnaStructuralView(text)) {

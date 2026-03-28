@@ -73,6 +73,8 @@ export interface CodecContext {
 	locator?: MemoryLocatorEntry;
 	/** Tool name from the original tool result message. */
 	toolName?: string;
+	/** File path extracted from the tool call's input arguments. */
+	toolCallPath?: string;
 	/** Index of this turn in the conversation (0-based). */
 	turnIndex: number;
 	/**

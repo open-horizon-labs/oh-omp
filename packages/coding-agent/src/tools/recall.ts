@@ -12,9 +12,12 @@ import type { ToolSession } from ".";
 import { shortenPath } from "./render-utils";
 
 const recallSchema = Type.Object({
-	query: Type.String({
-		description: "What you're trying to recall -- describe the content, file, decision, or event",
-	}),
+	query: Type.Optional(
+		Type.String({
+			description:
+				"What you're trying to recall -- describe the content, file, decision, or event. Not needed when using turn expansion.",
+		}),
+	),
 	limit: Type.Optional(Type.Number({ description: "Maximum number of results to return (default: 5, max: 20)" })),
 	role: Type.Optional(
 		Type.Union([Type.Literal("user"), Type.Literal("assistant"), Type.Literal("tool_result")], {
@@ -78,8 +81,18 @@ export class RecallTool implements AgentTool<typeof recallSchema> {
 		if (params.turn !== undefined) {
 			return this.#expandTurn(params);
 		}
+		if (!params.query) {
+			return {
+				content: [
+					{
+						type: "text",
+						text: "A query is required for semantic and keyword search. Use turn parameter for turn expansion.",
+					},
+				],
+			};
+		}
 		if (params.mode === "keyword") {
-			return this.#keywordSearch(params);
+			return this.#keywordSearch(params as RecallParams & { query: string });
 		}
 		const limit = Math.min(Math.max(params.limit ?? DEFAULT_LIMIT, 1), MAX_LIMIT);
 		const overfetchLimit = limit * OVERFETCH_FACTOR;
@@ -190,7 +203,7 @@ export class RecallTool implements AgentTool<typeof recallSchema> {
 		}
 	}
 
-	#keywordSearch(params: RecallParams): AgentToolResult {
+	#keywordSearch(params: RecallParams & { query: string }): AgentToolResult {
 		if (!this.#toolResultStore) {
 			return {
 				content: [{ type: "text", text: "Keyword search not available. ToolResultStore not initialized." }],

@@ -355,8 +355,19 @@ const cacheWriteSegment: StatusLineSegment = {
 
 const contextMgrSegment: StatusLineSegment = {
 	id: "context_mgr",
-	render() {
-		return { content: theme.fg("accent", "ctx:assembler"), visible: true };
+	render(ctx) {
+		const snapshot = ctx.session.getLastPromptSnapshot?.();
+		const meta = snapshot?.messages.transformMetadata;
+		if (!meta) return { content: theme.fg("accent", "ctx:assembler"), visible: true };
+
+		const parts: string[] = [];
+		if (meta.keptCount > 0) parts.push(`${meta.keptCount}\u2194`); // ↔ kept
+		if (meta.compressedCount > 0) parts.push(theme.fg("accent", `${meta.compressedCount}\u229E`)); // ⊞ compressed
+		if (meta.stubbedCount > 0) parts.push(`${meta.stubbedCount}\u229F`); // ⊟ stubbed
+		if (meta.droppedCount > 0) parts.push(theme.fg("warning", `${meta.droppedCount}\u2715`)); // ✕ dropped
+
+		const content = withIcon(theme.icon.context, parts.join(" "));
+		return { content, visible: true };
 	},
 };
 

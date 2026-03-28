@@ -20,6 +20,7 @@ import type { TextContent, ToolResultMessage } from "@oh-my-pi/pi-ai";
 import { logger } from "@oh-my-pi/pi-utils";
 import { parseMCPToolName } from "../../mcp/tool-bridge";
 import type { MemoryAssemblyBudget, MemoryLocatorEntry } from "../memory-contract";
+import { contentHash, extractText, isReadTool } from "./codecs/shared";
 import type { BudgetDerivationInput, CodecContext, ContentCodec, FileReadEntry } from "./types";
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -394,12 +395,9 @@ interface ContentReplacementResult {
 	codecUsed: boolean;
 }
 
-/** Read tool names for history tracking. */
-const READ_TOOL_NAMES_SET = new Set(["proxy_read", "read"]);
-
 /**
  * Update the read history after processing a tool result.
- * Only tracks file reads (proxy_read/read). Uses Bun.hash for fast content identity.
+ * Only tracks file reads (proxy_read/read). Uses contentHash for fast content identity.
  */
 function updateReadHistory(
 	history: Map<string, FileReadEntry>,
@@ -407,29 +405,22 @@ function updateReadHistory(
 	locator: MemoryLocatorEntry | undefined,
 	turnIndex: number,
 ): void {
-	const toolName = msg.toolName;
-	if (!toolName) return;
-	const baseName = toolName.replace(/^proxy_/, "");
-	if (!READ_TOOL_NAMES_SET.has(baseName) && !READ_TOOL_NAMES_SET.has(toolName)) return;
+	if (!isReadTool(msg.toolName)) return;
 
 	const filePath = locator?.where;
 	if (!filePath) return;
 
-	// Extract text content for hashing
-	const content = msg.content;
-	let text = "";
-	if (typeof content === "string") {
-		text = content;
-	} else if (Array.isArray(content)) {
-		for (const block of content) {
-			if (typeof block === "string") text += block;
-			else if (block && typeof block === "object" && "type" in block && block.type === "text" && "text" in block)
-				text += block.text;
-		}
-	}
+	const text = extractText(msg);
 	if (!text) return;
 
-	history.set(filePath, { turnIndex, contentHash: Bun.hash(text) as number });
+	const hash = contentHash(text);
+	const existing = history.get(filePath);
+	// Only update history when content is new or changed.
+	// When content is unchanged (dedup case), keep the original turn index
+	// so back-references point to the first read, not a dedup'd intermediate.
+	if (!existing || existing.contentHash !== hash) {
+		history.set(filePath, { turnIndex, contentHash: hash });
+	}
 }
 
 /**

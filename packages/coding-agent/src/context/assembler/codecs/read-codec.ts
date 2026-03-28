@@ -13,32 +13,10 @@
 
 import type { TextContent, ToolResultMessage } from "@oh-my-pi/pi-ai";
 import type { CodecContext, ContentCodec } from "../types";
+import { extractText, isReadTool } from "./shared";
 
 /** Marker prefix for RNA structural views in read tool output. */
 const RNA_VIEW_PREFIX = "[RNA structural view of ";
-
-/** Tool names that represent file reads. */
-const READ_TOOL_NAMES = new Set(["proxy_read", "read"]);
-
-/**
- * Extract text content from a tool result message.
- * Returns the concatenated text of all text content blocks.
- */
-function extractText(message: ToolResultMessage): string {
-	const content = message.content;
-	if (typeof content === "string") return content;
-	if (!Array.isArray(content)) return "";
-
-	const parts: string[] = [];
-	for (const block of content) {
-		if (typeof block === "string") {
-			parts.push(block);
-		} else if (block && typeof block === "object" && "type" in block && block.type === "text" && "text" in block) {
-			parts.push(block.text as string);
-		}
-	}
-	return parts.join("\n");
-}
 
 /**
  * Detect whether this is an RNA structural view (read without offset).
@@ -178,9 +156,7 @@ export const readCodec: ContentCodec = {
 	matches(message: ToolResultMessage, ctx: CodecContext): boolean {
 		const toolName = ctx.toolName ?? message.toolName;
 		if (!toolName) return false;
-		// Match both direct tool names and proxy- prefixed variants
-		const baseName = toolName.replace(/^proxy_/, "");
-		return READ_TOOL_NAMES.has(baseName) || READ_TOOL_NAMES.has(toolName);
+		return isReadTool(toolName);
 	},
 
 	encode(message: ToolResultMessage, ctx: CodecContext): TextContent[] | null {

@@ -70,6 +70,12 @@ export class RecallStore {
 		return results as RecallSearchResult[];
 	}
 
+	async filterByTurn(turn: number, sessionId: string): Promise<RecallRow[]> {
+		const filter = `turn = ${turn} AND session_id = '${sessionId.replace(/'/g, "''")}'`;
+		const results = await this.#table.query().where(filter).limit(20).toArray();
+		return results as RecallRow[];
+	}
+
 	close(): void {
 		this.#table.close();
 		this.#db.close();

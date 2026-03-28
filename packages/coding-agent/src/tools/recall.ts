@@ -32,6 +32,12 @@ const recallSchema = Type.Object({
 				"Search mode: 'semantic' (default, vector search) or 'keyword' (exact text match over tool results)",
 		}),
 	),
+	turn: Type.Optional(
+		Type.Number({
+			description:
+				"Expand a specific turn by number. Returns the full original content of all messages at that turn. Use this to retrieve the uncompressed content behind a [warm:...] or [ref:...] stub.",
+		}),
+	),
 });
 
 type RecallParams = Static<typeof recallSchema>;
@@ -69,6 +75,9 @@ export class RecallTool implements AgentTool<typeof recallSchema> {
 	}
 
 	async execute(_toolCallId: string, params: RecallParams, _signal?: AbortSignal): Promise<AgentToolResult> {
+		if (params.turn !== undefined) {
+			return this.#expandTurn(params);
+		}
 		if (params.mode === "keyword") {
 			return this.#keywordSearch(params);
 		}
@@ -142,6 +151,43 @@ export class RecallTool implements AgentTool<typeof recallSchema> {
 		return {
 			content: [{ type: "text", text: formatted }],
 		};
+	}
+
+	async #expandTurn(params: RecallParams): Promise<AgentToolResult> {
+		const turn = params.turn!;
+		try {
+			const rows = await this.#store.filterByTurn(turn, this.#sessionId);
+			if (rows.length === 0) {
+				return {
+					content: [{ type: "text", text: `No messages found at turn ${turn} in this session.` }],
+				};
+			}
+			const formatted = rows
+				.map(r => {
+					let header = `Turn ${r.turn} [${r.role}`;
+					if (r.tool_name) header += `: ${r.tool_name}`;
+					header += "]";
+					if (r.paths) {
+						try {
+							const pathsList = JSON.parse(r.paths) as string[];
+							if (pathsList.length > 0) header += ` paths: ${pathsList.join(", ")}`;
+						} catch {}
+					}
+					return `${header}\n${r.text}`;
+				})
+				.join("\n\n---\n\n");
+			logger.debug("Recall: expanded turn", { turn, results: rows.length });
+			return {
+				content: [{ type: "text", text: formatted }],
+			};
+		} catch (err) {
+			logger.warn("Recall: turn expansion failed", {
+				error: err instanceof Error ? err.message : String(err),
+			});
+			return {
+				content: [{ type: "text", text: "Failed to expand turn. Recall is temporarily unavailable." }],
+			};
+		}
 	}
 
 	#keywordSearch(params: RecallParams): AgentToolResult {

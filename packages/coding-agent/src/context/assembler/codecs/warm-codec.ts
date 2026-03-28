@@ -32,9 +32,6 @@ const ARG_ALLOWLIST = new Set(["path", "pattern", "command", "action", "query", 
 /** Max length for argument values before truncation. */
 const ARG_MAX_LENGTH = 60;
 
-/** Tools to skip — these need special handling or are already small. */
-const SKIP_TOOLS = new Set(["edit", "proxy_edit"]);
-
 function formatArgValue(value: unknown): string {
 	if (typeof value !== "string") return String(value);
 	if (value.length <= ARG_MAX_LENGTH) return value;
@@ -66,8 +63,7 @@ export const warmCodec: ContentCodec = {
 	name: "warm",
 
 	matches(_message: ToolResultMessage, ctx: CodecContext): boolean {
-		if (!ctx.toolName) return false;
-		return !SKIP_TOOLS.has(ctx.toolName);
+		return !!ctx.toolName;
 	},
 
 	encode(message: ToolResultMessage, ctx: CodecContext): TextContent[] | null {

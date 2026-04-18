@@ -1081,6 +1081,18 @@ describe("TurnDecision sourceTags", () => {
 		// Two read tool results → deduplicated to single tag
 		expect(toolTurn.sourceTags).toEqual(["tool:read"]);
 	});
+	test("recalled-context developer messages are deduplicated even when the tag has attributes", () => {
+		const olderRecall = makeDeveloper(
+			'<recalled-context now="2026-04-18T12:00:00.000Z"><entry>older</entry></recalled-context>',
+		);
+		const newerRecall = makeDeveloper(
+			'<recalled-context now="2026-04-18T12:05:00.000Z"><entry>newer</entry></recalled-context>',
+		);
+		const messages: AgentMessage[] = [makeUser("start"), olderRecall, makeAssistant(), newerRecall, makeUser("end")];
+		const { messages: result } = transformMessages(messages, { hotWindowTurns: 0 });
+
+		expect(result).toEqual([messages[0], messages[2], newerRecall, messages[4]]);
+	});
 });
 
 // ═══════════════════════════════════════════════════════════════════════════

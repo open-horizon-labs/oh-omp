@@ -778,7 +778,7 @@ export function transformMessages(messages: AgentMessage[], options: MessageTran
 	//      structural prefix. Keep only the latest of each type.
 	//   2. One-time injections (checkpoint reminders, synthetic prompts): identified
 	//      by content hash. Keep unique content, drop exact duplicates.
-	const REGENERATED_PREFIXES = ["[Assembly:", "<recalled-context>"];
+	const REGENERATED_PREFIXES = ["[Assembly:", "<recalled-context"];
 	const seenRegeneratedTypes = new Set<string>();
 	const seenDeveloperHashes = new Set<number>();
 	const developerTurnKeep = new Set<number>();

@@ -45,7 +45,7 @@ CustomTool.execute(toolCallId, params, onUpdate, ctx, signal)
 `discoverAndLoadCustomTools(configuredPaths, cwd, builtInToolNames)` merges:
 
 1. Capability providers (`toolCapability`), including:
-   - Native OMP config (`~/.oh-omp/agent/tools`, `.omp/tools`)
+   - Native OMP config (`getAgentDir()/tools`, usually `~/.oh-omp/agent/tools`, plus `.omp/tools`)
    - Claude config (`~/.claude/tools`, `.claude/tools`)
    - Codex config (`~/.codex/tools`, `.codex/tools`)
    - Claude marketplace plugin cache provider
@@ -58,6 +58,8 @@ CustomTool.execute(toolCallId, params, onUpdate, ctx, signal)
 - Tool name conflicts are rejected against built-ins and already-loaded custom tools.
 - `.md` and `.json` files are discovered as tool metadata by some providers, but the executable module loader rejects them as runnable tools.
 - Relative configured paths are resolved from `cwd`; `~` is expanded.
+- `createAgentSession()` now returns `discoveredCustomToolsResult`, which exposes both loaded tool metadata and per-file load errors for hosts/status surfaces.
+- A tool being loaded into the runtime does **not** automatically make it a native tool of an outer coding harness. Hosts must surface runtime availability explicitly instead of assuming identical tool inventories across layers.
 
 ## Module contract
 

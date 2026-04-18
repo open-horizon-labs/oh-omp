@@ -69,7 +69,12 @@ import {
 	loadCustomCommands as loadCustomCommandsInternal,
 } from "./extensibility/custom-commands";
 import { discoverAndLoadCustomTools } from "./extensibility/custom-tools";
-import type { CustomTool, CustomToolContext, CustomToolSessionEvent } from "./extensibility/custom-tools/types";
+import type {
+	CustomTool,
+	CustomToolContext,
+	CustomToolSessionEvent,
+	CustomToolsLoadResult,
+} from "./extensibility/custom-tools/types";
 import { CustomToolAdapter } from "./extensibility/custom-tools/wrapper";
 import {
 	discoverAndLoadExtensions,
@@ -157,7 +162,7 @@ import { EventBus } from "./utils/event-bus";
 export interface CreateAgentSessionOptions {
 	/** Working directory for project-local discovery. Default: getProjectDir() */
 	cwd?: string;
-	/** Global config directory. Default: ~/.oh-omp/agent */
+	/** Global config directory. Default: getAgentDir() (usually ~/.oh-omp/agent, but it may differ under env/XDG overrides). */
 	agentDir?: string;
 	/** Spawns to allow. Default: "*" */
 	spawns?: string;
@@ -249,6 +254,8 @@ export interface CreateAgentSessionResult {
 	session: AgentSession;
 	/** Extensions result (loaded extensions + runtime) */
 	extensionsResult: LoadExtensionsResult;
+	/** Filesystem-discovered custom tools (loaded metadata + load errors). */
+	discoveredCustomToolsResult?: CustomToolsLoadResult;
 	/** Update tool UI context (interactive mode) */
 	setToolUIContext: (uiContext: ExtensionUIContext, hasUI: boolean) => void;
 	/** MCP manager for server lifecycle management (undefined if MCP disabled) */
@@ -267,7 +274,7 @@ export type { PromptTemplate } from "./config/prompt-templates";
 export { Settings, type SkillsSettings } from "./config/settings";
 export type { EffectivePromptSnapshot } from "./context/effective-prompt-snapshot";
 export type { CustomCommand, CustomCommandFactory } from "./extensibility/custom-commands/types";
-export type { CustomTool, CustomToolFactory } from "./extensibility/custom-tools/types";
+export type { CustomTool, CustomToolFactory, CustomToolsLoadResult, LoadedCustomTool, ToolLoadError } from "./extensibility/custom-tools/types";
 export type * from "./extensibility/extensions";
 export type { Skill } from "./extensibility/skills";
 export type { FileSlashCommand } from "./extensibility/slash-commands";
@@ -2112,6 +2119,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	return {
 		session,
 		extensionsResult,
+		discoveredCustomToolsResult: discoveredCustomTools,
 		setToolUIContext,
 		mcpManager,
 		modelFallbackMessage,

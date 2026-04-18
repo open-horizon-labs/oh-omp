@@ -55,7 +55,7 @@ await session.dispose();
 If omitted, it resolves:
 
 - `cwd`: `getProjectDir()`
-- `agentDir`: `~/.oh-omp/agent` (via `getAgentDir()`)
+- `agentDir`: `getAgentDir()` (usually `~/.oh-omp/agent`, but it may differ under env/XDG overrides)
 - `authStorage`: `discoverAuthStorage(agentDir)`
 - `modelRegistry`: `new ModelRegistry(authStorage)` + `await refresh()`
 - `settings`: `await Settings.init({ cwd, agentDir })`
@@ -63,6 +63,7 @@ If omitted, it resolves:
 - skills/context files/prompt templates/slash commands/extensions/custom TS commands
 - built-in tools via `createTools(...)`
 - MCP tools (enabled by default)
+- filesystem custom tool discovery metadata via `discoveredCustomToolsResult`
 - LSP integration (enabled by default)
 
 ### Required vs optional inputs

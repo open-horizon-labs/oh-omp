@@ -1,0 +1,110 @@
+import { afterEach, describe, expect, it } from "bun:test";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
+import { getBundledModel } from "@oh-my-pi/pi-ai";
+import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { createAgentSession } from "@oh-my-pi/pi-coding-agent/sdk";
+import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
+import { getAgentDir, setAgentDir, Snowflake } from "@oh-my-pi/pi-utils";
+
+const originalAgentDir = getAgentDir();
+
+function createProjectLayout(prefix: string): { rootDir: string; projectDir: string; agentDir: string; toolsDir: string } {
+	const rootDir = path.join(os.tmpdir(), `${prefix}-${Snowflake.next()}`);
+	const projectDir = path.join(rootDir, "project");
+	const agentDir = path.join(rootDir, "agent");
+	const toolsDir = path.join(projectDir, ".omp", "tools");
+	fs.mkdirSync(projectDir, { recursive: true });
+	fs.mkdirSync(agentDir, { recursive: true });
+	fs.mkdirSync(toolsDir, { recursive: true });
+	return { rootDir, projectDir, agentDir, toolsDir };
+}
+
+async function createIsolatedSession(projectDir: string, agentDir: string) {
+	const model = getBundledModel("openai", "gpt-4o-mini");
+	if (!model) throw new Error("Expected gpt-4o-mini model");
+	return await createAgentSession({
+		cwd: projectDir,
+		agentDir,
+		sessionManager: SessionManager.inMemory(),
+		settings: Settings.isolated(),
+		model,
+		disableExtensionDiscovery: true,
+		skills: [],
+		contextFiles: [],
+		promptTemplates: [],
+		slashCommands: [],
+		enableMCP: false,
+		enableLsp: false,
+	});
+}
+
+describe("createAgentSession discoveredCustomToolsResult", () => {
+	const tempRoots: string[] = [];
+
+	afterEach(() => {
+		setAgentDir(originalAgentDir);
+		for (const rootDir of tempRoots.splice(0)) {
+			fs.rmSync(rootDir, { recursive: true, force: true });
+		}
+	});
+
+	it("returns loaded metadata for project-discovered custom tools", async () => {
+		const { rootDir, projectDir, agentDir, toolsDir } = createProjectLayout("pi-sdk-custom-tool");
+		tempRoots.push(rootDir);
+		setAgentDir(agentDir);
+
+		const toolPath = path.join(toolsDir, "project-echo.ts");
+		fs.writeFileSync(
+			toolPath,
+			[
+				"export default function (pi) {",
+				"\tconst { Type } = pi.typebox;",
+				"\treturn {",
+				"\t\tname: \"project_echo\",",
+				"\t\tlabel: \"Project Echo\",",
+				"\t\tdescription: \"Echoes the provided text.\",",
+				"\t\tparameters: Type.Object({ text: Type.String() }),",
+				"\t\tasync execute(_toolCallId, params) {",
+				"\t\t\treturn { content: [{ type: \"text\", text: params.text }] };",
+				"\t\t},",
+				"\t};",
+				"}",
+			].join("\n"),
+		);
+
+		const result = await createIsolatedSession(projectDir, agentDir);
+		try {
+			expect(result.discoveredCustomToolsResult).toBeDefined();
+			expect(result.discoveredCustomToolsResult?.errors).toEqual([]);
+			expect(result.discoveredCustomToolsResult?.tools).toHaveLength(1);
+			expect(result.discoveredCustomToolsResult?.tools[0]?.tool.name).toBe("project_echo");
+			expect(result.discoveredCustomToolsResult?.tools[0]?.resolvedPath).toBe(toolPath);
+			expect(result.session.getAllToolNames()).toContain("project_echo");
+		} finally {
+			await result.session.dispose();
+		}
+	});
+
+	it("surfaces loader errors for invalid discovered custom tools", async () => {
+		const { rootDir, projectDir, agentDir, toolsDir } = createProjectLayout("pi-sdk-custom-tool-error");
+		tempRoots.push(rootDir);
+		setAgentDir(agentDir);
+
+		const brokenToolPath = path.join(toolsDir, "broken-tool.ts");
+		fs.writeFileSync(brokenToolPath, "export default 123;\n");
+
+		const result = await createIsolatedSession(projectDir, agentDir);
+		try {
+			expect(result.discoveredCustomToolsResult).toBeDefined();
+			expect(result.discoveredCustomToolsResult?.tools).toEqual([]);
+			expect(result.discoveredCustomToolsResult?.errors).toHaveLength(1);
+			expect(result.discoveredCustomToolsResult?.errors[0]?.path).toBe(brokenToolPath);
+			expect(result.discoveredCustomToolsResult?.errors[0]?.error).toContain("Tool must export a default function");
+			expect(result.session.getAllToolNames()).not.toContain("broken_tool");
+		} finally {
+			await result.session.dispose();
+		}
+	});
+});

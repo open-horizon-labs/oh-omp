@@ -371,6 +371,68 @@ describe("agentLoop with AgentMessage", () => {
 		}
 	});
 
+	it("applies transformToolCallArguments before tool execution", async () => {
+		const toolSchema = Type.Object({ value: Type.String() });
+		const executed: string[] = [];
+		const tool: AgentTool<typeof toolSchema, { value: string }> = {
+			name: "echo",
+			label: "Echo",
+			description: "Echo tool",
+			parameters: toolSchema,
+			async execute(_toolCallId, params) {
+				executed.push(params.value);
+				return {
+					content: [{ type: "text", text: `echoed: ${params.value}` }],
+					details: { value: params.value },
+				};
+			},
+		};
+
+		const context: AgentContext = {
+			systemPrompt: "",
+			messages: [],
+			tools: [tool],
+		};
+
+		const config: AgentLoopConfig = {
+			model: createModel(),
+			convertToLlm: identityConverter,
+			transformToolCallArguments: args => ({ ...args, value: `decoded:${String(args.value)}` }),
+		};
+
+		let callIndex = 0;
+		const streamFn = () => {
+			const stream = new MockAssistantStream();
+			queueMicrotask(() => {
+				if (callIndex === 0) {
+					const message = createAssistantMessage(
+						[{ type: "toolCall", id: "tool-1", name: "echo", arguments: { value: "#ABCD#" } }],
+						"toolUse",
+					);
+					stream.push({ type: "done", reason: "toolUse", message });
+				} else {
+					const message = createAssistantMessage([{ type: "text", text: "done" }]);
+					stream.push({ type: "done", reason: "stop", message });
+				}
+				callIndex++;
+			});
+			return stream;
+		};
+
+		const events: AgentEvent[] = [];
+		const stream = agentLoop([createUserMessage("echo something")], context, config, undefined, streamFn);
+		for await (const event of stream) {
+			events.push(event);
+		}
+
+		expect(executed).toEqual(["decoded:#ABCD#"]);
+		const toolStart = events.find(event => event.type === "tool_execution_start");
+		expect(toolStart).toBeDefined();
+		if (toolStart?.type === "tool_execution_start") {
+			expect(toolStart.args).toEqual({ value: "#ABCD#" });
+		}
+	});
+
 	it("injects and strips intent when intent tracing is enabled", async () => {
 		const toolSchema = Type.Object({ value: Type.String() });
 		const executedParams: Record<string, unknown>[] = [];

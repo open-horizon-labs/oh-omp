@@ -1552,6 +1552,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 
 	const setToolUIContext = (uiContext: ExtensionUIContext, hasUI: boolean) => {
 		toolContextStore.setUIContext(uiContext, hasUI);
+		discoveredCustomTools.setUIContext(uiContext, hasUI);
 	};
 
 	const initialTools = initialToolNames

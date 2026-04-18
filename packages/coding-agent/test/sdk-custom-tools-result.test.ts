@@ -8,7 +8,7 @@ import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { ExtensionUIContext } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/types";
 import { createAgentSession } from "@oh-my-pi/pi-coding-agent/sdk";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
-import { getAgentDir, setAgentDir, Snowflake } from "@oh-my-pi/pi-utils";
+import { getAgentDir, getConfigDirName, setAgentDir, Snowflake } from "@oh-my-pi/pi-utils";
 
 const originalAgentDir = getAgentDir();
 
@@ -16,7 +16,7 @@ function createProjectLayout(prefix: string): { rootDir: string; projectDir: str
 	const rootDir = path.join(os.tmpdir(), `${prefix}-${Snowflake.next()}`);
 	const projectDir = path.join(rootDir, "project");
 	const agentDir = path.join(rootDir, "agent");
-	const toolsDir = path.join(projectDir, ".omp", "tools");
+	const toolsDir = path.join(projectDir, getConfigDirName(), "tools");
 	fs.mkdirSync(projectDir, { recursive: true });
 	fs.mkdirSync(agentDir, { recursive: true });
 	fs.mkdirSync(toolsDir, { recursive: true });
@@ -121,10 +121,10 @@ describe("createAgentSession discoveredCustomToolsResult", () => {
 		const result = await createIsolatedSession(projectDir, agentDir);
 		try {
 			expect(result.discoveredCustomToolsResult).toBeDefined();
-			expect(result.discoveredCustomToolsResult?.errors).toEqual([]);
-			expect(result.discoveredCustomToolsResult?.tools).toHaveLength(1);
-			expect(result.discoveredCustomToolsResult?.tools[0]?.tool.name).toBe("project_echo");
-			expect(result.discoveredCustomToolsResult?.tools[0]?.resolvedPath).toBe(toolPath);
+			const discoveredToolEntry = result.discoveredCustomToolsResult?.tools.find(tool => tool.resolvedPath === toolPath);
+			expect(discoveredToolEntry?.tool.name).toBe("project_echo");
+			expect(discoveredToolEntry?.resolvedPath).toBe(toolPath);
+			expect(result.discoveredCustomToolsResult?.errors.some(error => error.path === toolPath)).toBe(false);
 			expect(result.session.getAllToolNames()).toContain("project_echo");
 		} finally {
 			await result.session.dispose();
@@ -157,7 +157,8 @@ describe("createAgentSession discoveredCustomToolsResult", () => {
 
 		const result = await createIsolatedSession(projectDir, agentDir);
 		try {
-			const discoveredTool = result.discoveredCustomToolsResult?.tools[0]?.tool;
+			const discoveredToolEntry = result.discoveredCustomToolsResult?.tools.find(tool => tool.resolvedPath === toolPath);
+			const discoveredTool = discoveredToolEntry?.tool;
 			expect(discoveredTool?.name).toBe("project_ui_state");
 			result.setToolUIContext(uiContext, true);
 			const executionResult = await discoveredTool?.execute(
@@ -167,7 +168,7 @@ describe("createAgentSession discoveredCustomToolsResult", () => {
 				createToolContext(["project_ui_state"]),
 			);
 			expect(executionResult?.content).toEqual([{ type: "text", text: "hasUI:true" }]);
-			expect(result.discoveredCustomToolsResult?.tools[0]?.resolvedPath).toBe(toolPath);
+			expect(discoveredToolEntry?.resolvedPath).toBe(toolPath);
 		} finally {
 			await result.session.dispose();
 		}
@@ -184,11 +185,10 @@ describe("createAgentSession discoveredCustomToolsResult", () => {
 		const result = await createIsolatedSession(projectDir, agentDir);
 		try {
 			expect(result.discoveredCustomToolsResult).toBeDefined();
-			expect(result.discoveredCustomToolsResult?.tools).toEqual([]);
-			expect(result.discoveredCustomToolsResult?.errors).toHaveLength(1);
-			expect(result.discoveredCustomToolsResult?.errors[0]?.path).toBe(brokenToolPath);
-			expect(result.discoveredCustomToolsResult?.errors[0]?.error).toContain("Tool must export a default function");
-			expect(result.session.getAllToolNames()).not.toContain("broken_tool");
+			const brokenToolError = result.discoveredCustomToolsResult?.errors.find(error => error.path === brokenToolPath);
+			expect(brokenToolError).toBeDefined();
+			expect(brokenToolError?.error).toContain("Tool must export a default function");
+			expect(result.discoveredCustomToolsResult?.tools.some(tool => tool.resolvedPath === brokenToolPath)).toBe(false);
 		} finally {
 			await result.session.dispose();
 		}

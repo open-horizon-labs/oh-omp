@@ -285,10 +285,13 @@ describe("formatHydratedContext", () => {
 		const results = [makeSearchResult({ text: "user question", role: "user", turn: 5 })];
 		const formatted = formatHydratedContext(results)!;
 
-		expect(formatted).toContain("<recalled-context>");
+		expect(formatted).toContain("<recalled-context now=");
 		expect(formatted).toContain("</recalled-context>");
 		expect(formatted).toContain('turn="5"');
 		expect(formatted).toContain('role="user"');
+		expect(formatted).toContain('band="live"');
+		expect(formatted).toContain('age="');
+		expect(formatted).toContain('timestamp="');
 		expect(formatted).toContain("user question");
 		expect(formatted).not.toContain("tool=");
 	});
@@ -371,14 +374,54 @@ describe("formatHydratedContext — source provenance", () => {
 
 	test("adds session=current when sessionId matches", () => {
 		const results = [makeSearchResult({ text: "recent", session_id: "session-42", turn: 1 })];
-		const formatted = formatHydratedContext(results, "session-42")!;
+		const formatted = formatHydratedContext(results, { currentSessionId: "session-42" })!;
 		expect(formatted).toContain('session="current"');
 	});
 
 	test("adds session=other when sessionId differs", () => {
 		const results = [makeSearchResult({ text: "old data", session_id: "session-old", turn: 1 })];
-		const formatted = formatHydratedContext(results, "session-new")!;
+		const formatted = formatHydratedContext(results, { currentSessionId: "session-new" })!;
 		expect(formatted).toContain('session="other"');
+	});
+
+	test("adds project hints and durable bands from explicit time/context options", () => {
+		const now = Date.parse("2026-04-18T00:00:00.000Z");
+		const timestamp = now - 10 * 24 * 60 * 60 * 1000;
+		const results = [
+			makeSearchResult({
+				text: "older workflow guidance",
+				timestamp,
+				project_cwd: "/tmp/other-project",
+			}),
+		];
+		const formatted = formatHydratedContext(results, {
+			currentSessionId: "test-session",
+			currentProjectCwd: "/tmp/current-project",
+			now,
+			recentWindowMs: 7 * 24 * 60 * 60 * 1000,
+		})!;
+
+		expect(formatted).toContain('band="durable"');
+		expect(formatted).toContain('age="10d"');
+		expect(formatted).toContain(`timestamp="${new Date(timestamp).toISOString()}"`);
+		expect(formatted).toContain('session="current"');
+		expect(formatted).toContain('project="other"');
+	});
+
+	test("escapes XML-sensitive text and attributes", () => {
+		const results = [
+			makeSearchResult({
+				text: 'x < y & "quoted"',
+				role: "tool_result",
+				tool_name: 'read<&>',
+				turn: 9,
+			}),
+		];
+		const formatted = formatHydratedContext(results)!;
+
+		expect(formatted).toContain('tool="read&lt;&amp;&gt;"');
+		expect(formatted).toContain('source="tool:read&lt;&amp;&gt;"');
+		expect(formatted).toContain('x &lt; y &amp; &quot;quoted&quot;');
 	});
 
 	test("omits session attribute when no currentSessionId provided", () => {
@@ -394,15 +437,20 @@ describe("formatHydratedContext — source provenance", () => {
 				role: "tool_result",
 				tool_name: "mcp_memex_query",
 				session_id: "sess-1",
+				project_cwd: "/tmp/test-project",
 				turn: 3,
 			}),
 		];
-		const formatted = formatHydratedContext(results, "sess-1")!;
+		const formatted = formatHydratedContext(results, {
+			currentSessionId: "sess-1",
+			currentProjectCwd: "/tmp/test-project",
+		})!;
 
 		expect(formatted).toContain('turn="3"');
 		expect(formatted).toContain('role="tool_result"');
 		expect(formatted).toContain('tool="mcp_memex_query"');
 		expect(formatted).toContain('source="mcp:memex"');
 		expect(formatted).toContain('session="current"');
+		expect(formatted).toContain('project="current"');
 	});
 });

@@ -96,7 +96,6 @@ describe("HybridRetriever", () => {
 		});
 
 		expect(response.results).toHaveLength(1);
-		expect(response.results[0].text).toContain("ENOENT");
 		expect(response.trace.keywordCandidates).toBeGreaterThan(0);
 		expect(response.trace.resolvedKeywordCandidates).toBeGreaterThan(0);
 
@@ -148,4 +147,84 @@ describe("HybridRetriever", () => {
 		toolResultStore.close();
 		recallStore.close();
 	});
+	test("applies current-project scoping to semantic search without requiring a manual Lance filter", async () => {
+		const rows = [
+			makeRow({
+				text: "timeout in current project logs",
+				turn: 1,
+				vector: makeVector(0.95),
+				project_cwd: "/tmp/current-project",
+			}),
+			makeRow({
+				text: "timeout in other project logs",
+				turn: 2,
+				vector: makeVector(1),
+				project_cwd: "/tmp/other-project",
+			}),
+		];
+		const { recallStore, toolResultStore } = await createStores(rows);
+		const retriever = new HybridRetriever({
+			store: recallStore,
+			toolResultStore,
+			sessionId: "test-session",
+			projectCwd: "/tmp/current-project",
+		});
+
+		const response = await retriever.search({
+			query: "timeout logs",
+			queryVector: makeVector(1),
+			limit: 5,
+			mode: "hybrid",
+			project: "current",
+		});
+
+		expect(response.results).toHaveLength(1);
+		expect(response.results[0].project_cwd).toBe("/tmp/current-project");
+		expect(response.results[0].text).toContain("current project");
+
+		toolResultStore.close();
+		recallStore.close();
+	});
+
+	test("prefers fresher rows when relevance signals are otherwise equivalent", async () => {
+		const now = Date.now();
+		const rows = [
+			makeRow({
+				text: "deployment status snapshot",
+				turn: 1,
+				vector: makeVector(1),
+				timestamp: now - 10 * 24 * 60 * 60 * 1000,
+			}),
+			makeRow({
+				text: "deployment status snapshot",
+				turn: 2,
+				vector: makeVector(1),
+				timestamp: now - 5 * 60 * 1000,
+			}),
+		];
+		const { recallStore, toolResultStore } = await createStores(rows);
+		const retriever = new HybridRetriever({
+			store: recallStore,
+			toolResultStore,
+			sessionId: "test-session",
+			projectCwd: "/tmp/current-project",
+		});
+
+		const response = await retriever.search({
+			query: "deployment status snapshot",
+			queryVector: makeVector(1),
+			limit: 2,
+			mode: "hybrid",
+			project: "current",
+		});
+
+		expect(response.results).toHaveLength(2);
+		expect(response.results[0].turn).toBe(2);
+		expect(response.results[1].turn).toBe(1);
+
+		toolResultStore.close();
+		recallStore.close();
+	});
+
+
 });

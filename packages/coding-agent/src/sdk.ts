@@ -51,14 +51,20 @@ import { ToolResultBridge } from "./context/bridge";
 import { captureEffectivePromptSnapshot, type EffectivePromptSnapshot } from "./context/effective-prompt-snapshot";
 import { extractPaths } from "./context/extract-paths";
 import {
+	daysToRecallWindowMs,
 	extractAssistantText,
 	extractPathsFromText,
 	extractUserText,
 	formatHydratedContext,
+	formatRecallAge,
+	getRecallAgeMs,
+	getRecallBand,
+	type RecallSearchResult,
 	IngestPipeline,
 	PassiveHydrator,
 	RecallStore,
 	resolveMemexLicense,
+	selectHydrationResultIndexToDrop,
 } from "./context/recall";
 import { ToolResultStore } from "./context/recall/tool-result-store";
 import { initializeWithSettings } from "./discovery";
@@ -1578,6 +1584,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			license: memexLicense,
 			projectCwd: cwd,
 			sessionId,
+			recentWindowMs: daysToRecallWindowMs(settings.get("assembler.recentWindowDays")),
 		});
 		logger.debug("Recall pipeline initialized (ingest + passive hydration)");
 	}
@@ -1597,6 +1604,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		const assemblerSettings = settings.getGroup("assembler") as AssemblerSettings;
 		const hotWindowTurns = assemblerSettings.hotWindowTurns;
 		const contextWindowCap = assemblerSettings.contextWindowCap;
+		const recentWindowMs = daysToRecallWindowMs(assemblerSettings.recentWindowDays);
 
 		const resolveToolResultStub = (message: { toolName?: string; toolCallId?: string }) =>
 			assemblerBridge.getToolResultStubPointer(message.toolName, message.toolCallId);
@@ -1648,35 +1656,59 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			});
 
 			// Step 3: Enforce hydration cap at entry level.
-			// When hydrated tokens exceed budget.hydrationBudgetMax, drop lowest-MMR-ranked
-			// entries (from the end of the results array — already ranked by MMR) until
-			// the total fits. Never truncate the XML blob.
+			// When hydrated tokens exceed budget.hydrationBudgetMax, drop lower-priority
+			// temporal bands (durable → recent → live) until the formatted XML fits.
+			// Never truncate the XML blob.
 			let cappedResults = hydration.results;
 			let hydratedText = hydration.text;
 			let hydratedTokens = hydratedText ? estimateMessageTokens([{ role: "developer", content: hydratedText }]) : 0;
 
 			if (budget && hydratedTokens > budget.hydrationBudgetMax && cappedResults.length > 0) {
-				// Drop entries from the end (lowest MMR rank) until within budget.
-				// Uses real token counts via formatHydratedContext + estimateMessageTokens
-				// each iteration to account for XML wrapper overhead accurately.
+				// Drop lower-priority temporal bands first (durable → recent → live),
+				// using real token counts via formatHydratedContext + estimateMessageTokens
+ 				// each iteration to account for XML wrapper overhead accurately.
 				const remaining = [...cappedResults];
+				const droppedEntries: RecallSearchResult[] = [];
 				while (remaining.length > 0) {
-					const candidateText = formatHydratedContext(remaining, sessionId);
+					const candidateText = formatHydratedContext(remaining, {
+						currentSessionId: sessionId,
+						currentProjectCwd: cwd,
+						recentWindowMs,
+					});
 					const candidateTokens = candidateText
 						? estimateMessageTokens([{ role: "developer", content: candidateText }])
 						: 0;
 					if (candidateTokens <= budget.hydrationBudgetMax) break;
-					remaining.pop();
+					const dropIndex = selectHydrationResultIndexToDrop(remaining, { recentWindowMs });
+					droppedEntries.push(remaining[dropIndex]);
+					remaining.splice(dropIndex, 1);
 				}
 
 				if (remaining.length < cappedResults.length) {
+					const droppedAt = Date.now();
 					logger.debug("assembler:hydration-cap-enforced", {
 						originalEntries: cappedResults.length,
 						survivingEntries: remaining.length,
 						hydrationBudgetMax: budget.hydrationBudgetMax,
+						droppedEntries: droppedEntries.map(entry => {
+							const ageMs = getRecallAgeMs(entry.timestamp, droppedAt);
+							return {
+								turn: entry.turn,
+								band: getRecallBand(ageMs, recentWindowMs),
+								age: formatRecallAge(ageMs),
+								session: entry.session_id === sessionId ? "current" : "other",
+								project: entry.project_cwd === cwd ? "current" : "other",
+							};
+						}),
 					});
 					cappedResults = remaining;
-					hydratedText = remaining.length > 0 ? formatHydratedContext(remaining, sessionId) : null;
+					hydratedText = remaining.length > 0
+						? formatHydratedContext(remaining, {
+								currentSessionId: sessionId,
+								currentProjectCwd: cwd,
+								recentWindowMs,
+							})
+						: null;
 					hydratedTokens = hydratedText
 						? estimateMessageTokens([{ role: "developer", content: hydratedText }])
 						: 0;

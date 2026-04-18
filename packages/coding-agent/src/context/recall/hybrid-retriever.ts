@@ -6,9 +6,11 @@ import {
 	buildRecallLookupKey,
 	buildRecallRowKey,
 	type MmrCandidate,
+	type RecallLookupKey,
 	type RecallRow,
 	type RecallSearchResult,
 } from "./types";
+import { DEFAULT_LIVE_WINDOW_MS, getRecallAgeMs, normalizeRecentWindowMs } from "./temporal";
 
 const DEFAULT_RRF_K = 60;
 const DEFAULT_SEMANTIC_OVERFETCH_FACTOR = 3;
@@ -18,7 +20,8 @@ const SAME_SESSION_BOOST = 0.003;
 const SAME_PROJECT_BOOST = 0.002;
 const EXACT_PATH_BOOST = 0.004;
 const EXACT_SYMBOL_BOOST = 0.004;
-const RECENCY_BOOST = 0.002;
+const LIVE_FRESHNESS_BOOST = 0.002;
+const RECENT_FRESHNESS_BOOST = 0.001;
 
 export type HybridSearchMode = "semantic" | "hybrid";
 
@@ -31,6 +34,7 @@ export interface HybridRetrieverOptions {
 	rrfK?: number;
 	semanticOverfetchFactor?: number;
 	keywordOverfetchFactor?: number;
+	recentWindowMs?: number;
 }
 
 export interface HybridSearchRequest {
@@ -66,6 +70,7 @@ export class HybridRetriever {
 	#rrfK: number;
 	#semanticOverfetchFactor: number;
 	#keywordOverfetchFactor: number;
+	#recentWindowMs: number;
 
 	constructor(options: HybridRetrieverOptions) {
 		this.#store = options.store;
@@ -76,12 +81,14 @@ export class HybridRetriever {
 		this.#rrfK = options.rrfK ?? DEFAULT_RRF_K;
 		this.#semanticOverfetchFactor = options.semanticOverfetchFactor ?? DEFAULT_SEMANTIC_OVERFETCH_FACTOR;
 		this.#keywordOverfetchFactor = options.keywordOverfetchFactor ?? DEFAULT_KEYWORD_OVERFETCH_FACTOR;
+		this.#recentWindowMs = normalizeRecentWindowMs(options.recentWindowMs);
 	}
 
 	async search(request: HybridSearchRequest): Promise<HybridSearchResponse> {
 		const mode = request.mode ?? "hybrid";
+		const effectiveFilter = this.#buildEffectiveFilter(request);
 		const semanticLimit = Math.max(request.limit * this.#semanticOverfetchFactor, request.limit);
-		const semanticResults = await this.#store.search(request.queryVector, semanticLimit, request.filter);
+		const semanticResults = await this.#store.search(request.queryVector, semanticLimit, effectiveFilter);
 		if (semanticResults.length === 0) {
 			return {
 				results: [],
@@ -137,7 +144,7 @@ export class HybridRetriever {
 		}
 
 		const keywordRankByKey = new Map<string, number>();
-		const unresolvedKeywordLookups: ReturnType<typeof buildRecallLookupKey>[] = [];
+		const unresolvedKeywordLookups: RecallLookupKey[] = [];
 		for (const [index, result] of keywordResults.entries()) {
 			const keywordRowKey =
 				result.rowKey ||
@@ -172,8 +179,6 @@ export class HybridRetriever {
 		}
 
 		const fusedResults = Array.from(fused.values());
-		const newestTimestamp = Math.max(...fusedResults.map(result => result.timestamp));
-		const oldestTimestamp = Math.min(...fusedResults.map(result => result.timestamp));
 		const reranked = mmrRerank(
 			fusedResults.map(result => {
 				const rowKey = buildRecallRowKey(result);
@@ -182,8 +187,6 @@ export class HybridRetriever {
 					query: request.query,
 					semanticRank: semanticRankByKey.get(rowKey),
 					keywordRank: keywordRankByKey.get(rowKey),
-					newestTimestamp,
-					oldestTimestamp,
 				});
 				const candidate: MmrCandidate<RecallSearchResult> = {
 					vector: result.vector,
@@ -227,10 +230,8 @@ export class HybridRetriever {
 		query: string;
 		semanticRank?: number;
 		keywordRank?: number;
-		newestTimestamp: number;
-		oldestTimestamp: number;
 	}): number {
-		const { result, query, semanticRank, keywordRank, newestTimestamp, oldestTimestamp } = options;
+		const { result, query, semanticRank, keywordRank } = options;
 		let score = 0;
 		if (semanticRank !== undefined) {
 			score += this.#rrf(semanticRank);
@@ -251,11 +252,33 @@ export class HybridRetriever {
 		if (this.#queryMentionsSymbol(query, result.symbols)) {
 			score += EXACT_SYMBOL_BOOST;
 		}
-		if (newestTimestamp > oldestTimestamp) {
-			const freshness = (result.timestamp - oldestTimestamp) / (newestTimestamp - oldestTimestamp);
-			score += freshness * RECENCY_BOOST;
-		}
+		score += this.#absoluteFreshnessBoost(result.timestamp);
 		return score;
+	}
+
+	#absoluteFreshnessBoost(timestamp: number): number {
+		const ageMs = getRecallAgeMs(timestamp);
+		if (ageMs <= DEFAULT_LIVE_WINDOW_MS) return LIVE_FRESHNESS_BOOST;
+		if (ageMs <= this.#recentWindowMs) return RECENT_FRESHNESS_BOOST;
+		return 0;
+	}
+
+	#buildEffectiveFilter(request: HybridSearchRequest): string | undefined {
+		const clauses: string[] = [];
+		if (request.project === "current") {
+			clauses.push(`project_cwd = '${this.#escapeSqlLiteral(this.#projectCwd)}'`);
+		}
+		if (request.role) {
+			clauses.push(`role = '${this.#escapeSqlLiteral(request.role)}'`);
+		}
+		if (request.filter?.trim()) {
+			clauses.push(`(${request.filter.trim()})`);
+		}
+		return clauses.length > 0 ? clauses.join(" AND ") : undefined;
+	}
+
+	#escapeSqlLiteral(value: string): string {
+		return value.replace(/'/g, "''");
 	}
 
 	#rrf(rank: number): number {

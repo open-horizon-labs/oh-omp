@@ -80,6 +80,13 @@ const OPTION_PROVIDERS: Partial<Record<SettingPath, OptionProvider>> = {
 		{ value: "shadow", label: "Shadow", description: "Legacy stays active while assembler observes" },
 		{ value: "assembler", label: "Assembler", description: "Assembler-managed context with legacy paths disabled" },
 	],
+	"assembler.recentWindowDays": [
+		{ value: "1", label: "1 day", description: "Keep only the last day in the recent band" },
+		{ value: "3", label: "3 days", description: "Treat the last three days as recent" },
+		{ value: "7", label: "7 days", description: "Default recent-memory window" },
+		{ value: "14", label: "14 days", description: "Keep the last two weeks in the recent band" },
+		{ value: "30", label: "30 days", description: "Keep the last month in the recent band" },
+	],
 	"compaction.idleThresholdTokens": [
 		{ value: "100000", label: "100K tokens" },
 		{ value: "200000", label: "200K tokens" },

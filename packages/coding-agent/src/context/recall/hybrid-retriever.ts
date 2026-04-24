@@ -1,6 +1,8 @@
 import * as path from "node:path";
+import type { RecallDebugCandidateTrace, RecallDebugSource } from "./debug-trace";
 import { mmrRerank } from "./mmr";
 import type { RecallStore } from "./store";
+import { DEFAULT_LIVE_WINDOW_MS, getRecallAgeMs, normalizeRecentWindowMs } from "./temporal";
 import type { ToolResultStore } from "./tool-result-store";
 import {
 	buildRecallLookupKey,
@@ -10,7 +12,6 @@ import {
 	type RecallRow,
 	type RecallSearchResult,
 } from "./types";
-import { DEFAULT_LIVE_WINDOW_MS, getRecallAgeMs, normalizeRecentWindowMs } from "./temporal";
 
 const DEFAULT_RRF_K = 60;
 const DEFAULT_SEMANTIC_OVERFETCH_FACTOR = 3;
@@ -54,6 +55,7 @@ export interface HybridSearchTrace {
 	keywordCandidates: number;
 	resolvedKeywordCandidates: number;
 	fusedCandidates: number;
+	candidates: RecallDebugCandidateTrace[];
 }
 
 export interface HybridSearchResponse {
@@ -98,6 +100,7 @@ export class HybridRetriever {
 					keywordCandidates: 0,
 					resolvedKeywordCandidates: 0,
 					fusedCandidates: 0,
+					candidates: [],
 				},
 			};
 		}
@@ -112,6 +115,7 @@ export class HybridRetriever {
 					keywordCandidates: 0,
 					resolvedKeywordCandidates: 0,
 					fusedCandidates: semanticResults.length,
+					candidates: this.#buildSemanticCandidateTrace(semanticResults),
 				},
 			};
 		}
@@ -131,6 +135,7 @@ export class HybridRetriever {
 					keywordCandidates: 0,
 					resolvedKeywordCandidates: 0,
 					fusedCandidates: semanticResults.length,
+					candidates: this.#buildSemanticCandidateTrace(semanticResults),
 				},
 			};
 		}
@@ -179,6 +184,7 @@ export class HybridRetriever {
 		}
 
 		const fusedResults = Array.from(fused.values());
+		const candidateTrace = this.#buildHybridCandidateTrace(fusedResults, semanticRankByKey, keywordRankByKey);
 		const reranked = mmrRerank(
 			fusedResults.map(result => {
 				const rowKey = buildRecallRowKey(result);
@@ -208,6 +214,7 @@ export class HybridRetriever {
 				keywordCandidates: keywordResults.length,
 				resolvedKeywordCandidates: resolvedKeywordRows.size,
 				fusedCandidates: fusedResults.length,
+				candidates: candidateTrace,
 			},
 		};
 	}
@@ -223,6 +230,36 @@ export class HybridRetriever {
 		)
 			.slice(0, limit)
 			.map(candidate => candidate.data);
+	}
+
+	#buildSemanticCandidateTrace(results: RecallSearchResult[]): RecallDebugCandidateTrace[] {
+		return results.map((result, index) => ({
+			rowKey: buildRecallRowKey(result),
+			semanticRank: index + 1,
+			keywordRank: null,
+			source: "semantic",
+		}));
+	}
+
+	#buildHybridCandidateTrace(
+		results: RecallSearchResult[],
+		semanticRankByKey: Map<string, number>,
+		keywordRankByKey: Map<string, number>,
+	): RecallDebugCandidateTrace[] {
+		return results.map(result => {
+			const rowKey = buildRecallRowKey(result);
+			const semanticRank = semanticRankByKey.get(rowKey) ?? null;
+			const keywordRank = keywordRankByKey.get(rowKey) ?? null;
+			let source: RecallDebugSource = "unknown";
+			if (semanticRank && keywordRank) {
+				source = "fused";
+			} else if (semanticRank) {
+				source = "semantic";
+			} else if (keywordRank) {
+				source = "keyword";
+			}
+			return { rowKey, semanticRank, keywordRank, source };
+		});
 	}
 
 	#scoreResult(options: {

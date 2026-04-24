@@ -51,6 +51,7 @@ import { ToolResultBridge } from "./context/bridge";
 import { captureEffectivePromptSnapshot, type EffectivePromptSnapshot } from "./context/effective-prompt-snapshot";
 import { extractPaths } from "./context/extract-paths";
 import {
+	buildRecallDebugEntries,
 	daysToRecallWindowMs,
 	extractAssistantText,
 	extractPathsFromText,
@@ -59,9 +60,10 @@ import {
 	formatRecallAge,
 	getRecallAgeMs,
 	getRecallBand,
-	type RecallSearchResult,
 	IngestPipeline,
 	PassiveHydrator,
+	type RecallDebugTrace,
+	type RecallSearchResult,
 	RecallStore,
 	resolveMemexLicense,
 	selectHydrationResultIndexToDrop,
@@ -621,6 +623,55 @@ function buildMCPPromptCommands(manager: MCPManager): LoadedCustomCommand[] {
 	}
 	return commands;
 }
+function finalizeRecallDebugTrace(
+	trace: RecallDebugTrace,
+	options: {
+		turnId: string;
+		selected: RecallSearchResult[];
+		dropped: RecallSearchResult[];
+		injectedText: string | null;
+		injectedTokenEstimate: number;
+		sessionId: string;
+		projectCwd: string;
+		recentWindowMs: number;
+	},
+): RecallDebugTrace {
+	const now = Date.now();
+	const provenance = new Map(
+		trace.selected.map(entry => [
+			entry.rowKey,
+			{
+				rowKey: entry.rowKey,
+				semanticRank: entry.semanticRank,
+				keywordRank: entry.keywordRank,
+				source: entry.source,
+			},
+		]),
+	);
+	return {
+		...trace,
+		turnId: options.turnId,
+		capturedAt: new Date(now).toISOString(),
+		injected: !!options.injectedText,
+		selected: buildRecallDebugEntries(options.selected, {
+			now,
+			sessionId: options.sessionId,
+			projectCwd: options.projectCwd,
+			recentWindowMs: options.recentWindowMs,
+			provenance,
+		}),
+		dropped: buildRecallDebugEntries(options.dropped, {
+			now,
+			sessionId: options.sessionId,
+			projectCwd: options.projectCwd,
+			recentWindowMs: options.recentWindowMs,
+			provenance,
+		}),
+		injectedText: options.injectedText,
+		injectedTokenEstimate: options.injectedTokenEstimate,
+	};
+}
+
 /**
  * Create an AgentSession with the specified options.
  *
@@ -1594,6 +1645,8 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	// Extensions transform is always composed when available.
 	// All modes capture an effective-prompt snapshot for canonical observability.
 	let lastPromptSnapshot: EffectivePromptSnapshot | null = null;
+	let lastRecallTrace: RecallDebugTrace | null = null;
+	const recallTraceHistory: RecallDebugTrace[] = [];
 	const transformContext = (() => {
 		const extensionTransform = extensionRunner
 			? (messages: AgentMessage[]) => extensionRunner.emitContext(messages)
@@ -1647,7 +1700,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			// Step 2: Run passive hydration (embed hot window -> cache check -> search -> MMR).
 			const hydration = passiveHydrator
 				? await passiveHydrator.hydrate(messages)
-				: { text: null, results: [], cacheHit: false, durationMs: 0 };
+				: { text: null, results: [], cacheHit: false, durationMs: 0, trace: null };
 
 			logger.debug("assembler:passive-hydration", {
 				resultCount: hydration.results.length,
@@ -1662,13 +1715,14 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			let cappedResults = hydration.results;
 			let hydratedText = hydration.text;
 			let hydratedTokens = hydratedText ? estimateMessageTokens([{ role: "developer", content: hydratedText }]) : 0;
+			let droppedEntries: RecallSearchResult[] = [];
 
 			if (budget && hydratedTokens > budget.hydrationBudgetMax && cappedResults.length > 0) {
 				// Drop lower-priority temporal bands first (durable → recent → live),
 				// using real token counts via formatHydratedContext + estimateMessageTokens
- 				// each iteration to account for XML wrapper overhead accurately.
+				// each iteration to account for XML wrapper overhead accurately.
 				const remaining = [...cappedResults];
-				const droppedEntries: RecallSearchResult[] = [];
+				const droppedDuringCap: RecallSearchResult[] = [];
 				while (remaining.length > 0) {
 					const candidateText = formatHydratedContext(remaining, {
 						currentSessionId: sessionId,
@@ -1680,7 +1734,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 						: 0;
 					if (candidateTokens <= budget.hydrationBudgetMax) break;
 					const dropIndex = selectHydrationResultIndexToDrop(remaining, { recentWindowMs });
-					droppedEntries.push(remaining[dropIndex]);
+					droppedDuringCap.push(remaining[dropIndex]);
 					remaining.splice(dropIndex, 1);
 				}
 
@@ -1690,7 +1744,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 						originalEntries: cappedResults.length,
 						survivingEntries: remaining.length,
 						hydrationBudgetMax: budget.hydrationBudgetMax,
-						droppedEntries: droppedEntries.map(entry => {
+						droppedEntries: droppedDuringCap.map(entry => {
 							const ageMs = getRecallAgeMs(entry.timestamp, droppedAt);
 							return {
 								turn: entry.turn,
@@ -1701,14 +1755,16 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 							};
 						}),
 					});
+					droppedEntries = droppedDuringCap;
 					cappedResults = remaining;
-					hydratedText = remaining.length > 0
-						? formatHydratedContext(remaining, {
-								currentSessionId: sessionId,
-								currentProjectCwd: cwd,
-								recentWindowMs,
-							})
-						: null;
+					hydratedText =
+						remaining.length > 0
+							? formatHydratedContext(remaining, {
+									currentSessionId: sessionId,
+									currentProjectCwd: cwd,
+									recentWindowMs,
+								})
+							: null;
 					hydratedTokens = hydratedText
 						? estimateMessageTokens([{ role: "developer", content: hydratedText }])
 						: 0;
@@ -1868,6 +1924,24 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				assemblerBudget: budget ?? null,
 			});
 
+			if (hydration.trace) {
+				const finalizedTrace = finalizeRecallDebugTrace(hydration.trace, {
+					turnId,
+					selected: cappedResults,
+					dropped: droppedEntries,
+					injectedText: hydratedText,
+					injectedTokenEstimate: hydratedTokens,
+					sessionId,
+					projectCwd: cwd,
+					recentWindowMs,
+				});
+				lastRecallTrace = finalizedTrace;
+				recallTraceHistory.push(finalizedTrace);
+				if (recallTraceHistory.length > 20) {
+					recallTraceHistory.shift();
+				}
+			}
+
 			// Step 8: Inject assembly summary as developer message.
 			const summary = formatAssemblySummary(lastPromptSnapshot);
 			if (summary) {
@@ -1997,6 +2071,8 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		pendingActionStore,
 		assemblerBridge,
 		getLastPromptSnapshotFn: () => lastPromptSnapshot,
+		getLastRecallTraceFn: () => lastRecallTrace,
+		getRecallTraceHistoryFn: () => recallTraceHistory,
 		searchDb,
 	});
 

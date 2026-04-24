@@ -413,7 +413,7 @@ describe("formatHydratedContext — source provenance", () => {
 			makeSearchResult({
 				text: 'x < y & "quoted"',
 				role: "tool_result",
-				tool_name: 'read<&>',
+				tool_name: "read<&>",
 				turn: 9,
 			}),
 		];
@@ -421,7 +421,7 @@ describe("formatHydratedContext — source provenance", () => {
 
 		expect(formatted).toContain('tool="read&lt;&amp;&gt;"');
 		expect(formatted).toContain('source="tool:read&lt;&amp;&gt;"');
-		expect(formatted).toContain('x &lt; y &amp; &quot;quoted&quot;');
+		expect(formatted).toContain("x &lt; y &amp; &quot;quoted&quot;");
 	});
 
 	test("omits session attribute when no currentSessionId provided", () => {

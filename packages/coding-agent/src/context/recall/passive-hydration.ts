@@ -14,6 +14,12 @@
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import { logger } from "@oh-my-pi/pi-utils";
 import { parseMCPToolName } from "../../mcp/tool-bridge";
+import { buildRecallDebugEntries, type RecallDebugTrace } from "./debug-trace";
+import { embed } from "./embed";
+import { HybridRetriever } from "./hybrid-retriever";
+import { extractAssistantText, extractToolResultText, extractUserText } from "./message-text";
+import { cosineSimilarity } from "./mmr";
+import type { RecallStore } from "./store";
 import {
 	DEFAULT_RECENT_WINDOW_MS,
 	formatRecallAge,
@@ -22,11 +28,6 @@ import {
 	normalizeRecentWindowMs,
 	type RecallBand,
 } from "./temporal";
-import { embed } from "./embed";
-import { HybridRetriever } from "./hybrid-retriever";
-import { extractAssistantText, extractToolResultText, extractUserText } from "./message-text";
-import { cosineSimilarity } from "./mmr";
-import type { RecallStore } from "./store";
 import type { ToolResultStore } from "./tool-result-store";
 import { DEFAULT_RECALL_MMR_LAMBDA, type RecallSearchResult } from "./types";
 
@@ -164,7 +165,11 @@ export interface HydratedContextFormatOptions {
 	recentWindowMs?: number;
 }
 
-function countRecallBands(results: RecallSearchResult[], now: number, recentWindowMs: number): Record<RecallBand, number> {
+function countRecallBands(
+	results: RecallSearchResult[],
+	now: number,
+	recentWindowMs: number,
+): Record<RecallBand, number> {
 	const counts: Record<RecallBand, number> = { live: 0, recent: 0, durable: 0 };
 	for (const result of results) {
 		const ageMs = getRecallAgeMs(result.timestamp, now);
@@ -220,9 +225,7 @@ export function formatHydratedContext(
 			attrs.push(formatXmlAttr("session", result.session_id === options.currentSessionId ? "current" : "other"));
 		}
 		if (options.currentProjectCwd) {
-			attrs.push(
-				formatXmlAttr("project", result.project_cwd === options.currentProjectCwd ? "current" : "other"),
-			);
+			attrs.push(formatXmlAttr("project", result.project_cwd === options.currentProjectCwd ? "current" : "other"));
 		}
 		parts.push(`<entry ${attrs.join(" ")}>`);
 		parts.push(escapeXml(result.text));
@@ -259,6 +262,8 @@ export interface HydrationResult {
 	cacheHit: boolean;
 	/** Wall-clock time of the hydration pipeline in ms. */
 	durationMs: number;
+	/** Structured observability payload for /recall debugging. */
+	trace: RecallDebugTrace | null;
 }
 
 export class PassiveHydrator {
@@ -311,7 +316,7 @@ export class PassiveHydrator {
 				error: err instanceof Error ? err.message : String(err),
 				durationMs: Math.round(durationMs),
 			});
-			return { text: null, results: [], cacheHit: false, durationMs };
+			return { text: null, results: [], cacheHit: false, durationMs, trace: null };
 		}
 	}
 
@@ -330,13 +335,27 @@ export class PassiveHydrator {
 		// 1. Extract hot window text
 		const hotWindowText = extractHotWindowText(messages, this.#hotWindowTurns);
 		if (!hotWindowText) {
-			return { text: null, results: [], cacheHit: false, durationMs: Date.now() - start };
+			return { text: null, results: [], cacheHit: false, durationMs: Date.now() - start, trace: null };
 		}
 
 		// 2. Embed the hot window
 		const vectors = await this.#embedWithTimeout(hotWindowText, start);
 		if (!vectors) {
-			return { text: null, results: [], cacheHit: false, durationMs: Date.now() - start };
+			const durationMs = Date.now() - start;
+			return {
+				text: null,
+				results: [],
+				cacheHit: false,
+				durationMs,
+				trace: this.#buildTrace({
+					hotWindowText,
+					results: [],
+					text: null,
+					cacheHit: false,
+					durationMs,
+					embeddingGenerated: false,
+				}),
+			};
 		}
 		const embedding = vectors[0];
 
@@ -348,11 +367,20 @@ export class PassiveHydrator {
 				currentProjectCwd: this.#projectCwd,
 				recentWindowMs: this.#recentWindowMs,
 			});
+			const durationMs = Date.now() - start;
 			return {
 				text,
 				results: cacheResult.results,
 				cacheHit: true,
-				durationMs: Date.now() - start,
+				durationMs,
+				trace: this.#buildTrace({
+					hotWindowText,
+					results: cacheResult.results,
+					text,
+					cacheHit: true,
+					durationMs,
+					embeddingGenerated: true,
+				}),
 			};
 		}
 
@@ -368,7 +396,22 @@ export class PassiveHydrator {
 
 		if (topResults.length === 0) {
 			this.#cache.update(embedding, []);
-			return { text: null, results: [], cacheHit: false, durationMs: Date.now() - start };
+			const durationMs = Date.now() - start;
+			return {
+				text: null,
+				results: [],
+				cacheHit: false,
+				durationMs,
+				trace: this.#buildTrace({
+					hotWindowText,
+					results: [],
+					text: null,
+					cacheHit: false,
+					durationMs,
+					embeddingGenerated: true,
+					responseTrace: response.trace,
+				}),
+			};
 		}
 
 		// 5. Update cache
@@ -396,7 +439,86 @@ export class PassiveHydrator {
 			bandCounts,
 		});
 
-		return { text, results: topResults, cacheHit: false, durationMs };
+		return {
+			text,
+			results: topResults,
+			cacheHit: false,
+			durationMs,
+			trace: this.#buildTrace({
+				hotWindowText,
+				results: topResults,
+				text,
+				cacheHit: false,
+				durationMs,
+				embeddingGenerated: true,
+				responseTrace: response.trace,
+				now: formattedAt,
+			}),
+		};
+	}
+
+	#buildTrace(options: {
+		hotWindowText: string;
+		results: RecallSearchResult[];
+		text: string | null;
+		cacheHit: boolean;
+		durationMs: number;
+		embeddingGenerated: boolean;
+		responseTrace?: {
+			mode: "semantic" | "hybrid";
+			semanticCandidates: number;
+			keywordCandidates: number;
+			resolvedKeywordCandidates: number;
+			fusedCandidates: number;
+			candidates: Array<{
+				rowKey: string;
+				semanticRank: number | null;
+				keywordRank: number | null;
+				source: "semantic" | "keyword" | "fused" | "cache" | "unknown";
+			}>;
+		};
+		now?: number;
+	}): RecallDebugTrace {
+		const now = options.now ?? Date.now();
+		const provenance = new Map(options.responseTrace?.candidates.map(candidate => [candidate.rowKey, candidate]));
+		return {
+			turnId: null,
+			capturedAt: new Date(now).toISOString(),
+			attempted: true,
+			injected: !!options.text,
+			cacheHit: options.cacheHit,
+			durationMs: options.durationMs,
+			failure: null,
+			query: {
+				text: options.hotWindowText,
+				charCount: options.hotWindowText.length,
+				estimatedTokens: Math.ceil(options.hotWindowText.length / 4),
+				hotWindowTurns: this.#hotWindowTurns,
+				embeddingGenerated: options.embeddingGenerated,
+			},
+			retrieval: {
+				mode: options.responseTrace?.mode ?? "hybrid",
+				projectScope: "all",
+				roleFilter: null,
+				recentWindowMs: this.#recentWindowMs,
+				topK: this.#topK,
+				semanticCandidates: options.responseTrace?.semanticCandidates ?? 0,
+				keywordCandidates: options.responseTrace?.keywordCandidates ?? 0,
+				resolvedKeywordCandidates: options.responseTrace?.resolvedKeywordCandidates ?? 0,
+				fusedCandidates: options.responseTrace?.fusedCandidates ?? options.results.length,
+			},
+			selected: buildRecallDebugEntries(options.results, {
+				now,
+				sessionId: this.#sessionId,
+				projectCwd: this.#projectCwd,
+				recentWindowMs: this.#recentWindowMs,
+				provenance,
+				sourceFallback: options.cacheHit ? "cache" : "unknown",
+			}),
+			dropped: [],
+			injectedText: options.text,
+			injectedTokenEstimate: options.text ? Math.ceil(options.text.length / 4) : 0,
+		};
 	}
 
 	async #embedWithTimeout(text: string, start: number): Promise<Float32Array[] | null> {

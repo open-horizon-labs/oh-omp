@@ -66,6 +66,7 @@ import { expandPromptTemplate, type PromptTemplate, renderPromptTemplate } from 
 import type { Settings, SkillsSettings } from "../config/settings";
 import type { ToolResultBridge } from "../context/bridge";
 import type { EffectivePromptSnapshot } from "../context/effective-prompt-snapshot";
+import type { RecallDebugTrace } from "../context/recall";
 import { type BashResult, executeBash as executeBashCommand } from "../exec/bash-executor";
 import { exportSessionToHtml } from "../export/html";
 import type { TtsrManager, TtsrMatchContext } from "../export/ttsr";
@@ -252,6 +253,10 @@ export interface AgentSessionConfig {
 	assemblerBridge?: ToolResultBridge;
 	/** Fork-specific: returns the last effective prompt snapshot */
 	getLastPromptSnapshotFn?: () => EffectivePromptSnapshot | null;
+	/** Fork-specific: returns the last passive recall debug trace. */
+	getLastRecallTraceFn?: () => RecallDebugTrace | null;
+	/** Fork-specific: returns recent passive recall debug traces. */
+	getRecallTraceHistoryFn?: () => readonly RecallDebugTrace[];
 	/** Shared native search DB for grep/glob/fuzzyFind-backed workflows. */
 	searchDb?: SearchDb;
 }
@@ -488,6 +493,8 @@ export class AgentSession {
 	// Fork-specific: assembler introspection
 	#assemblerBridge: ToolResultBridge | undefined;
 	#getLastPromptSnapshot: (() => EffectivePromptSnapshot | null) | undefined;
+	#getLastRecallTrace: (() => RecallDebugTrace | null) | undefined;
+	#getRecallTraceHistory: (() => readonly RecallDebugTrace[]) | undefined;
 	#baseSystemPrompt: string;
 	#mcpDiscoveryEnabled = false;
 	#discoverableMCPTools = new Map<string, DiscoverableMCPTool>();
@@ -571,6 +578,8 @@ export class AgentSession {
 		this.#pendingActionStore = config.pendingActionStore;
 		this.#assemblerBridge = config.assemblerBridge;
 		this.#getLastPromptSnapshot = config.getLastPromptSnapshotFn;
+		this.#getLastRecallTrace = config.getLastRecallTraceFn;
+		this.#getRecallTraceHistory = config.getRecallTraceHistoryFn;
 		this.#unsubscribePendingActionPush = this.#pendingActionStore?.subscribePush(action => {
 			const reminderText = [
 				"<system-reminder>",
@@ -2038,6 +2047,16 @@ export class AgentSession {
 	/** Fork-specific: returns the last effective prompt snapshot from the assembler */
 	getLastPromptSnapshot(): EffectivePromptSnapshot | null {
 		return this.#getLastPromptSnapshot?.() ?? null;
+	}
+
+	/** Fork-specific: returns the last passive recall debug trace */
+	getLastRecallTrace(): RecallDebugTrace | null {
+		return this.#getLastRecallTrace?.() ?? null;
+	}
+
+	/** Fork-specific: returns recent passive recall debug traces */
+	getRecallTraceHistory(): readonly RecallDebugTrace[] {
+		return this.#getRecallTraceHistory?.() ?? [];
 	}
 
 	buildDisplaySessionContext(): SessionContext {

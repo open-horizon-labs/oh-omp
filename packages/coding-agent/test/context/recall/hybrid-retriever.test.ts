@@ -225,6 +225,4 @@ describe("HybridRetriever", () => {
 		toolResultStore.close();
 		recallStore.close();
 	});
-
-
 });

@@ -353,6 +353,23 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<BuiltinSlashCommandSpec> = [
 		},
 	},
 	{
+		name: "recall",
+		description: "Inspect passive recall hydration for the last turn",
+		subcommands: [
+			{ name: "last", description: "Show the last recall summary" },
+			{ name: "why", description: "Explain a selected recall entry", usage: "why <rank>" },
+			{ name: "prompt", description: "Show the exact recalled-context injection" },
+			{ name: "trace", description: "Show the raw structured recall trace" },
+			{ name: "history", description: "Show recent recall trace summaries", usage: "history [count]" },
+			{ name: "help", description: "Show recall debug help" },
+		],
+		allowArgs: true,
+		handle: async (command, runtime) => {
+			await runtime.ctx.handleRecallCommand(command.text);
+			runtime.ctx.editor.setText("");
+		},
+	},
+	{
 		name: "branch",
 		description: "Create a new branch from a previous message",
 		handle: (_command, runtime) => {

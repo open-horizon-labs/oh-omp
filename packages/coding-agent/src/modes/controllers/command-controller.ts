@@ -14,6 +14,7 @@ import { Loader, Markdown, padding, Spacer, Text, visibleWidth } from "@oh-my-pi
 import { formatDuration, Snowflake, setProjectDir } from "@oh-my-pi/pi-utils";
 import { $ } from "bun";
 import { reset as resetCapabilities } from "../../capability";
+import type { RecallDebugEntry, RecallDebugTrace } from "../../context/recall";
 import { clearClaudePluginRootsCache } from "../../discovery/helpers";
 import { loadCustomShare } from "../../export/custom-share";
 import type { CompactOptions } from "../../extensibility/extensions/types";
@@ -44,6 +45,111 @@ function showMarkdownPanel(ctx: InteractiveModeContext, title: string, markdown:
 	ctx.chatContainer.addChild(new Markdown(markdown.trim(), 1, 1, getMarkdownTheme()));
 	ctx.chatContainer.addChild(new DynamicBorder());
 	ctx.ui.requestRender();
+}
+
+function escapeMarkdownCell(value: string): string {
+	return replaceTabs(value).replace(/\|/g, "\\|").replace(/\s+/g, " ").trim();
+}
+
+function truncateRecallText(value: string, maxLength = 96): string {
+	const sanitized = escapeMarkdownCell(value);
+	return sanitized.length > maxLength ? `${sanitized.slice(0, maxLength - 3)}...` : sanitized;
+}
+
+function formatRecallStatus(trace: RecallDebugTrace): string {
+	if (!trace.attempted) return "not attempted";
+	if (trace.failure) return "failed";
+	if (trace.injected) return "injected";
+	return "no results";
+}
+
+function formatRecallEntryRow(entry: RecallDebugEntry): string {
+	const session = entry.sameSession ? "same" : "other";
+	const project = entry.sameProject ? "same" : "other";
+	return `| ${entry.rank} | ${entry.role} | ${entry.age} | ${entry.band} | ${session} | ${project} | ${entry.source} | ${truncateRecallText(entry.textPreview)} |`;
+}
+
+function buildRecallHelpMarkdown(): string {
+	return [
+		"Usage: `/recall <last|why|prompt|trace|history|help>`",
+		"",
+		"- `/recall` — show the last passive recall summary",
+		"- `/recall why <rank>` — explain one selected entry",
+		"- `/recall prompt` — show the exact injected `<recalled-context>` block",
+		"- `/recall trace` — show the raw structured trace",
+		"- `/recall history [count]` — show recent recall events",
+		"- `/recall help` — show this help",
+	].join("\n");
+}
+
+function buildRecallLastMarkdown(trace: RecallDebugTrace): string {
+	const retrieval = trace.retrieval;
+	const lines = [
+		`- Turn: ${trace.turnId ?? "unknown"}`,
+		`- Captured: ${trace.capturedAt}`,
+		`- Status: ${formatRecallStatus(trace)}`,
+		`- Cache: ${trace.cacheHit ? "hit" : "miss"}`,
+		`- Duration: ${Math.round(trace.durationMs)}ms`,
+		`- Mode/scope: ${retrieval.mode} / ${retrieval.projectScope}`,
+		`- Role filter: ${retrieval.roleFilter ?? "any"}`,
+		`- Query: ${trace.query.charCount} chars (~${trace.query.estimatedTokens} tokens), hot window ${trace.query.hotWindowTurns} turns`,
+		`- Candidates: semantic ${retrieval.semanticCandidates}, keyword ${retrieval.keywordCandidates}, resolved ${retrieval.resolvedKeywordCandidates}, fused ${retrieval.fusedCandidates}`,
+		`- Selected/dropped: ${trace.selected.length} / ${trace.dropped.length}`,
+		`- Injected tokens: ${trace.injectedTokenEstimate}`,
+		"",
+	];
+
+	if (trace.selected.length === 0) {
+		lines.push("No recalled entries were selected.");
+	} else {
+		lines.push("| # | role | age | band | session | project | source | preview |");
+		lines.push("|---|------|-----|------|---------|---------|--------|---------|");
+		for (const entry of trace.selected) {
+			lines.push(formatRecallEntryRow(entry));
+		}
+	}
+
+	lines.push("", "Use `/recall why <rank>`, `/recall prompt`, or `/recall trace` for details.");
+	return lines.join("\n");
+}
+
+function buildRecallWhyMarkdown(trace: RecallDebugTrace, rank: number): string | null {
+	const entry = trace.selected[rank - 1];
+	if (!entry) return null;
+	const lines = [
+		`#${entry.rank} ${entry.role} recall entry`,
+		"",
+		`- Turn: ${entry.turn}`,
+		`- Tool: ${entry.toolName ?? "none"}`,
+		`- Timestamp: ${new Date(entry.timestamp).toISOString()}`,
+		`- Age/band: ${entry.age} / ${entry.band}`,
+		`- Session: ${entry.sameSession ? "same" : "other"}`,
+		`- Project: ${entry.sameProject ? "same" : "other"}`,
+		`- Source: ${entry.source}`,
+		`- Semantic rank: ${entry.semanticRank ?? "n/a"}`,
+		`- Keyword rank: ${entry.keywordRank ?? "n/a"}`,
+		"",
+		"```text",
+		replaceTabs(entry.textPreview),
+		"```",
+	];
+	return lines.join("\n");
+}
+
+function buildRecallHistoryMarkdown(traces: readonly RecallDebugTrace[], count: number): string {
+	const selected = traces.slice(-count).reverse();
+	if (selected.length === 0) return "No recall traces have been captured yet.";
+	const lines = [
+		"| turn | time | status | cache | ms | mode | scope | selected | dropped |",
+		"|------|------|--------|-------|----|------|-------|----------|---------|",
+	];
+	for (const trace of selected) {
+		const time = new Date(trace.capturedAt).toLocaleTimeString();
+		lines.push(
+			`| ${trace.turnId ?? "unknown"} | ${time} | ${formatRecallStatus(trace)} | ${trace.cacheHit ? "hit" : "miss"} | ${Math.round(trace.durationMs)} | ${trace.retrieval.mode} | ${trace.retrieval.projectScope} | ${trace.selected.length} | ${trace.dropped.length} |`,
+		);
+	}
+	return lines.join("\n");
 }
 
 export class CommandController {
@@ -528,6 +634,88 @@ export class CommandController {
 	handleToolsCommand(): void {
 		const tools = buildToolsMarkdown({ tools: this.ctx.session.agent.state.tools });
 		showMarkdownPanel(this.ctx, "Available Tools", tools);
+	}
+
+	async handleRecallCommand(text: string): Promise<void> {
+		const argumentText = text.slice(7).trim();
+		const [rawAction, rawArg] = argumentText.split(/\s+/, 2);
+		const action = rawAction?.toLowerCase() || "last";
+
+		if (action === "help") {
+			showMarkdownPanel(this.ctx, "Recall Debug", buildRecallHelpMarkdown());
+			return;
+		}
+
+		const trace = this.ctx.session.getLastRecallTrace();
+		if (action === "history") {
+			const parsedCount = rawArg ? Number.parseInt(rawArg, 10) : 5;
+			const count = Number.isFinite(parsedCount) ? Math.min(Math.max(parsedCount, 1), 20) : 5;
+			showMarkdownPanel(
+				this.ctx,
+				"Recall History",
+				buildRecallHistoryMarkdown(this.ctx.session.getRecallTraceHistory(), count),
+			);
+			return;
+		}
+
+		if (!trace) {
+			this.ctx.showWarning("No recall trace has been captured yet.");
+			return;
+		}
+
+		if (action === "last") {
+			showMarkdownPanel(this.ctx, "Recall Debug", buildRecallLastMarkdown(trace));
+			return;
+		}
+
+		if (action === "why") {
+			const rank = rawArg ? Number.parseInt(rawArg, 10) : Number.NaN;
+			if (!Number.isInteger(rank) || rank < 1) {
+				this.ctx.showWarning("Usage: /recall why <rank>");
+				return;
+			}
+			const markdown = buildRecallWhyMarkdown(trace, rank);
+			if (!markdown) {
+				this.ctx.showWarning(`Recall entry #${rank} is not available in the last trace.`);
+				return;
+			}
+			showMarkdownPanel(this.ctx, "Recall Explanation", markdown);
+			return;
+		}
+
+		if (action === "prompt") {
+			const snapshot = this.ctx.session.getLastPromptSnapshot();
+			const recalled = snapshot?.messages.final.find(message => {
+				const content = (message as { content?: unknown }).content;
+				return (
+					message.role === "developer" &&
+					typeof content === "string" &&
+					content.trimStart().startsWith("<recalled-context")
+				);
+			});
+			const recalledContent = (recalled as { content?: unknown } | undefined)?.content;
+			const content = typeof recalledContent === "string" ? recalledContent : trace.injectedText;
+			if (!content) {
+				this.ctx.showWarning("No recalled-context block was injected on the last traced turn.");
+				return;
+			}
+			showMarkdownPanel(
+				this.ctx,
+				"Recall Prompt Injection",
+				`Estimated tokens: ${trace.injectedTokenEstimate}\n\n\`\`\`xml\n${replaceTabs(content)}\n\`\`\``,
+			);
+			return;
+		}
+
+		if (action === "trace") {
+			const serialized = replaceTabs(JSON.stringify(trace, null, 2));
+			const displayed =
+				serialized.length > 20_000 ? `${serialized.slice(0, 20_000)}\n... truncated ...` : serialized;
+			showMarkdownPanel(this.ctx, "Recall Trace", `\`\`\`json\n${displayed}\n\`\`\``);
+			return;
+		}
+
+		this.ctx.showWarning("Usage: /recall <last|why|prompt|trace|history|help>");
 	}
 
 	async handleMemoryCommand(text: string): Promise<void> {

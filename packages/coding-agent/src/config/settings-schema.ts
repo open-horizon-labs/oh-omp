@@ -381,7 +381,8 @@ export const SETTINGS_SCHEMA = {
 		ui: {
 			tab: "agent",
 			label: "Recent memory window",
-			description: "Context newer than this stays in the recent band; older context becomes durable (live is always the freshest hour)",
+			description:
+				"Context newer than this stays in the recent band; older context becomes durable (live is always the freshest hour)",
 			submenu: true,
 			condition: "isAssemblerMode",
 		},

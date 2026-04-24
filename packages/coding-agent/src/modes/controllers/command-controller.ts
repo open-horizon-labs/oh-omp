@@ -14,6 +14,7 @@ import { Loader, Markdown, padding, Spacer, Text, visibleWidth } from "@oh-my-pi
 import { formatDuration, Snowflake, setProjectDir } from "@oh-my-pi/pi-utils";
 import { $ } from "bun";
 import { reset as resetCapabilities } from "../../capability";
+import { parseFactsArgv, runFactsCommand } from "../../cli/facts-cli";
 import type { RecallDebugEntry, RecallDebugTrace } from "../../context/recall";
 import { clearClaudePluginRootsCache } from "../../discovery/helpers";
 import { loadCustomShare } from "../../export/custom-share";
@@ -34,6 +35,7 @@ import { outputMeta } from "../../tools/output-meta";
 import { resolveToCwd, stripOuterDoubleQuotes } from "../../tools/path-utils";
 import { replaceTabs } from "../../tools/render-utils";
 import { getChangelogPath, parseChangelog } from "../../utils/changelog";
+import { parseCommandArgs } from "../../utils/command-args";
 import { openPath } from "../../utils/open";
 import { setSessionTerminalTitle } from "../../utils/title-generator";
 
@@ -716,6 +718,23 @@ export class CommandController {
 		}
 
 		this.ctx.showWarning("Usage: /recall <last|why|prompt|trace|history|help>");
+	}
+
+	async handleFactsCommand(text: string): Promise<void> {
+		const argumentText = text.slice(6).trim();
+		try {
+			const cmd = parseFactsArgv(parseCommandArgs(argumentText));
+			const output = await runFactsCommand(cmd, {
+				agentDir: this.ctx.settings.getAgentDir(),
+				cwd: this.ctx.sessionManager.getCwd(),
+			});
+			const sanitized = replaceTabs(output);
+			const displayed = sanitized.length > 20_000 ? `${sanitized.slice(0, 20_000)}\n... truncated ...` : sanitized;
+			showMarkdownPanel(this.ctx, "Facts", `\`\`\`text\n${displayed}\n\`\`\``);
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			this.ctx.showError(`Facts command failed: ${replaceTabs(message)}`);
+		}
 	}
 
 	async handleMemoryCommand(text: string): Promise<void> {

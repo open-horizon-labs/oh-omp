@@ -577,6 +577,24 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<BuiltinSlashCommandSpec> = [
 		},
 	},
 	{
+		name: "facts",
+		description: "Manage local fact assertions",
+		subcommands: [
+			{ name: "add", description: "Add a manual fact", usage: "add <kind> <subject> <predicate> <value>" },
+			{ name: "view", description: "List active facts" },
+			{ name: "search", description: "Search facts", usage: "search <query>" },
+			{ name: "explain", description: "Explain a fact with provenance", usage: "explain <id>" },
+			{ name: "retract", description: "Retract a fact but preserve history", usage: "retract <id> [reason]" },
+			{ name: "erase", description: "Erase/redact a fact payload", usage: "erase <id> [reason]" },
+			{ name: "prompt", description: "Preview known-facts prompt block" },
+		],
+		allowArgs: true,
+		handle: async (command, runtime) => {
+			runtime.ctx.editor.setText("");
+			await runtime.ctx.handleFactsCommand(command.text);
+		},
+	},
+	{
 		name: "memory",
 		description: "Inspect and operate memory maintenance",
 		subcommands: [

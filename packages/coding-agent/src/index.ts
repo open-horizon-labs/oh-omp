@@ -31,6 +31,7 @@ export * from "./extensibility/extensions";
 export * from "./extensibility/skills";
 // Slash commands
 export { type FileSlashCommand, loadSlashCommands as discoverSlashCommands } from "./extensibility/slash-commands";
+export * from "./facts";
 export type * from "./lsp";
 // Main entry point
 export * from "./main";

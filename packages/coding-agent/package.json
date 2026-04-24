@@ -259,6 +259,14 @@
 			"types": "./src/extensibility/plugins/*.ts",
 			"import": "./src/extensibility/plugins/*.ts"
 		},
+		"./facts": {
+			"types": "./src/facts/index.ts",
+			"import": "./src/facts/index.ts"
+		},
+		"./facts/*": {
+			"types": "./src/facts/*.ts",
+			"import": "./src/facts/*.ts"
+		},
 		"./internal-urls": {
 			"types": "./src/internal-urls/index.ts",
 			"import": "./src/internal-urls/index.ts"

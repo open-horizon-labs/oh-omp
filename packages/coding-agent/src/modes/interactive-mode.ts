@@ -1243,6 +1243,10 @@ export class InteractiveMode implements InteractiveModeContext {
 		return this.#commandController.handleMoveCommand(targetPath);
 	}
 
+	handleFactsCommand(text: string): Promise<void> {
+		return this.#commandController.handleFactsCommand(text);
+	}
+
 	handleMemoryCommand(text: string): Promise<void> {
 		return this.#commandController.handleMemoryCommand(text);
 	}

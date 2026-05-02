@@ -45,6 +45,12 @@ jobs:
         env:
           PI_RELEASE_VERSION: ${{ github.ref_name }}
 
+      - name: Ad-hoc codesign (macOS)
+        if: matrix.platform == 'darwin'
+        run: |
+          codesign --remove-signature packages/coding-agent/dist/oh-omp
+          codesign -s - packages/coding-agent/dist/oh-omp
+
       - uses: actions/upload-artifact@v4
         with:
           name: oh-omp-${{ matrix.platform }}-${{ matrix.arch }}

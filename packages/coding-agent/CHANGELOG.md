@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-05-03
+
 ### Added
 
 - Adapted upstream GitHub code and commit search tools as standalone `gh_search_code` and `gh_search_commits` tools for source/release archaeology without adopting the broader upstream GitHub op-tool refactor.
@@ -9,7 +11,6 @@
 ### Changed
 
 - Adapted upstream hashline duplicate-boundary handling to auto-absorb repeated multiline replacement boundaries while preserving the fork's structured `LINE#ID` edit contract.
-
 
 ## [0.8.1] - 2026-05-03
 

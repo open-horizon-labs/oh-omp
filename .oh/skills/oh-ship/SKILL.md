@@ -142,11 +142,12 @@ These are replaced by the assembler pipeline (ADR 0003).
 | Upstream improves edit/tool reliability but changes wire/display contracts | Adapt the behavior while preserving fork contracts such as `LINE#ID` anchors and assembler-aware tool outputs |
 | Upstream improves compatibility or performance but rewrites fork-native pathways | Reimplement the compatibility/performance behavior in fork-native code; do not import the upstream pathway wholesale |
 | Upstream adds a core tool feature but couples it to product/UI assumptions | Keep the tool capability if useful; drop or rewrite the product/UI coupling |
+| Upstream changes prompt construction, system prompt assembly, or semantic code-intelligence routing | Preserve the fork's prompt composer and RNA-first workflow; adapt only behavior that strengthens those contracts |
 | Upstream adds tests for removed settings/events | Do not copy those tests unless rewritten for fork behavior |
 | `bun.lock` changes from selected dependency updates | Apply the dependency update, then run `bun install` |
 | `CHANGELOG.md` has upstream release notes | Preserve useful reference sections only when they help fork users |
 
-If a selected upstream change tries to revive compaction, promotion, pruning, compaction model selection, or a second context manager, stop and ask before proceeding. Bespoke fork capabilities are unique assets, not legacy debt: assembler memory, `LINE#ID` editing, protocol compatibility, TUI-safe rendering, and tool-result provenance must survive every adaptation.
+If a selected upstream change tries to revive compaction, promotion, pruning, compaction model selection, or a second context manager, stop and ask before proceeding. Bespoke fork capabilities are unique assets, not legacy debt: assembler memory, prompt composer, RNA as a first-class semantic tool surface, `LINE#ID` editing, protocol compatibility, TUI-safe rendering, and tool-result provenance must survive every adaptation.
 
 ### 5. Verify selected changes
 

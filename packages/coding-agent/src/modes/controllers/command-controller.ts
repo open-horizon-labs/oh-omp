@@ -82,6 +82,12 @@ function buildRecallHelpMarkdown(): string {
 	].join("\n");
 }
 
+function formatRecallCodecCounts(counts: Record<string, number>): string {
+	const entries = Object.entries(counts);
+	if (entries.length === 0) return "none";
+	return entries.map(([name, count]) => `${name}=${count}`).join(", ");
+}
+
 function buildRecallLastMarkdown(trace: RecallDebugTrace): string {
 	const retrieval = trace.retrieval;
 	const lines = [
@@ -92,7 +98,8 @@ function buildRecallLastMarkdown(trace: RecallDebugTrace): string {
 		`- Duration: ${Math.round(trace.durationMs)}ms`,
 		`- Mode/scope: ${retrieval.mode} / ${retrieval.projectScope}`,
 		`- Role filter: ${retrieval.roleFilter ?? "any"}`,
-		`- Query: ${trace.query.charCount} chars (~${trace.query.estimatedTokens} tokens), hot window ${trace.query.hotWindowTurns} turns`,
+		`- Query: ${trace.query.originalCharCount} chars → ${trace.query.effectiveCharCount} chars (~${trace.query.estimatedTokens} tokens), hot window ${trace.query.hotWindowTurns} turns`,
+		`- Tool results: ${trace.query.toolResultRawCharCount} raw chars → ${trace.query.toolResultEffectiveCharCount} codec chars; encoded ${trace.query.toolResults.encoded}, stubbed ${trace.query.toolResults.stubbed}; codecs ${formatRecallCodecCounts(trace.query.toolResults.counts)}`,
 		`- Candidates: semantic ${retrieval.semanticCandidates}, keyword ${retrieval.keywordCandidates}, resolved ${retrieval.resolvedKeywordCandidates}, fused ${retrieval.fusedCandidates}`,
 		`- Selected/dropped: ${trace.selected.length} / ${trace.dropped.length}`,
 		`- Injected tokens: ${trace.injectedTokenEstimate}`,

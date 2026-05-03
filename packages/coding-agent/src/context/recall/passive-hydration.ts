@@ -17,8 +17,8 @@ import { parseMCPToolName } from "../../mcp/tool-bridge";
 import { buildRecallDebugEntries, type RecallDebugTrace } from "./debug-trace";
 import { embed } from "./embed";
 import { HybridRetriever } from "./hybrid-retriever";
-import { extractAssistantText, extractToolResultText, extractUserText } from "./message-text";
 import { cosineSimilarity } from "./mmr";
+import { buildPassiveRecallQuery, type PassiveRecallQueryMetadata } from "./passive-query";
 import type { RecallStore } from "./store";
 import {
 	DEFAULT_RECENT_WINDOW_MS,
@@ -35,7 +35,7 @@ import { DEFAULT_RECALL_MMR_LAMBDA, type RecallSearchResult } from "./types";
 // Configuration
 // ═══════════════════════════════════════════════════════════════════════════
 
-/** Default number of recent turns to concatenate as the hot window query. */
+/** Default number of recent turns to project as the passive recall query. */
 const DEFAULT_HOT_WINDOW_TURNS = 5;
 
 /** Cosine distance threshold for cache invalidation. Below this = cache hit. */
@@ -47,53 +47,6 @@ const DEFAULT_TOP_K = 10;
 /** Maximum wall-clock time for the hydration pipeline (embed + search + MMR). */
 const MAX_HYDRATION_MS = 2000;
 
-// ═══════════════════════════════════════════════════════════════════════════
-// Hot window text extraction
-// ═══════════════════════════════════════════════════════════════════════════
-
-/**
- * Extract concatenated text from the last N turns of conversation.
- *
- * Skips system prompt / developer messages — only user, assistant, and
- * tool_result turns contribute to the semantic query.
- *
- * Returns null if no extractable text is found.
- */
-export function extractHotWindowText(
-	messages: AgentMessage[],
-	windowTurns: number = DEFAULT_HOT_WINDOW_TURNS,
-): string | null {
-	// Walk backwards collecting turns. A "turn" boundary is a user message.
-	const parts: string[] = [];
-	let turnsCollected = 0;
-
-	for (let i = messages.length - 1; i >= 0 && turnsCollected < windowTurns; i--) {
-		const msg = messages[i];
-		if (!("role" in msg) || typeof msg.role !== "string") continue;
-
-		if (msg.role === "user") {
-			parts.unshift(extractUserText(msg.content));
-			turnsCollected++;
-		} else if (msg.role === "assistant") {
-			parts.unshift(extractAssistantText(msg.content));
-		} else if (msg.role === "toolResult") {
-			// Include tool result text for semantic context, but truncate to avoid
-			// embedding excessively large outputs (grep results, file reads, etc.)
-			const text = extractToolResultText(msg.content);
-			if (text.length > 2000) {
-				parts.unshift(text.slice(0, 2000));
-			} else {
-				parts.unshift(text);
-			}
-		}
-		// Skip developer, system messages — they don't carry conversation semantics
-	}
-
-	const joined = parts.join("\n").trim();
-	return joined.length > 0 ? joined : null;
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
 // Cosine cache
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -296,12 +249,11 @@ export class PassiveHydrator {
 	/**
 	 * Run passive hydration for the current turn.
 	 *
-	 * 1. Extract hot window text from conversation messages
-	 * 2. Embed the hot window
+	 * 1. Project the hot window into a retrieval query
+	 * 2. Embed the projected query
 	 * 3. Check cosine cache
 	 * 4. On miss: run shared hybrid retrieval + MMR rerank
 	 * 5. Format results for injection
-	 *
 	 * The entire pipeline is time-bounded by MAX_HYDRATION_MS.
 	 * Failures are logged and return empty results (non-fatal).
 	 */
@@ -332,8 +284,10 @@ export class PassiveHydrator {
 	}
 
 	async #hydrateInner(messages: AgentMessage[], start: number): Promise<HydrationResult> {
-		// 1. Extract hot window text
-		const hotWindowText = extractHotWindowText(messages, this.#hotWindowTurns);
+		// 1. Project the hot window into a retrieval query. User/assistant text stays raw;
+		// tool results are codec-compressed so raw tool output does not dominate embeddings.
+		const query = buildPassiveRecallQuery(messages, { windowTurns: this.#hotWindowTurns });
+		const hotWindowText = query.text;
 		if (!hotWindowText) {
 			return { text: null, results: [], cacheHit: false, durationMs: Date.now() - start, trace: null };
 		}
@@ -354,6 +308,7 @@ export class PassiveHydrator {
 					cacheHit: false,
 					durationMs,
 					embeddingGenerated: false,
+					queryMetadata: query.metadata,
 				}),
 			};
 		}
@@ -380,6 +335,7 @@ export class PassiveHydrator {
 					cacheHit: true,
 					durationMs,
 					embeddingGenerated: true,
+					queryMetadata: query.metadata,
 				}),
 			};
 		}
@@ -410,6 +366,7 @@ export class PassiveHydrator {
 					durationMs,
 					embeddingGenerated: true,
 					responseTrace: response.trace,
+					queryMetadata: query.metadata,
 				}),
 			};
 		}
@@ -452,6 +409,7 @@ export class PassiveHydrator {
 				durationMs,
 				embeddingGenerated: true,
 				responseTrace: response.trace,
+				queryMetadata: query.metadata,
 				now: formattedAt,
 			}),
 		};
@@ -459,6 +417,7 @@ export class PassiveHydrator {
 
 	#buildTrace(options: {
 		hotWindowText: string;
+		queryMetadata: PassiveRecallQueryMetadata;
 		results: RecallSearchResult[];
 		text: string | null;
 		cacheHit: boolean;
@@ -495,6 +454,11 @@ export class PassiveHydrator {
 				estimatedTokens: Math.ceil(options.hotWindowText.length / 4),
 				hotWindowTurns: this.#hotWindowTurns,
 				embeddingGenerated: options.embeddingGenerated,
+				originalCharCount: options.queryMetadata.originalCharCount,
+				effectiveCharCount: options.queryMetadata.effectiveCharCount,
+				toolResultRawCharCount: options.queryMetadata.toolResultRawCharCount,
+				toolResultEffectiveCharCount: options.queryMetadata.toolResultEffectiveCharCount,
+				toolResults: options.queryMetadata.toolResults,
 			},
 			retrieval: {
 				mode: options.responseTrace?.mode ?? "hybrid",

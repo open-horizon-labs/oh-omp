@@ -5,6 +5,7 @@ export * from "./ingest";
 export * from "./message-text";
 export * from "./mmr";
 export * from "./passive-hydration";
+export * from "./passive-query";
 export * from "./store";
 export * from "./temporal";
 export * from "./types";

@@ -32,7 +32,7 @@ import type { BudgetDerivationInput, CodecContext, ContentCodec, FileReadEntry }
  * For tool_result messages, derives the source from toolName.
  * MCP tools get "mcp:serverName", builtins get "tool:toolName".
  */
-function extractSourceTags(messages: AgentMessage[]): string[] {
+export function extractSourceTags(messages: AgentMessage[]): string[] {
 	const tags = new Set<string>();
 	for (const msg of messages) {
 		if (msg.role !== "toolResult") continue;
@@ -435,7 +435,7 @@ function extractDeveloperText(turn: Turn): string {
  * Extract tool call info (path + full arguments) from the tool_use block
  * that matches a tool result. Walks the turn's assistant messages.
  */
-function extractToolCallInfo(
+export function extractToolCallInfo(
 	turn: Turn,
 	toolCallId: string | undefined,
 ): { path?: string; args: Record<string, unknown> } {
@@ -467,7 +467,7 @@ interface ContentReplacementResult {
  * Update the read history after processing a tool result.
  * Only tracks file reads (proxy_read/read). Uses contentHash for fast content identity.
  */
-function updateReadHistory(
+export function updateReadHistory(
 	history: Map<string, FileReadEntry>,
 	msg: ToolResultMessage,
 	turnIndex: number,

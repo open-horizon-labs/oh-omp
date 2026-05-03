@@ -44,6 +44,15 @@ export interface RecallDebugTrace {
 		estimatedTokens: number;
 		hotWindowTurns: number;
 		embeddingGenerated: boolean;
+		originalCharCount: number;
+		effectiveCharCount: number;
+		toolResultRawCharCount: number;
+		toolResultEffectiveCharCount: number;
+		toolResults: {
+			encoded: number;
+			stubbed: number;
+			counts: Record<string, number>;
+		};
 	};
 	retrieval: {
 		mode: "semantic" | "hybrid";

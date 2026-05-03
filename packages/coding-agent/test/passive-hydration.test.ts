@@ -1,9 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import type { AssistantMessage, DeveloperMessage, ToolResultMessage, UserMessage } from "@oh-my-pi/pi-ai";
+import type { AssistantMessage, ToolResultMessage, UserMessage } from "@oh-my-pi/pi-ai";
 import {
+	buildPassiveRecallQuery,
 	CosineCache,
 	EMBEDDING_DIM,
-	extractHotWindowText,
 	formatHydratedContext,
 	type RecallSearchResult,
 } from "@oh-my-pi/pi-coding-agent/context/recall";
@@ -47,22 +47,29 @@ function assistantMsg(text: string): AssistantMessage {
 	};
 }
 
-function toolResultMsg(text: string, toolCallId = "tc-1"): ToolResultMessage {
+function toolResultMsg(text: string, toolCallId = "tc-1", toolName = "read"): ToolResultMessage {
 	return {
 		role: "toolResult",
 		toolCallId,
-		toolName: "read",
+		toolName,
 		content: [{ type: "text", text }],
 		isError: false,
 		timestamp: nextTimestamp(),
 	};
 }
 
-function developerMsg(text: string): DeveloperMessage {
+function assistantToolCallMsg(
+	toolCallId: string,
+	toolName: string,
+	args: Record<string, unknown> = {},
+): AssistantMessage {
 	return {
-		role: "developer",
-		content: text,
-		timestamp: nextTimestamp(),
+		...assistantMsg("running tool"),
+		content: [
+			{ type: "text", text: "running tool" },
+			{ type: "toolCall", id: toolCallId, name: toolName, arguments: args },
+		],
+		stopReason: "toolUse",
 	};
 }
 
@@ -87,104 +94,82 @@ function makeSearchResult(overrides: Partial<RecallSearchResult> = {}): RecallSe
 	};
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// extractHotWindowText
-// ═══════════════════════════════════════════════════════════════════════════
+describe("buildPassiveRecallQuery", () => {
+	test("preserves user and assistant text", () => {
+		const messages = [userMsg("fix passive recall"), assistantMsg("I will inspect hydration")];
+		const result = buildPassiveRecallQuery(messages, { windowTurns: 3 });
 
-describe("extractHotWindowText", () => {
-	test("returns null for empty messages", () => {
-		expect(extractHotWindowText([])).toBeNull();
+		expect(result.text).toContain("fix passive recall");
+		expect(result.text).toContain("I will inspect hydration");
+		expect(result.metadata.originalCharCount).toBe(result.metadata.effectiveCharCount);
+		expect(result.metadata.toolResults.encoded).toBe(0);
 	});
 
-	test("extracts text from a single user message", () => {
-		const messages = [userMsg("hello world")];
-		const result = extractHotWindowText(messages, 3);
-		expect(result).toBe("hello world");
-	});
-
-	test("extracts user + assistant text", () => {
-		const messages = [userMsg("fix the bug"), assistantMsg("I will look at the code")];
-		const result = extractHotWindowText(messages, 3);
-		expect(result).toContain("fix the bug");
-		expect(result).toContain("I will look at the code");
-	});
-
-	test("includes tool result text", () => {
-		const messages = [userMsg("read the file"), assistantMsg("reading file"), toolResultMsg("file contents here")];
-		const result = extractHotWindowText(messages, 3);
-		expect(result).toContain("file contents here");
-	});
-
-	test("respects window turn limit", () => {
+	test("projects read tool results through read codec instead of raw output", () => {
+		const readOutput = [
+			"1#AA:import { thing } from './thing';",
+			"2#BB:",
+			"3#CC:function usefulSymbol() {",
+			"4#DD:\treturn 'ok';",
+			"5#EE:}",
+			...Array.from({ length: 60 }, (_, index) => `${index + 6}#ZZ:\tvalue${index};`),
+			"[Showing lines 1-65 of 65. Use offset=66 to continue]",
+		].join("\n");
 		const messages = [
-			userMsg("old message 1"),
-			assistantMsg("old response 1"),
-			userMsg("old message 2"),
-			assistantMsg("old response 2"),
-			userMsg("recent message"),
-			assistantMsg("recent response"),
+			userMsg("remember this file"),
+			assistantToolCallMsg("tc-read", "read", { path: "src/useful.ts" }),
+			toolResultMsg(readOutput, "tc-read", "read"),
 		];
-		// Only 1 turn window — should only include the last user message and its response
-		const result = extractHotWindowText(messages, 1);
-		expect(result).toContain("recent message");
-		expect(result).toContain("recent response");
-		expect(result).not.toContain("old message 1");
+
+		const result = buildPassiveRecallQuery(messages, { windowTurns: 3 });
+
+		expect(result.text).toContain("remember this file");
+		expect(result.text).toContain("[warm:read:src/useful.ts");
+		expect(result.text).toContain("usefulSymbol");
+		expect(result.metadata.toolResults.counts.read).toBe(1);
+		expect(result.metadata.toolResultEffectiveCharCount).toBeLessThan(result.metadata.toolResultRawCharCount);
 	});
 
-	test("skips developer messages", () => {
-		const messages = [developerMsg("system instruction"), userMsg("actual query")];
-		const result = extractHotWindowText(messages, 3);
-		expect(result).toBe("actual query");
-		expect(result).not.toContain("system instruction");
+	test("projects generic tool results through warm codec and drops omitted raw middle", () => {
+		const output = [
+			"line 1",
+			"line 2",
+			"line 3",
+			"MIDDLE_RAW_OUTPUT_SHOULD_NOT_SURVIVE",
+			"line 5",
+			"line 6",
+			"line 7",
+			"line 8",
+		].join("\n");
+		const messages = [
+			userMsg("run the check"),
+			assistantToolCallMsg("tc-bash", "bash", { command: "bun check:ts" }),
+			toolResultMsg(output, "tc-bash", "bash"),
+		];
+
+		const result = buildPassiveRecallQuery(messages, { windowTurns: 3 });
+
+		expect(result.text).toContain('[warm:bash | command="bun check:ts" | 8 lines]');
+		expect(result.text).toContain("[... 3 lines omitted]");
+		expect(result.text).not.toContain("MIDDLE_RAW_OUTPUT_SHOULD_NOT_SURVIVE");
+		expect(result.metadata.toolResults.counts.warm).toBe(1);
 	});
 
-	test("truncates long tool results to 2000 chars", () => {
-		const longText = "x".repeat(5000);
-		const messages = [userMsg("q"), assistantMsg("a"), toolResultMsg(longText)];
-		const result = extractHotWindowText(messages, 3);
-		// Should contain truncated tool result (2000 chars) not the full 5000
-		expect(result!.length).toBeLessThan(5000);
-	});
+	test("deduplicates repeated unchanged reads in the projected query", () => {
+		const readOutput = "alpha\nbeta\ngamma\ndelta\nepsilon\nzeta";
+		const messages = [
+			userMsg("first read"),
+			assistantToolCallMsg("tc-read-1", "read", { path: "src/repeated.ts" }),
+			toolResultMsg(readOutput, "tc-read-1", "read"),
+			userMsg("read it again"),
+			assistantToolCallMsg("tc-read-2", "read", { path: "src/repeated.ts" }),
+			toolResultMsg(readOutput, "tc-read-2", "read"),
+		];
 
-	test("returns null when all messages are developer role", () => {
-		const messages = [developerMsg("instruction 1"), developerMsg("instruction 2")];
-		expect(extractHotWindowText(messages)).toBeNull();
-	});
+		const result = buildPassiveRecallQuery(messages, { windowTurns: 5 });
 
-	test("handles user message with TextContent array", () => {
-		const msg: UserMessage = {
-			role: "user",
-			content: [{ type: "text", text: "from text block" }],
-			timestamp: nextTimestamp(),
-		};
-		const result = extractHotWindowText([msg], 3);
-		expect(result).toBe("from text block");
-	});
-
-	test("handles assistant message with thinking block", () => {
-		const msg: AssistantMessage = {
-			role: "assistant",
-			content: [
-				{ type: "thinking", thinking: "reasoning about the problem" },
-				{ type: "text", text: "here is my answer" },
-			],
-			api: "messages",
-			provider: "anthropic",
-			model: "test-model",
-			usage: {
-				input: 10,
-				output: 10,
-				cacheWrite: 0,
-				cacheRead: 0,
-				totalTokens: 20,
-				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-			},
-			stopReason: "stop",
-			timestamp: nextTimestamp(),
-		};
-		const result = extractHotWindowText([userMsg("q"), msg], 3);
-		expect(result).toContain("reasoning about the problem");
-		expect(result).toContain("here is my answer");
+		expect(result.text).toContain("[unchanged since T1:read:src/repeated.ts]");
+		expect(result.metadata.toolResults.counts.dedup).toBe(1);
 	});
 });
 

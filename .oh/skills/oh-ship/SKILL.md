@@ -56,11 +56,15 @@ Produce a high-level upstream feature summary before selecting anything. Group c
 
 Use upstream as a candidate list. Classify each meaningful change before incorporating it.
 
+Upstream is a candidate feed, not an integration base. The fork is softly detached: preserve the relationship for fixes, compatibility work, performance ideas, and tool ergonomics, but do not treat upstream as something to merge or rebase wholesale. Default to translating useful behavior into fork-native architecture.
+
 | Upstream change type | Default action |
 |---|---|
 | Security fix | Usually adapt |
 | Platform/build/signing fix | Usually adapt |
 | Provider/API compatibility fix | Usually adapt |
+| Core tool reliability, ergonomics, or output-quality improvement | Usually adapt, preserving fork contracts |
+| Performance improvement in hot paths | Usually adapt after verifying behavior and benchmarks/checks |
 | Small bug fix relevant to fork behavior | Usually adapt |
 | CLI/TUI usability improvement | Consider |
 | New feature aligned with fork aims | Cherry-pick or reimplement |
@@ -85,6 +89,9 @@ Reviewed upstream commit: `<sha>`
 ### Selected for this fork
 - [Theme or commit]: [why it improves this fork, how it will be incorporated]
 
+### Deferred follow-up phases
+- [Theme or commit]: [why it is promising, why it is not safe/valuable to incorporate in this release, suggested focused phase]
+
 ### Excluded from this fork
 - [Theme or commit]: [why it is irrelevant, incompatible, low-value, or coupled to removed subsystems]
 
@@ -94,7 +101,7 @@ Reviewed upstream commit: `<sha>`
 
 If the selected list is empty, explicitly say `Selected: none` and explain why every high-level upstream theme was excluded. A shallow log/stat dump is not a review.
 
-Do not exclude an entire high-level theme merely because some commits are incompatible. If a theme contains potentially useful harness improvements, split it into: selected now, deferred for a focused follow-up batch, and excluded. Useful-but-risky candidates should become explicit follow-up phases rather than disappearing into `Excluded`.
+Do not exclude an entire high-level theme merely because some commits are incompatible. If a theme contains potentially useful harness improvements, split it into: selected now, deferred for a focused follow-up batch, and excluded. Useful-but-risky candidates should become explicit follow-up phases rather than disappearing into `Excluded`. Prioritize core tool improvements, provider/API compatibility, platform/build compatibility, and performance. Deprioritize product features, broad UI churn, and architecture that competes with assembler memory.
 
 ### 3. Incorporate selected changes
 
@@ -108,9 +115,9 @@ Preferred methods, in order:
 git cherry-pick -n <commit>
 ```
 
-Do not use a full merge to pick up upstream work. If a change cannot be isolated with these methods, leave it upstream until it can be understood and adapted safely.
+Do not use a full merge or normal rebase to pick up upstream work. If a change cannot be isolated with these methods, leave it upstream until it can be understood and adapted safely. Wholesale sync is only allowed for a proven architecture-neutral batch and requires explicit human approval.
 
-Use phased incorporation for large upstream themes. Prefer small batches such as: edit/hashline reliability, provider compatibility, browser/tool reliability, GitHub/release tooling, read/fetch ergonomics, async jobs, then high-authority tools such as SQLite. Each phase must preserve fork-specific contracts and avoid importing upstream's obsolete architecture.
+Use phased incorporation for large upstream themes. Prefer small batches such as: edit/hashline reliability, provider compatibility, browser/tool reliability, GitHub/release tooling, read/fetch ergonomics, async jobs, performance hot paths, then high-authority tools such as SQLite. Each phase must preserve fork-specific contracts and avoid importing upstream's obsolete architecture.
 
 ### 4. Fork-specific removals remain removed
 
@@ -133,11 +140,13 @@ These are replaced by the assembler pipeline (ADR 0003).
 | Upstream adds a useful feature unrelated to removed subsystems | Incorporate the feature selectively |
 | Upstream mixes useful behavior with removed subsystem wiring | Adapt only the useful behavior without the removed wiring |
 | Upstream improves edit/tool reliability but changes wire/display contracts | Adapt the behavior while preserving fork contracts such as `LINE#ID` anchors and assembler-aware tool outputs |
+| Upstream improves compatibility or performance but rewrites fork-native pathways | Reimplement the compatibility/performance behavior in fork-native code; do not import the upstream pathway wholesale |
+| Upstream adds a core tool feature but couples it to product/UI assumptions | Keep the tool capability if useful; drop or rewrite the product/UI coupling |
 | Upstream adds tests for removed settings/events | Do not copy those tests unless rewritten for fork behavior |
 | `bun.lock` changes from selected dependency updates | Apply the dependency update, then run `bun install` |
 | `CHANGELOG.md` has upstream release notes | Preserve useful reference sections only when they help fork users |
 
-If a selected upstream change tries to revive compaction, promotion, pruning, or compaction model selection, stop and ask before proceeding.
+If a selected upstream change tries to revive compaction, promotion, pruning, compaction model selection, or a second context manager, stop and ask before proceeding. Bespoke fork capabilities are unique assets, not legacy debt: assembler memory, `LINE#ID` editing, protocol compatibility, TUI-safe rendering, and tool-result provenance must survive every adaptation.
 
 ### 5. Verify selected changes
 

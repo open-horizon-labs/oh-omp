@@ -50,6 +50,8 @@ git diff --name-status <upstream-json-commit>..upstream/main
 
 If `upstream.json` does not exist, ask the user what upstream baseline to review from. Do not guess a baseline for release work.
 
+Produce a high-level upstream feature summary before selecting anything. Group commits into user-meaningful themes such as provider support, CLI/TUI UX, tool/runtime changes, build/release fixes, test-only changes, and removed-subsystem work. Do not update `upstream.json` or proceed to versioning until this summary exists.
+
 ### 2. Classify upstream changes
 
 Use upstream as a candidate list. Classify each meaningful change before incorporating it.
@@ -67,7 +69,30 @@ Use upstream as a candidate list. Classify each meaningful change before incorpo
 | Upstream release/versioning machinery | Leave upstream |
 | Product behavior irrelevant to this fork | Leave upstream |
 
-Record the selected upstream commits or hunks in the release notes or commit body when useful.
+Record selected and rejected upstream themes in a curation summary for human verification. This is required even when selecting nothing.
+
+Required curation summary format:
+
+```markdown
+## Upstream Curation Summary
+
+Reviewed range: `<upstream-json-commit>..upstream/main`
+Reviewed upstream commit: `<sha>`
+
+### High-level upstream themes
+- [Theme]: [what upstream shipped at a user/system level]
+
+### Selected for this fork
+- [Theme or commit]: [why it improves this fork, how it will be incorporated]
+
+### Excluded from this fork
+- [Theme or commit]: [why it is irrelevant, incompatible, low-value, or coupled to removed subsystems]
+
+### Needs human verification
+- [Judgment call or unclear upstream theme requiring maintainer confirmation]
+```
+
+If the selected list is empty, explicitly say `Selected: none` and explain why every high-level upstream theme was excluded. A shallow log/stat dump is not a review.
 
 ### 3. Incorporate selected changes
 
@@ -123,7 +148,7 @@ If the failure indicates a deeper behavior break or architecture conflict, stop 
 
 ### 6. Update upstream review marker
 
-After reviewing upstream, update `upstream.json` to the upstream commit reviewed, regardless of how many changes were incorporated.
+After completing the upstream curation summary and human verification checkpoint, update `upstream.json` to the upstream commit reviewed, regardless of how many changes were incorporated.
 
 This records review lineage, not wholesale code synchronization.
 
@@ -225,5 +250,6 @@ After pushing:
 - NEVER publish to npm manually -- CI handles it
 - NEVER use wholesale upstream merge to update the fork
 - If `bun check` fails after selected upstream changes, do NOT proceed with the release
+- NEVER update `upstream.json` without a high-level upstream curation summary that includes selected and excluded themes with rationale for human verification
 - The npm scope is `@oh-labs`, packages are `@oh-labs/oh-omp`, `@oh-labs/oh-omp-darwin-arm64`, `@oh-labs/oh-omp-linux-x64`
 - The upstream release script (`scripts/release.ts`) is NOT used for fork releases -- it operates on upstream's version scheme

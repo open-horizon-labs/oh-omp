@@ -2,9 +2,23 @@
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-05-03
+
+### Added
+
+- Added configurable recall recency bands and `/recall` diagnostics for inspecting ranking decisions, injected prompt content, and retrieval traces.
+
 ### Changed
 
-- Fork base is currently synced through upstream `v13.19.0`.
+- Passive recall now projects tool results through the assembler codecs before embedding, reducing noisy tool-output query bulk while preserving high-signal tool evidence.
+- Passive recall hydration timeout is configurable via `assembler.passiveHydrationTimeoutMs` and defaults to 4 seconds.
+- Fork release procedure now treats upstream as selective source material instead of a wholesale merge target.
+- Reviewed upstream through `84355ace7458ff602efb27366ecde2553773eb62`; no upstream changes were incorporated wholesale.
+
+### Fixed
+
+- Release workflow ad-hoc signs the macOS binary before packaging.
+- Passive recall avoids pathological raw tool-result hot-window queries that could time out and return no candidates.
 
 ## [0.8.0] - 2026-04-18
 

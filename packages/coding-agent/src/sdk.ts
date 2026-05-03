@@ -1666,6 +1666,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			projectCwd: cwd,
 			sessionId,
 			recentWindowMs: daysToRecallWindowMs(settings.get("assembler.recentWindowDays")),
+			hydrationTimeoutMs: settings.get("assembler.passiveHydrationTimeoutMs"),
 		});
 		logger.debug("Recall pipeline initialized (ingest + passive hydration)");
 	}

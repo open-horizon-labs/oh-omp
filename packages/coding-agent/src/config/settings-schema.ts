@@ -364,6 +364,17 @@ export const SETTINGS_SCHEMA = {
 			condition: "isAssemblerMode",
 		},
 	},
+	"assembler.passiveHydrationTimeoutMs": {
+		type: "number",
+		default: 4_000,
+		ui: {
+			tab: "agent",
+			label: "Passive recall timeout",
+			description: "Maximum wall-clock milliseconds for passive recall hydration (embed + search + MMR)",
+			submenu: true,
+			condition: "isAssemblerMode",
+		},
+	},
 	"assembler.hotWindowTurns": {
 		type: "number",
 		default: 4,
@@ -2097,6 +2108,7 @@ export interface AssemblerSettings {
 	safetyMarginPercent: number;
 	messageBudgetPercent: number;
 	hydrationBudgetPercent: number;
+	passiveHydrationTimeoutMs: number;
 	hotWindowTurns: number;
 	recentWindowDays: number;
 	turnBufferPercent: number;

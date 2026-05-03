@@ -44,8 +44,13 @@ const DEFAULT_COSINE_THRESHOLD = 0.15;
 /** Default number of results to inject after hybrid retrieval + MMR reranking. */
 const DEFAULT_TOP_K = 10;
 
-/** Maximum wall-clock time for the hydration pipeline (embed + search + MMR). */
-const MAX_HYDRATION_MS = 2000;
+/** Default maximum wall-clock time for the hydration pipeline (embed + search + MMR). */
+const DEFAULT_MAX_HYDRATION_MS = 4_000;
+
+function normalizeHydrationTimeoutMs(value: number | undefined): number {
+	if (value === undefined || !Number.isFinite(value)) return DEFAULT_MAX_HYDRATION_MS;
+	return Math.max(0, Math.floor(value));
+}
 
 // Cosine cache
 // ═══════════════════════════════════════════════════════════════════════════
@@ -204,6 +209,7 @@ export interface PassiveHydratorOptions {
 	cosineThreshold?: number;
 	hotWindowTurns?: number;
 	recentWindowMs?: number;
+	hydrationTimeoutMs?: number;
 }
 
 export interface HydrationResult {
@@ -227,6 +233,7 @@ export class PassiveHydrator {
 	#cache: CosineCache;
 	#topK: number;
 	#hotWindowTurns: number;
+	#maxHydrationMs: number;
 	#retriever: HybridRetriever;
 	constructor(options: PassiveHydratorOptions) {
 		this.#license = options.license;
@@ -236,6 +243,7 @@ export class PassiveHydrator {
 		this.#topK = options.topK ?? DEFAULT_TOP_K;
 		this.#cache = new CosineCache(options.cosineThreshold ?? DEFAULT_COSINE_THRESHOLD);
 		this.#hotWindowTurns = options.hotWindowTurns ?? DEFAULT_HOT_WINDOW_TURNS;
+		this.#maxHydrationMs = normalizeHydrationTimeoutMs(options.hydrationTimeoutMs);
 		this.#retriever = new HybridRetriever({
 			store: options.store,
 			toolResultStore: options.toolResultStore,
@@ -254,7 +262,7 @@ export class PassiveHydrator {
 	 * 3. Check cosine cache
 	 * 4. On miss: run shared hybrid retrieval + MMR rerank
 	 * 5. Format results for injection
-	 * The entire pipeline is time-bounded by MAX_HYDRATION_MS.
+	 * The entire pipeline is time-bounded by the configured hydration timeout.
 	 * Failures are logged and return empty results (non-fatal).
 	 */
 	async hydrate(messages: AgentMessage[]): Promise<HydrationResult> {
@@ -487,7 +495,7 @@ export class PassiveHydrator {
 
 	async #embedWithTimeout(text: string, start: number): Promise<Float32Array[] | null> {
 		const elapsed = Date.now() - start;
-		const remaining = MAX_HYDRATION_MS - elapsed;
+		const remaining = this.#maxHydrationMs - elapsed;
 		if (remaining <= 0) {
 			logger.debug("PassiveHydrator: skipping embed (timeout budget exhausted)");
 			return null;

@@ -1,23 +1,89 @@
 # oh-ship: Ship oh-omp
 
-Synchronize the fork with upstream, verify, bump version, tag, and push. CI handles the build and publish.
+Ship the fork. Upstream is source material to review selectively; it is not merged wholesale. CI handles the build and publish.
 
 ## Flow
 
 ```
-fetch upstream -> merge -> resolve conflicts -> verify -> bump version -> commit -> tag -> push
+review upstream candidates -> select/adapt useful changes -> verify -> bump version -> changelog -> commit -> tag -> push
 ```
+
+## Principle
+
+The fork now has its own product and architecture direction. Treat upstream as an input feed for useful fixes and ideas, not as the source of truth.
+
+Default behavior:
+- Review upstream changes since the last reviewed upstream point.
+- Incorporate only changes that improve this fork.
+- Leave irrelevant, incompatible, or low-value upstream changes upstream.
+- Adapt useful changes to the fork architecture instead of blindly accepting upstream wiring.
+
+A wholesale `git merge upstream/main` is no longer a feasible release path. Use selective incorporation only.
 
 ## Procedure
 
-### 1. Sync with upstream
+### 1. Review upstream candidates
+
+Fetch upstream without importing upstream tags:
 
 ```bash
-git fetch upstream
-git merge upstream/main --no-edit
+git fetch upstream main --no-tags
 ```
 
-If there are merge conflicts, resolve using the rules below. Do not blindly auto-resolve.
+Find the last reviewed upstream commit from `upstream.json`:
+
+```json
+{
+  "repo": "open-horizon-labs/oh-omp",
+  "commit": "<full SHA of upstream/main at time of review>",
+  "synced_at": "YYYY-MM-DD"
+}
+```
+
+Compare from that commit to `upstream/main`:
+
+```bash
+git log --oneline <upstream-json-commit>..upstream/main
+git diff --stat <upstream-json-commit>..upstream/main
+git diff --name-status <upstream-json-commit>..upstream/main
+```
+
+If `upstream.json` does not exist, ask the user what upstream baseline to review from. Do not guess a baseline for release work.
+
+### 2. Classify upstream changes
+
+Use upstream as a candidate list. Classify each meaningful change before incorporating it.
+
+| Upstream change type | Default action |
+|---|---|
+| Security fix | Usually adapt |
+| Platform/build/signing fix | Usually adapt |
+| Provider/API compatibility fix | Usually adapt |
+| Small bug fix relevant to fork behavior | Usually adapt |
+| CLI/TUI usability improvement | Consider |
+| New feature aligned with fork aims | Cherry-pick or reimplement |
+| Feature coupled to removed subsystems | Reimplement only the useful part |
+| Auto-compaction/context promotion/tool pruning | Leave upstream |
+| Upstream release/versioning machinery | Leave upstream |
+| Product behavior irrelevant to this fork | Leave upstream |
+
+Record the selected upstream commits or hunks in the release notes or commit body when useful.
+
+### 3. Incorporate selected changes
+
+Preferred methods, in order:
+
+1. Reimplement a small change manually when that is clearer than preserving upstream structure.
+2. Apply selected hunks from upstream with `git checkout -p` / patch tooling.
+3. Cherry-pick without committing, then edit the result:
+
+```bash
+git cherry-pick -n <commit>
+```
+
+Do not use a full merge to pick up upstream work. If a change cannot be isolated with these methods, leave it upstream until it can be understood and adapted safely.
+
+### 4. Fork-specific removals remain removed
 
 **The fork intentionally removes these upstream subsystems:**
 
@@ -30,61 +96,68 @@ If there are merge conflicts, resolve using the rules below. Do not blindly auto
 
 These are replaced by the assembler pipeline (ADR 0003).
 
-**Conflict resolution rules:**
+**Curation rules:**
 
-| Conflict type | Resolution |
+| Situation | Resolution |
 |---|---|
-| Upstream modifies code the fork deleted (compaction, pruning, promotion) | **Take ours** — the deletion stands |
-| Upstream adds genuinely new features unrelated to removed subsystems | **Take both** — keep our code, add the new feature |
-| Upstream mixes new features with removed subsystem wiring | **Take ours, then manually add the feature** without the compaction/handoff wiring |
-| `bun.lock` | Take theirs, then `bun install` |
-| `CHANGELOG.md` | Keep fork's `[Unreleased]`, add upstream version sections below |
-| New upstream tests referencing removed settings (e.g., `compaction.enabled`) | Remove those references |
+| Upstream modifies code the fork deleted | Leave it upstream; the deletion stands |
+| Upstream adds a useful feature unrelated to removed subsystems | Incorporate the feature selectively |
+| Upstream mixes useful behavior with removed subsystem wiring | Adapt only the useful behavior without the removed wiring |
+| Upstream adds tests for removed settings/events | Do not copy those tests unless rewritten for fork behavior |
+| `bun.lock` changes from selected dependency updates | Apply the dependency update, then run `bun install` |
+| `CHANGELOG.md` has upstream release notes | Preserve useful reference sections only when they help fork users |
 
-After resolving, run `bun fix:ts` for import ordering, then amend the merge commit.
+If a selected upstream change tries to revive compaction, promotion, pruning, or compaction model selection, stop and ask before proceeding.
 
-### 2. Verify
+### 5. Verify selected changes
+
+After incorporating selected upstream changes and before release mechanics:
 
 ```bash
 bun check
 ```
 
-If this fails after the merge, fix lint/type issues introduced by the merge before proceeding. Common: unused imports or classes left behind after conflict resolution.
+If this fails, fix lint/type/test issues introduced by the selected changes before proceeding.
 
-If the failure is deeper (logic breakage from upstream changes), stop and report.
+If the failure indicates a deeper behavior break or architecture conflict, stop and report. Do not proceed with release.
 
-### 3. Tag hygiene
+### 6. Update upstream review marker
+
+After reviewing upstream, update `upstream.json` to the upstream commit reviewed, regardless of how many changes were incorporated.
+
+This records review lineage, not wholesale code synchronization.
+
+```json
+{
+  "repo": "open-horizon-labs/oh-omp",
+  "commit": "<full SHA of upstream/main reviewed>",
+  "synced_at": "YYYY-MM-DD"
+}
+```
+
+Use the current date for `synced_at`.
+
+### 7. Tag hygiene
 
 Upstream tags (`v13.x`, etc.) must NOT exist in the fork. They pollute `git describe` and break version comparison.
 
-`git fetch upstream` can import upstream tags into the local repo. These must be cleaned **locally only** — never batch-push tags to origin.
+Prefer fetching upstream with `--no-tags`. If upstream tags leak into the local repo, clean them **locally only** — never batch-push tag changes to origin.
 
 ```bash
 # Delete leaked upstream tags locally
 git tag | grep -v '^v0\.[0-9]' | xargs git tag -d
 ```
 
-**NEVER use `git push --tags` or `git push --tags --prune`** — these push ALL local tags (including any upstream tags from `git fetch`) to origin. Always push release tags individually: `git push origin vX.Y.Z`.
+**NEVER use `git push --tags` or `git push --tags --prune`** — these push ALL local tags, including any upstream tags from fetches, to origin. Always push release tags individually: `git push origin vX.Y.Z`.
 
 The fork's tags follow `v0.x.y` semver. Only these should exist locally and on `origin`.
 
-### 4. Determine version
+### 8. Determine version
 
 The fork has its own independent semver starting at `0.1.0`. This is the npm/release version.
 
-The upstream base is tracked in `upstream.json` (repo root):
-```json
-{
-  "repo": "open-horizon-labs/oh-omp",
-  "commit": "<full SHA of upstream/main at time of sync>",
-  "synced_at": "YYYY-MM-DD"
-}
-```
-
-After syncing upstream, update `upstream.json` with the new commit hash and date. Create the file if it doesn't exist.
-
 Bump rules:
-- **patch**: bug fixes, upstream sync with no user-facing changes
+- **patch**: bug fixes, selected upstream fixes with no user-facing feature change
 - **minor**: new features, breaking changes (pre-1.0 semver)
 - **major**: reserved for 1.0 or fundamental architecture shifts
 
@@ -92,30 +165,31 @@ Check `packages/coding-agent/CHANGELOG.md` `[Unreleased]` section for a `### Bre
 
 Ask the user what kind of bump. Default to patch unless breaking changes are present.
 
-**Why independent versioning?** The fork's release cadence diverges from upstream. Coupling versions creates drift that's hard to reason about. Clean semver, tracked lineage.
+**Why independent versioning?** The fork's release cadence diverges from upstream. Coupling versions creates drift that's hard to reason about. Clean semver plus reviewed-upstream lineage is enough.
 
-### 5. Bump version
+### 9. Bump version
 
 Update `npm/oh-omp/package.json`:
 - `version` field
 - Both `optionalDependencies` versions (`@oh-labs/oh-omp-darwin-arm64`, `@oh-labs/oh-omp-linux-x64`) -- these must match the top-level version exactly
 
-The workspace packages keep upstream versions (they're not published to npm under the fork scope).
+The workspace packages keep upstream versions unless the fork explicitly publishes them under fork scope.
 
-### 6. Release notes
+### 10. Release notes
 
-The fork CHANGELOG (`packages/coding-agent/CHANGELOG.md`) has a dual structure:
+The fork CHANGELOG (`packages/coding-agent/CHANGELOG.md`) has a fork-first structure:
 
-- `[Unreleased]` — fork-specific changes (assembler, budget, provenance)
+- `[Unreleased]` — fork-specific changes and selected upstream changes adapted into the fork
 - `[0.x.y]` sections — fork release history
-- `[13.x.y]` sections — upstream release notes (preserved for reference)
+- Upstream release sections — optional reference only; do not treat them as required merge content
 
 When releasing:
 1. Move `[Unreleased]` entries into a new `[0.x.y] - YYYY-MM-DD` section
-2. Add a fresh `[Unreleased]` with a summary of the upstream sync
-3. Upstream version sections auto-merge from upstream's CHANGELOG — do not manually edit them
+2. Add a fresh `[Unreleased]` section
+3. Mention selected upstream fixes/features if they matter to fork users
+4. Do not paste upstream release notes wholesale unless they describe changes actually incorporated into the fork
 
-### 7. Commit and tag
+### 11. Commit and tag
 
 ```bash
 git add -A
@@ -125,7 +199,7 @@ git commit -m "release: vX.Y.Z
 git tag -a vX.Y.Z -m "vX.Y.Z — <summary>"
 ```
 
-### 8. Push
+### 12. Push
 
 ```bash
 git push origin main
@@ -149,6 +223,7 @@ After pushing:
 
 - NEVER push to upstream
 - NEVER publish to npm manually -- CI handles it
-- If `bun check` fails after merge, do NOT proceed with the release
+- NEVER use wholesale upstream merge to update the fork
+- If `bun check` fails after selected upstream changes, do NOT proceed with the release
 - The npm scope is `@oh-labs`, packages are `@oh-labs/oh-omp`, `@oh-labs/oh-omp-darwin-arm64`, `@oh-labs/oh-omp-linux-x64`
 - The upstream release script (`scripts/release.ts`) is NOT used for fork releases -- it operates on upstream's version scheme

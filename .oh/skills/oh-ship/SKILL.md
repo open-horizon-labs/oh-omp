@@ -94,6 +94,8 @@ Reviewed upstream commit: `<sha>`
 
 If the selected list is empty, explicitly say `Selected: none` and explain why every high-level upstream theme was excluded. A shallow log/stat dump is not a review.
 
+Do not exclude an entire high-level theme merely because some commits are incompatible. If a theme contains potentially useful harness improvements, split it into: selected now, deferred for a focused follow-up batch, and excluded. Useful-but-risky candidates should become explicit follow-up phases rather than disappearing into `Excluded`.
+
 ### 3. Incorporate selected changes
 
 Preferred methods, in order:
@@ -107,6 +109,8 @@ git cherry-pick -n <commit>
 ```
 
 Do not use a full merge to pick up upstream work. If a change cannot be isolated with these methods, leave it upstream until it can be understood and adapted safely.
+
+Use phased incorporation for large upstream themes. Prefer small batches such as: edit/hashline reliability, provider compatibility, browser/tool reliability, GitHub/release tooling, read/fetch ergonomics, async jobs, then high-authority tools such as SQLite. Each phase must preserve fork-specific contracts and avoid importing upstream's obsolete architecture.
 
 ### 4. Fork-specific removals remain removed
 
@@ -128,6 +132,7 @@ These are replaced by the assembler pipeline (ADR 0003).
 | Upstream modifies code the fork deleted | Leave it upstream; the deletion stands |
 | Upstream adds a useful feature unrelated to removed subsystems | Incorporate the feature selectively |
 | Upstream mixes useful behavior with removed subsystem wiring | Adapt only the useful behavior without the removed wiring |
+| Upstream improves edit/tool reliability but changes wire/display contracts | Adapt the behavior while preserving fork contracts such as `LINE#ID` anchors and assembler-aware tool outputs |
 | Upstream adds tests for removed settings/events | Do not copy those tests unless rewritten for fork behavior |
 | `bun.lock` changes from selected dependency updates | Apply the dependency update, then run `bun install` |
 | `CHANGELOG.md` has upstream release notes | Preserve useful reference sections only when they help fork users |

@@ -454,6 +454,128 @@ function maybeWarnSuspiciousUnicodeEscapePlaceholder(edits: HashlineEdit[], warn
 		);
 	}
 }
+
+type ReplacementHashlineEdit =
+	| { op: "replace_line"; pos: Anchor; lines: string[] }
+	| { op: "replace_range"; pos: Anchor; end: Anchor; lines: string[] };
+
+interface ReplacementBounds {
+	startLine: number;
+	endLine: number;
+}
+
+function replacementBounds(edit: HashlineEdit): ReplacementBounds | undefined {
+	switch (edit.op) {
+		case "replace_line":
+			return { startLine: edit.pos.line, endLine: edit.pos.line };
+		case "replace_range":
+			return { startLine: edit.pos.line, endLine: edit.end.line };
+		default:
+			return undefined;
+	}
+}
+
+function isReplacementEdit(edit: HashlineEdit): edit is ReplacementHashlineEdit {
+	return edit.op === "replace_line" || edit.op === "replace_range";
+}
+
+function collectProtectedAnchorLines(edits: HashlineEdit[]): Set<number> {
+	const protectedLines = new Set<number>();
+	for (const edit of edits) {
+		switch (edit.op) {
+			case "replace_line":
+			case "append_at":
+			case "prepend_at":
+				protectedLines.add(edit.pos.line);
+				break;
+			case "replace_range":
+				protectedLines.add(edit.pos.line);
+				protectedLines.add(edit.end.line);
+				break;
+			case "append_file":
+			case "prepend_file":
+				break;
+		}
+	}
+	return protectedLines;
+}
+
+function hasProtectedAnchorInRange(protectedLines: Set<number>, startLine: number, endLine: number): boolean {
+	for (let line = startLine; line <= endLine; line++) {
+		if (protectedLines.has(line)) return true;
+	}
+	return false;
+}
+
+function countDuplicatePrefix(
+	insertedLines: string[],
+	startLine: number,
+	originalFileLines: string[],
+	protectedLines: Set<number>,
+): number {
+	const maxCount = Math.min(insertedLines.length - 1, startLine - 1);
+	for (let count = maxCount; count >= 2; count--) {
+		const sourceStartLine = startLine - count;
+		const sourceEndLine = startLine - 1;
+		if (hasProtectedAnchorInRange(protectedLines, sourceStartLine, sourceEndLine)) continue;
+		const sourceLines = originalFileLines.slice(sourceStartLine - 1, sourceEndLine);
+		if (sourceLines.every((line, index) => line === insertedLines[index])) return count;
+	}
+	return 0;
+}
+
+function countDuplicateSuffix(
+	insertedLines: string[],
+	endLine: number,
+	originalFileLines: string[],
+	protectedLines: Set<number>,
+): number {
+	const maxCount = Math.min(insertedLines.length - 1, originalFileLines.length - endLine);
+	for (let count = maxCount; count >= 2; count--) {
+		const sourceStartLine = endLine + 1;
+		const sourceEndLine = endLine + count;
+		if (hasProtectedAnchorInRange(protectedLines, sourceStartLine, sourceEndLine)) continue;
+		const sourceLines = originalFileLines.slice(sourceStartLine - 1, sourceEndLine);
+		const insertedStart = insertedLines.length - count;
+		if (sourceLines.every((line, index) => line === insertedLines[insertedStart + index])) return count;
+	}
+	return 0;
+}
+
+function absorbDuplicateReplacementBoundaries(
+	edits: HashlineEdit[],
+	originalFileLines: string[],
+	warnings: string[],
+): void {
+	const protectedLines = collectProtectedAnchorLines(edits);
+	for (const edit of edits) {
+		if (!isReplacementEdit(edit)) continue;
+		const bounds = replacementBounds(edit);
+		if (!bounds || edit.lines.length < 3) continue;
+
+		const prefixCount = countDuplicatePrefix(edit.lines, bounds.startLine, originalFileLines, protectedLines);
+		if (prefixCount >= 2) {
+			edit.lines = edit.lines.slice(prefixCount);
+			const tag = formatLineTag(
+				bounds.startLine - prefixCount,
+				originalFileLines[bounds.startLine - prefixCount - 1],
+			);
+			warnings.push(
+				`Auto-absorbed ${prefixCount} duplicate line(s) above replacement at ${tag}; replacement content repeated unchanged boundary lines immediately before the target.`,
+			);
+		}
+
+		if (edit.lines.length < 3) continue;
+		const suffixCount = countDuplicateSuffix(edit.lines, bounds.endLine, originalFileLines, protectedLines);
+		if (suffixCount >= 2) {
+			edit.lines = edit.lines.slice(0, -suffixCount);
+			const tag = formatLineTag(bounds.endLine + 1, originalFileLines[bounds.endLine]);
+			warnings.push(
+				`Auto-absorbed ${suffixCount} duplicate line(s) below replacement at ${tag}; replacement content repeated unchanged boundary lines immediately after the target.`,
+			);
+		}
+	}
+}
 // ═══════════════════════════════════════════════════════════════════════════
 // Edit Application
 // ═══════════════════════════════════════════════════════════════════════════
@@ -539,6 +661,7 @@ export function applyHashlineEdits(
 	}
 	maybeAutocorrectEscapedTabIndentation(edits, warnings);
 	maybeWarnSuspiciousUnicodeEscapePlaceholder(edits, warnings);
+	absorbDuplicateReplacementBoundaries(edits, originalFileLines, warnings);
 
 	// Warn when a replace_range/replace_line's last inserted line duplicates the next surviving line.
 	// This catches the common boundary-overreach pattern where the agent includes a closing delimiter

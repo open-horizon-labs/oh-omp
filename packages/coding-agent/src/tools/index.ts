@@ -38,6 +38,8 @@ import {
 	GhPrViewTool,
 	GhRepoViewTool,
 	GhRunWatchTool,
+	GhSearchCodeTool,
+	GhSearchCommitsTool,
 	GhSearchIssuesTool,
 	GhSearchPrsTool,
 } from "./gh";
@@ -224,6 +226,8 @@ export const BUILTIN_TOOLS: Record<string, ToolFactory> = {
 	gh_run_watch: GhRunWatchTool.createIf,
 	gh_search_issues: GhSearchIssuesTool.createIf,
 	gh_search_prs: GhSearchPrsTool.createIf,
+	gh_search_code: GhSearchCodeTool.createIf,
+	gh_search_commits: GhSearchCommitsTool.createIf,
 	find: s => new FindTool(s),
 	grep: s => new GrepTool(s),
 	lsp: LspTool.createIf,

@@ -291,6 +291,52 @@ describe("applyHashlineEdits — replace", () => {
 		expect(result.lines).toBe("first\nsecond\nTHIRD");
 		expect(result.firstChangedLine).toBe(3);
 	});
+
+	it("auto-absorbs duplicated multiline prefix boundaries during replacement", () => {
+		const content = ["// one", "// two", "old();"].join("\n");
+		const edits: HashlineEdit[] = [
+			{ op: "replace_line", pos: makeTag(3, "old();"), lines: ["// one", "// two", "new();"] },
+		];
+
+		const result = applyHashlineEdits(content, edits);
+		expect(result.lines).toBe(["// one", "// two", "new();"].join("\n"));
+		expect(result.warnings).toEqual(
+			expect.arrayContaining([expect.stringMatching(/Auto-absorbed 2 duplicate line\(s\) above replacement/)]),
+		);
+	});
+
+	it("auto-absorbs duplicated multiline suffix boundaries during replacement", () => {
+		const content = ["old();", "// one", "// two"].join("\n");
+		const edits: HashlineEdit[] = [
+			{ op: "replace_line", pos: makeTag(1, "old();"), lines: ["new();", "// one", "// two"] },
+		];
+
+		const result = applyHashlineEdits(content, edits);
+		expect(result.lines).toBe(["new();", "// one", "// two"].join("\n"));
+		expect(result.warnings).toEqual(
+			expect.arrayContaining([expect.stringMatching(/Auto-absorbed 2 duplicate line\(s\) below replacement/)]),
+		);
+	});
+
+	it("does not auto-absorb a single duplicated boundary line", () => {
+		const content = ["keep", "old();"].join("\n");
+		const edits: HashlineEdit[] = [{ op: "replace_line", pos: makeTag(2, "old();"), lines: ["keep", "new();"] }];
+
+		const result = applyHashlineEdits(content, edits);
+		expect(result.lines).toBe(["keep", "keep", "new();"].join("\n"));
+		expect(result.warnings).toBeUndefined();
+	});
+
+	it("does not auto-absorb duplicate boundary lines targeted by another edit", () => {
+		const content = ["A", "B", "X", "Y", "Z"].join("\n");
+		const edits: HashlineEdit[] = [
+			{ op: "replace_range", pos: makeTag(1, "A"), end: makeTag(2, "B"), lines: ["alpha", "X", "Y"] },
+			{ op: "prepend_at", pos: makeTag(4, "Y"), lines: ["extra"] },
+		];
+
+		const result = applyHashlineEdits(content, edits);
+		expect(result.lines).toBe(["alpha", "X", "Y", "X", "extra", "Y", "Z"].join("\n"));
+	});
 });
 
 // ═══════════════════════════════════════════════════════════════════════════

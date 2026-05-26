@@ -353,6 +353,15 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<BuiltinSlashCommandSpec> = [
 		},
 	},
 	{
+		name: "cockpit",
+		aliases: ["context"],
+		description: "Focus the default context cockpit side pane",
+		handle: (_command, runtime) => {
+			runtime.ctx.showContextCockpit();
+			runtime.ctx.editor.setText("");
+		},
+	},
+	{
 		name: "recall",
 		description: "Inspect passive recall hydration for the last turn",
 		subcommands: [

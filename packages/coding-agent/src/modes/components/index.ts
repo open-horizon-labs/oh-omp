@@ -4,6 +4,7 @@ export * from "./bash-execution";
 export * from "./bordered-loader";
 export * from "./branch-summary-message";
 export * from "./compaction-summary-message";
+export * from "./context-cockpit-panel";
 export * from "./countdown-timer";
 export * from "./custom-editor";
 export * from "./custom-message";

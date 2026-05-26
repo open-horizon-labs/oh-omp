@@ -1,6 +1,7 @@
 import { INTENT_FIELD } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage, ImageContent } from "@oh-my-pi/pi-ai";
 import { Loader, TERMINAL, Text } from "@oh-my-pi/pi-tui";
+import { logger } from "@oh-my-pi/pi-utils";
 import { settings } from "../../config/settings";
 import { AssistantMessageComponent } from "../../modes/components/assistant-message";
 import { ReadToolGroupComponent } from "../../modes/components/read-tool-group";
@@ -95,6 +96,15 @@ export class EventController {
 			await this.ctx.init();
 		}
 
+		try {
+			this.ctx.cockpitProjectionStore.handleEvent(event);
+			this.ctx.cockpitProjectionStore.updateContext({
+				current: this.ctx.session.getLastPromptSnapshot(),
+				recall: this.ctx.session.getLastRecallTrace(),
+			});
+		} catch (error) {
+			logger.warn("Cockpit projection update failed", { error: String(error), eventType: event.type });
+		}
 		this.ctx.statusLine.invalidate();
 		this.ctx.updateEditorTopBorder();
 

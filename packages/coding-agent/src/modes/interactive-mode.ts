@@ -40,8 +40,10 @@ import type { ExitPlanModeDetails } from "../tools";
 import type { EventBus } from "../utils/event-bus";
 import { getEditorCommand, openInEditor } from "../utils/external-editor";
 import { popTerminalTitle, pushTerminalTitle, setSessionTerminalTitle } from "../utils/title-generator";
+import { CockpitProjectionStore } from "./cockpit";
 import type { AssistantMessageComponent } from "./components/assistant-message";
 import type { BashExecutionComponent } from "./components/bash-execution";
+import { ContextCockpitPanel, ContextCockpitSplitView } from "./components/context-cockpit-panel";
 import { CustomEditor } from "./components/custom-editor";
 import { DynamicBorder } from "./components/dynamic-border";
 import type { HookEditorComponent } from "./components/hook-editor";
@@ -154,6 +156,13 @@ export class InteractiveMode implements InteractiveModeContext {
 	fileSlashCommands: Set<string> = new Set();
 	skillCommands: Map<string, string> = new Map();
 	oauthManualInput: OAuthManualInputManager = new OAuthManualInputManager();
+	cockpitProjectionStore: CockpitProjectionStore = new CockpitProjectionStore();
+	contextCockpitPanel: ContextCockpitPanel = new ContextCockpitPanel(() => this.cockpitProjectionStore.getState(), {
+		maxSections: 7,
+		maxTimelineBlocks: 5,
+	});
+	mainContentContainer!: Container;
+	contextCockpitSplitView!: ContextCockpitSplitView;
 
 	#pendingSlashCommands: SlashCommand[] = [];
 	#cleanupUnsubscribe?: () => void;
@@ -242,6 +251,10 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.hookWidgetContainerBelow = new Container();
 		this.editorContainer = new Container();
 		this.editorContainer.addChild(this.editor);
+		this.contextCockpitPanel.onClose = () => {
+			this.ui.setFocus(this.editor);
+			this.ui.requestRender();
+		};
 		this.statusLine = new StatusLineComponent(session);
 
 		this.hideThinkingBlock = settings.get("hideThinkingBlock");
@@ -319,10 +332,11 @@ export class InteractiveMode implements InteractiveModeContext {
 			})) ?? [];
 
 		const startupQuiet = settings.get("startup.quiet");
+		this.mainContentContainer = new Container();
 
 		for (const warning of this.session.configWarnings) {
-			this.ui.addChild(new Text(theme.fg("warning", `Warning: ${warning}`), 1, 0));
-			this.ui.addChild(new Spacer(1));
+			this.mainContentContainer.addChild(new Text(theme.fg("warning", `Warning: ${warning}`), 1, 0));
+			this.mainContentContainer.addChild(new Spacer(1));
 		}
 
 		if (!startupQuiet) {
@@ -330,33 +344,37 @@ export class InteractiveMode implements InteractiveModeContext {
 			const welcome = new WelcomeComponent(this.#version, modelName, providerName, recentSessions, lspServerInfo);
 
 			// Setup UI layout
-			this.ui.addChild(new Spacer(1));
-			this.ui.addChild(welcome);
-			this.ui.addChild(new Spacer(1));
+			this.mainContentContainer.addChild(new Spacer(1));
+			this.mainContentContainer.addChild(welcome);
+			this.mainContentContainer.addChild(new Spacer(1));
 
 			// Add changelog if provided
 			if (this.#changelogMarkdown) {
-				this.ui.addChild(new DynamicBorder());
+				this.mainContentContainer.addChild(new DynamicBorder());
 				if (settings.get("collapseChangelog")) {
 					const versionMatch = this.#changelogMarkdown.match(/##\s+\[?(\d+\.\d+\.\d+)\]?/);
 					const latestVersion = versionMatch ? versionMatch[1] : this.#version;
 					const condensedText = `Updated to v${latestVersion}. Use ${theme.bold("/changelog")} to view full changelog.`;
-					this.ui.addChild(new Text(condensedText, 1, 0));
+					this.mainContentContainer.addChild(new Text(condensedText, 1, 0));
 				} else {
-					this.ui.addChild(new Text(theme.bold(theme.fg("accent", "What's New")), 1, 0));
-					this.ui.addChild(new Spacer(1));
-					this.ui.addChild(new Markdown(this.#changelogMarkdown.trim(), 1, 0, getMarkdownTheme()));
-					this.ui.addChild(new Spacer(1));
+					this.mainContentContainer.addChild(new Text(theme.bold(theme.fg("accent", "What's New")), 1, 0));
+					this.mainContentContainer.addChild(new Spacer(1));
+					this.mainContentContainer.addChild(
+						new Markdown(this.#changelogMarkdown.trim(), 1, 0, getMarkdownTheme()),
+					);
+					this.mainContentContainer.addChild(new Spacer(1));
 				}
-				this.ui.addChild(new DynamicBorder());
+				this.mainContentContainer.addChild(new DynamicBorder());
 			}
 		}
 
-		this.ui.addChild(this.chatContainer);
-		this.ui.addChild(this.pendingMessagesContainer);
-		this.ui.addChild(this.statusContainer);
-		this.ui.addChild(this.todoContainer);
-		this.ui.addChild(this.btwContainer);
+		this.mainContentContainer.addChild(this.chatContainer);
+		this.mainContentContainer.addChild(this.pendingMessagesContainer);
+		this.mainContentContainer.addChild(this.statusContainer);
+		this.mainContentContainer.addChild(this.todoContainer);
+		this.mainContentContainer.addChild(this.btwContainer);
+		this.contextCockpitSplitView = new ContextCockpitSplitView(this.mainContentContainer, this.contextCockpitPanel);
+		this.ui.addChild(this.contextCockpitSplitView);
 		this.ui.addChild(this.statusLine); // Only renders hook statuses (main status in editor border)
 		this.ui.addChild(this.hookWidgetContainerAbove);
 		this.ui.addChild(this.editorContainer);
@@ -1398,6 +1416,18 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	showPromptInspector(): void {
 		this.#selectorController.showPromptInspector();
+	}
+
+	showContextCockpit(): void {
+		this.cockpitProjectionStore.updateContext({
+			current: this.session.getLastPromptSnapshot(),
+			recall: this.session.getLastRecallTrace(),
+		});
+		this.contextCockpitSplitView.setVisible(true);
+		if (this.contextCockpitSplitView.isActiveForWidth(this.ui.terminal.columns)) {
+			this.ui.setFocus(this.contextCockpitPanel);
+		}
+		this.ui.requestRender();
 	}
 
 	showModelSelector(options?: { temporaryOnly?: boolean }): void {

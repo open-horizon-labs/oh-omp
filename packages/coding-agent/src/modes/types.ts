@@ -15,6 +15,7 @@ import type { AgentSession, AgentSessionEvent } from "../session/agent-session";
 import type { HistoryStorage } from "../session/history-storage";
 import type { SessionContext, SessionManager } from "../session/session-manager";
 import type { ExitPlanModeDetails } from "../tools";
+import type { CockpitProjectionStore } from "./cockpit";
 import type { AssistantMessageComponent } from "./components/assistant-message";
 import type { BashExecutionComponent } from "./components/bash-execution";
 import type { CustomEditor } from "./components/custom-editor";
@@ -77,6 +78,7 @@ export interface InteractiveModeContext {
 	historyStorage?: HistoryStorage;
 	mcpManager?: MCPManager;
 	lspServers?: Array<{ name: string; status: "ready" | "error"; fileTypes: string[]; error?: string }>;
+	cockpitProjectionStore: CockpitProjectionStore;
 
 	// State
 	isInitialized: boolean;
@@ -200,6 +202,7 @@ export interface InteractiveModeContext {
 	showExtensionsDashboard(): void;
 	showAgentsDashboard(): void;
 	showPromptInspector(): void;
+	showContextCockpit(): void;
 	showModelSelector(options?: { temporaryOnly?: boolean }): void;
 	showPluginSelector(mode?: "install" | "uninstall"): void;
 	showUserMessageSelector(): void;

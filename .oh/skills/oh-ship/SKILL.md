@@ -215,7 +215,9 @@ Update `npm/oh-omp/package.json`:
 
 The workspace packages keep upstream versions unless the fork explicitly publishes them under fork scope.
 
-### 10. Release notes
+### 10. Release notes (always required)
+
+Every release MUST ship a coherent, human-readable changelog section. The changelog is the primary artifact fork users read to understand a release — treat it as a deliverable, not a formality. A release MUST NOT proceed with an empty, placeholder, or raw-commit-dump changelog.
 
 The fork CHANGELOG (`packages/coding-agent/CHANGELOG.md`) has a fork-first structure:
 
@@ -223,11 +225,30 @@ The fork CHANGELOG (`packages/coding-agent/CHANGELOG.md`) has a fork-first struc
 - `[0.x.y]` sections — fork release history
 - Upstream release sections — optional reference only; do not treat them as required merge content
 
+**Do not assume `[Unreleased]` is complete.** Work is often committed — or left uncommitted — without a changelog entry. Derive the release notes from the actual release surface, not just what happens to be in `[Unreleased]`:
+
+```bash
+git log --oneline <last-release-tag>..HEAD   # committed-but-unreleased work
+git status --porcelain                        # uncommitted work being shipped
+```
+
+Cross-check those, the `[Unreleased]` entries, and the upstream curation summary. Every user-facing change in the release MUST appear in the changelog; reconstruct any missing entries before continuing.
+
 When releasing:
-1. Move `[Unreleased]` entries into a new `[0.x.y] - YYYY-MM-DD` section
-2. Add a fresh `[Unreleased]` section
-3. Mention selected upstream fixes/features if they matter to fork users
-4. Do not paste upstream release notes wholesale unless they describe changes actually incorporated into the fork
+1. Move and reconcile `[Unreleased]` entries into a new `[0.x.y] - YYYY-MM-DD` section, adding entries for anything found above that is missing.
+2. Add a fresh, empty `[Unreleased]` section above it.
+3. Record the reviewed-upstream lineage (e.g. `Reviewed upstream through <sha> (<version>)`) and mention selected upstream fixes/features that matter to fork users.
+4. Do not paste upstream release notes wholesale unless they describe changes actually incorporated into the fork.
+
+**Coherence bar — the new section MUST read as a release story, not a diff:**
+- Group entries under Keep a Changelog headings: `### Added`, `### Changed`, `### Fixed`, `### Removed`, plus `### Breaking Changes` when applicable.
+- Write for fork users in plain prose: one self-contained sentence per entry stating what changed and why it matters, not the implementation.
+- Never dump raw commit subjects, branch names, or file paths — rewrite them into user-facing statements.
+- Name the user-visible surface that changed: the setting, flag, command, tool, or behavior (e.g. `conceptGraph.*`, the `concept_graph` tool, Ctrl+P cycling).
+- For adapted upstream changes, say it was adapted and describe the fork-native result — not how upstream wired it.
+- Reference the ADR when a change implements one; keep tense and voice consistent with existing `[0.x.y]` sections.
+
+Before committing, re-read the new `[0.x.y]` section end-to-end and confirm a fork user could follow the release without seeing the diff.
 
 ### 11. Commit and tag
 
@@ -266,5 +287,6 @@ After pushing:
 - NEVER use wholesale upstream merge to update the fork
 - If `bun check` fails after selected upstream changes, do NOT proceed with the release
 - NEVER update `upstream.json` without a high-level upstream curation summary that includes selected and excluded themes with rationale for human verification
+- NEVER release with an empty, placeholder, or raw-commit-dump changelog — every release MUST have a coherent, human-readable `[0.x.y]` section that covers all user-facing changes, reconstructed from `git log <last-release-tag>..HEAD` and `git status` when `[Unreleased]` is incomplete
 - The npm scope is `@oh-labs`, packages are `@oh-labs/oh-omp`, `@oh-labs/oh-omp-darwin-arm64`, `@oh-labs/oh-omp-linux-x64`
 - The upstream release script (`scripts/release.ts`) is NOT used for fork releases -- it operates on upstream's version scheme

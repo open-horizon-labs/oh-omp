@@ -1509,8 +1509,8 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#inputController.cycleThinkingLevel();
 	}
 
-	cycleRoleModel(options?: { temporary?: boolean }): Promise<void> {
-		return this.#inputController.cycleRoleModel(options);
+	cycleRoleModel(): Promise<void> {
+		return this.#inputController.cycleRoleModel();
 	}
 
 	toggleToolOutputExpansion(): void {

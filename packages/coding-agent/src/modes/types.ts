@@ -227,7 +227,7 @@ export interface InteractiveModeContext {
 	hasActiveBtw(): boolean;
 	handleBtwEscape(): boolean;
 	cycleThinkingLevel(): void;
-	cycleRoleModel(options?: { temporary?: boolean }): Promise<void>;
+	cycleRoleModel(): Promise<void>;
 	toggleToolOutputExpansion(): void;
 	setToolsExpanded(expanded: boolean): void;
 	toggleThinkingBlockVisibility(): void;

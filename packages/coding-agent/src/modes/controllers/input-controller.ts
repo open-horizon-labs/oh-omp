@@ -93,7 +93,7 @@ export class InputController {
 		this.ctx.editor.setActionKeys("app.model.cycleForward", this.ctx.keybindings.getKeys("app.model.cycleForward"));
 		this.ctx.editor.onCycleModelForward = () => this.cycleRoleModel();
 		this.ctx.editor.setActionKeys("app.model.cycleBackward", this.ctx.keybindings.getKeys("app.model.cycleBackward"));
-		this.ctx.editor.onCycleModelBackward = () => this.cycleRoleModel({ temporary: true });
+		this.ctx.editor.onCycleModelBackward = () => this.cycleRoleModel();
 		this.ctx.editor.setActionKeys(
 			"app.model.selectTemporary",
 			this.ctx.keybindings.getKeys("app.model.selectTemporary"),
@@ -604,10 +604,10 @@ export class InputController {
 		}
 	}
 
-	async cycleRoleModel(options?: { temporary?: boolean }): Promise<void> {
+	async cycleRoleModel(): Promise<void> {
 		try {
 			const cycleOrder = settings.get("cycleOrder");
-			const result = await this.ctx.session.cycleRoleModels(cycleOrder, options);
+			const result = await this.ctx.session.cycleRoleModels(cycleOrder);
 			if (!result) {
 				this.ctx.showStatus("Only one role model available");
 				return;
@@ -621,7 +621,6 @@ export class InputController {
 				result.model.thinking && result.thinkingLevel !== ThinkingLevel.Off
 					? ` (thinking: ${result.thinkingLevel})`
 					: "";
-			const tempLabel = options?.temporary ? " (temporary)" : "";
 			const cycleSeparator = theme.fg("dim", " > ");
 			const cycleLabel = cycleOrder
 				.map(role => {
@@ -633,7 +632,7 @@ export class InputController {
 				.join(cycleSeparator);
 			const orderLabel = ` (cycle: ${cycleLabel})`;
 			this.ctx.showStatus(
-				`Switched to ${roleLabelStyled}: ${result.model.name || result.model.id}${thinkingStr}${tempLabel}${orderLabel}`,
+				`Switched to ${roleLabelStyled}: ${result.model.name || result.model.id}${thinkingStr}${orderLabel}`,
 				{ dim: false },
 			);
 		} catch (error) {

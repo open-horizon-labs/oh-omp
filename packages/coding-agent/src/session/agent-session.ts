@@ -3240,7 +3240,7 @@ export class AgentSession {
 	 * Validates API key, saves to session and settings.
 	 * @throws Error if no API key available for the model
 	 */
-	async setModel(model: Model, role: string = "default"): Promise<void> {
+	async setModel(model: Model, role: string = "default", options?: { persist?: boolean }): Promise<void> {
 		const apiKey = await this.#modelRegistry.getApiKey(model, this.sessionId);
 		if (!apiKey) {
 			throw new Error(`No API key for ${model.provider}/${model.id}`);
@@ -3249,7 +3249,11 @@ export class AgentSession {
 		this.#clearActiveRetryFallback();
 		this.#setModelWithProviderSessionReset(model);
 		this.sessionManager.appendModelChange(`${model.provider}/${model.id}`, role);
-		this.settings.setModelRole(role, this.#formatRoleModelValue(role, model));
+		// Runtime switches (e.g. Ctrl+P cycling) apply the model without overwriting
+		// the persisted modelRoles default; only explicit actions persist.
+		if (options?.persist !== false) {
+			this.settings.setModelRole(role, this.#formatRoleModelValue(role, model));
+		}
 		this.settings.getStorage()?.recordModelUsage(`${model.provider}/${model.id}`);
 
 		// Re-apply the current thinking level for the newly selected model
@@ -3293,12 +3297,8 @@ export class AgentSession {
 	 * Cycle through configured role models in a fixed order.
 	 * Skips missing roles.
 	 * @param roleOrder - Order of roles to cycle through (e.g., ["slow", "default", "smol"])
-	 * @param options - Optional settings: `temporary` to not persist to settings
 	 */
-	async cycleRoleModels(
-		roleOrder: readonly string[],
-		options?: { temporary?: boolean },
-	): Promise<RoleModelCycleResult | undefined> {
+	async cycleRoleModels(roleOrder: readonly string[]): Promise<RoleModelCycleResult | undefined> {
 		const availableModels = this.#modelRegistry.getAvailable();
 		if (availableModels.length === 0) return undefined;
 
@@ -3345,13 +3345,11 @@ export class AgentSession {
 		const nextIndex = (currentIndex + 1) % roleModels.length;
 		const next = roleModels[nextIndex];
 
-		if (options?.temporary) {
-			await this.setModelTemporary(next.model, next.explicitThinkingLevel ? next.thinkingLevel : undefined);
-		} else {
-			await this.setModel(next.model, next.role);
-			if (next.explicitThinkingLevel && next.thinkingLevel !== undefined) {
-				this.setThinkingLevel(next.thinkingLevel);
-			}
+		// Runtime cycling never persists modelRoles to settings; only the model
+		// picker's explicit "Set as default" action persists the default.
+		await this.setModel(next.model, next.role, { persist: false });
+		if (next.explicitThinkingLevel && next.thinkingLevel !== undefined) {
+			this.setThinkingLevel(next.thinkingLevel);
 		}
 
 		return { model: next.model, thinkingLevel: this.thinkingLevel, role: next.role };

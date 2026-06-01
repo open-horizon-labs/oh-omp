@@ -603,7 +603,7 @@ describe("read tool URL handling", () => {
 
 		const pagedResult = await tool.execute("fetch-offset-page", {
 			path: pageUrl,
-			offset: 7,
+			offset: 8, // skip the hashline-anchored URL header so the window starts at "Line 1"
 			limit: 2,
 		});
 		const pagedText = pagedResult.content.find(content => content.type === "text");

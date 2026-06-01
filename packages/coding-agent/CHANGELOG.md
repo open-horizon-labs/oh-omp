@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-06-01
+
+### Added
+
+- Added a concept graph fact store: a durable SQLite belief graph of project facts (definitions, decisions, constraints, ownership, assumptions, goals) and the links between them, exposed through the `concept_graph` tool. Resolved facts/links are injected into assembled context as a bounded, provenance-tracked block — gated by `conceptGraph.*` settings, token-capped, and accounted against the assembler budget — while the assembler remains the single context manager (ADR 0006).
+- Added a context cockpit side pane that surfaces live assembler/context state, including resolved concept graph facts and links.
+
+### Changed
+
+- Adapted an upstream fix so runtime model switches (Ctrl+P cycling) no longer overwrite the persisted `modelRoles` default; only the model picker's explicit "Set as default" action persists. Reimplemented fork-natively via a `persist` flag on `setModel` rather than upstream's controller refactor.
+- Reviewed upstream through `8b619a2f409a06b50ce481f0778ce99757228246` (upstream 15.7.4). Incorporated the SHA-pinned clone fix and the model-switch persistence fix; deferred TUI/edit-preview reliability and the OAuth-cancel fix (coupled to upstream's new setup wizard) to focused follow-ups; excluded `/shake` compaction, the Mnemopi memory backend, and the eval-orchestration suite as incompatible with the fork's assembler-memory architecture.
+
+### Fixed
+
+- Adapted an upstream fix so `git.clone()` no longer forces `--depth 1` when a specific SHA is requested: source installs pinned to a non-tip commit now succeed instead of failing with a shallow-clone checkout error.
+
 ## [0.9.0] - 2026-05-03
 
 ### Added

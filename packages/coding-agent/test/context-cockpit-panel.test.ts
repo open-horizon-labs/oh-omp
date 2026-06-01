@@ -323,7 +323,7 @@ describe("ContextCockpitPanel", () => {
 		const panel = new ContextCockpitPanel(makeState());
 		panel.focused = true;
 
-		for (let i = 0; i < 6; i++) panel.handleInput("\x1b[B");
+		for (let i = 0; i < 7; i++) panel.handleInput("\x1b[B");
 		panel.handleInput("\r");
 
 		const output = renderPlain(panel);

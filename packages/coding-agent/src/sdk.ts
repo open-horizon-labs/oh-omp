@@ -36,6 +36,7 @@ import { type AssemblerSettings, Settings, type SkillsSettings } from "./config/
 import { CursorExecHandlers } from "./cursor";
 import "./discovery";
 import * as path from "node:path";
+import { ConceptGraphStore } from "./concept-graph";
 import { resolveConfigValue } from "./config/resolve-config-value";
 import {
 	deriveBudget,
@@ -48,6 +49,7 @@ import {
 import { dedupCodec, readCodec, warmCodec } from "./context/assembler/codecs";
 import { formatAssemblySummary } from "./context/assembly-summary";
 import { ToolResultBridge } from "./context/bridge";
+import { resolveConceptGraphInjection } from "./context/concept-graph-context";
 import { captureEffectivePromptSnapshot, type EffectivePromptSnapshot } from "./context/effective-prompt-snapshot";
 import { extractPaths } from "./context/extract-paths";
 import {
@@ -1021,6 +1023,21 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		toolResultStore = undefined;
 	}
 
+	// Initialize concept graph store for bounded assembler injection.
+	let conceptGraphStore: ConceptGraphStore | undefined;
+	if (settings.get("conceptGraph.enabled") && settings.get("conceptGraph.contextEnabled")) {
+		try {
+			conceptGraphStore = ConceptGraphStore.open(path.join(agentDir, "concept-graph.db"));
+			postmortem.register("concept-graph-store-close", () => conceptGraphStore!.close());
+			logger.debug("ConceptGraphStore initialized for context injection");
+		} catch (err) {
+			logger.debug("ConceptGraphStore not available", {
+				error: err instanceof Error ? err.message : String(err),
+			});
+			conceptGraphStore = undefined;
+		}
+	}
+
 	const toolSession: ToolSession = {
 		cwd,
 		hasUI: options.hasUI ?? false,
@@ -1695,6 +1712,24 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 
 		const codecs = [dedupCodec, readCodec, warmCodec]; // Order matters: dedup → read → warm (catch-all)
 
+		const buildConceptGraphTask = (candidateMessages: AgentMessage[]): string => {
+			const turns = segmentIntoTurns(candidateMessages);
+			const hotStart = Math.max(0, turns.length - hotWindowTurns);
+			const snippets: string[] = [];
+			for (const turn of turns.slice(hotStart)) {
+				for (const message of turn.messages) {
+					if (message.role === "user" || message.role === "developer") {
+						const text = extractUserText(message.content as Parameters<typeof extractUserText>[0]);
+						if (text) snippets.push(text);
+					} else if (message.role === "assistant") {
+						const text = extractAssistantText(message.content as Parameters<typeof extractAssistantText>[0]);
+						if (text) snippets.push(text);
+					}
+				}
+			}
+			return snippets.join("\n").slice(-4_000);
+		};
+
 		const assemblerTransform = async (messages: AgentMessage[]): Promise<AgentMessage[]> => {
 			// Derive budget from current model context window and measured costs.
 			// agent.state is read each turn to reflect model/tool changes mid-session.
@@ -1802,6 +1837,37 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				}
 			}
 
+			let conceptGraphText: string | null = null;
+			let conceptGraphTokens = 0;
+			let conceptGraphFactCount = 0;
+			let conceptGraphLinkCount = 0;
+			if (conceptGraphStore) {
+				try {
+					const conceptGraphInjection = resolveConceptGraphInjection(conceptGraphStore, {
+						task: buildConceptGraphTask(messages),
+						maxFacts: settings.get("conceptGraph.maxContextFacts"),
+						maxLinks: settings.get("conceptGraph.maxContextLinks"),
+						maxTokens: settings.get("conceptGraph.maxContextTokens"),
+						includeCandidates: "relevant-uncertainty",
+					});
+					if (conceptGraphInjection) {
+						conceptGraphText = conceptGraphInjection.text;
+						conceptGraphTokens = conceptGraphInjection.tokenEstimate;
+						conceptGraphFactCount = conceptGraphInjection.factIds.length;
+						conceptGraphLinkCount = conceptGraphInjection.linkIds.length;
+					}
+				} catch (err) {
+					logger.debug("assembler:concept-graph-context-failed", {
+						error: err instanceof Error ? err.message : String(err),
+					});
+				}
+			}
+			logger.debug("assembler:concept-graph-context", {
+				factCount: conceptGraphFactCount,
+				linkCount: conceptGraphLinkCount,
+				tokenEstimate: conceptGraphTokens,
+			});
+
 			// Step 3b: Compute semantic relevance scores for conversation compression.
 			// Uses the hot window embedding from hydration to search LanceDB for similar
 			// past content. Builds per-segmented-turn relevance scores so the transform
@@ -1894,7 +1960,8 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			// This means messages expand into unused hydration capacity.
 			let maxMessageTokens: number | undefined;
 			if (budget) {
-				const effectiveBudget = Math.max(budget.messageBudgetMin, budget.maxTokens - hydratedTokens);
+				const contextInputTokens = hydratedTokens + conceptGraphTokens;
+				const effectiveBudget = Math.max(budget.messageBudgetMin, budget.maxTokens - contextInputTokens);
 				maxMessageTokens = effectiveBudget;
 			}
 
@@ -1926,21 +1993,31 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 					effectiveMessageBudget: maxMessageTokens,
 					messageTokensAfterTransform: finalTransformMetadata.tokensAfter,
 					hydratedEntries: cappedResults.length,
+					conceptGraphTokens,
+					conceptGraphFacts: conceptGraphFactCount,
+					conceptGraphLinks: conceptGraphLinkCount,
 				});
 			}
 
-			// Step 6: Inject hydrated context as developer message.
-			const finalMessages = hydratedText
-				? [
-						{
-							role: "developer" as const,
-							content: hydratedText,
-							attribution: "agent" as const,
-							timestamp: Date.now(),
-						} satisfies AgentMessage,
-						...boundedMessages,
-					]
-				: boundedMessages;
+			// Step 6: Inject bounded context inputs as developer messages.
+			const contextMessages: AgentMessage[] = [];
+			if (conceptGraphText) {
+				contextMessages.push({
+					role: "developer" as const,
+					content: conceptGraphText,
+					attribution: "agent" as const,
+					timestamp: Date.now(),
+				});
+			}
+			if (hydratedText) {
+				contextMessages.push({
+					role: "developer" as const,
+					content: hydratedText,
+					attribution: "agent" as const,
+					timestamp: Date.now(),
+				});
+			}
+			const finalMessages = contextMessages.length > 0 ? [...contextMessages, ...boundedMessages] : boundedMessages;
 
 			// Step 7: Capture effective-prompt snapshot.
 			const turnId = `turn-${Date.now()}`;

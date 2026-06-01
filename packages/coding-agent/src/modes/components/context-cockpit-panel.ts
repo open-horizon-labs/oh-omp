@@ -408,11 +408,40 @@ function detailLinesForSnapshotSection(
 					: "decisions: unavailable",
 			];
 		}
+		case "concept-graph":
+			return detailLinesForConceptGraph(state, section);
 		case "assembly-summary":
 			return state.context.assemblySummary ? [state.context.assemblySummary] : ["assembly summary unavailable"];
 		case "passive-recall":
 			return detailLinesForRecall(state, "injected");
 	}
+}
+
+function detailLinesForConceptGraph(state: CockpitProjectionState, section: CockpitContextSection): string[] {
+	const snapshot = state.context.current;
+	if (!snapshot) return [section.summary];
+	const contextText = extractConceptGraphText(snapshot);
+	if (!contextText) return [section.summary];
+	return contextText
+		.split("\n")
+		.map(line => line.trim())
+		.filter(Boolean)
+		.slice(0, MAX_DETAIL_LINES);
+}
+
+function extractConceptGraphText(snapshot: CockpitProjectionState["context"]["current"]): string | null {
+	if (!snapshot) return null;
+	for (const message of snapshot.messages.final) {
+		if (!message || typeof message !== "object" || !("role" in message) || message.role !== "developer") continue;
+		const content = "content" in message ? message.content : null;
+		const text = typeof content === "string" ? content : null;
+		if (!text) continue;
+		const start = text.indexOf("<concept_graph_context>");
+		const end = text.indexOf("</concept_graph_context>");
+		if (start === -1 || end === -1 || end <= start) continue;
+		return text.slice(start + "<concept_graph_context>".length, end).trim();
+	}
+	return null;
 }
 
 function detailLinesForDelta(delta: CockpitContextDelta): string[] {

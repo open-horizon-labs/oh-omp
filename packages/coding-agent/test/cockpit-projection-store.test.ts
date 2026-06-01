@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { AgentTool } from "@oh-my-pi/pi-agent-core";
+import type { AgentMessage, AgentTool } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage, Model, UserMessage } from "@oh-my-pi/pi-ai";
 import type { TransformMetadata } from "@oh-my-pi/pi-coding-agent/context/assembler";
 import {
@@ -98,7 +98,7 @@ function makeTransformMetadata(overrides?: Partial<TransformMetadata>): Transfor
 
 function makeSnapshot(overrides?: {
 	metadata?: TransformMetadata;
-	messages?: UserMessage[];
+	messages?: AgentMessage[];
 	model?: Model;
 	turnId?: string;
 }): EffectivePromptSnapshot {
@@ -268,6 +268,39 @@ describe("projectCockpitContext", () => {
 		expect(section?.summary).toContain("9 tok injected");
 		expect(section?.expandable).toBe(true);
 		expect(state.warnings).toHaveLength(0);
+	});
+
+	test("projects injected concept graph context as an explicit cockpit section", () => {
+		const snapshot = makeSnapshot({
+			messages: [
+				{
+					role: "developer",
+					content: [
+						"<concept_graph_context>",
+						"## Concept Graph Context",
+						"",
+						"- [active][decision][human_confirmed] Tool names are fine for dogfooding",
+						"  Fact: fact-tool-names; confidence: high; reason: 2 task term(s) matched",
+						"",
+						"### Links",
+						"- [active][supports] fact-tool-names -> fact-dogfood: Human approved tool naming",
+						"",
+						"Inspect/correct with concept_graph: explain_fact",
+						"</concept_graph_context>",
+					].join("\n"),
+					timestamp: 1234,
+				},
+				makeUser("Can we dogfood this now?"),
+			],
+		});
+
+		const state = projectCockpitContext({ current: snapshot });
+		const section = state.sections.find(item => item.id === "concept-graph");
+
+		expect(section?.status).toBe("included");
+		expect(section?.summary).toContain("1 facts, 1 links");
+		expect(section?.summary).toContain("Tool names are fine");
+		expect(section?.expandable).toBe(true);
 	});
 
 	test("makes missing snapshot and trace states explicit", () => {

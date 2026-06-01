@@ -7,7 +7,14 @@ import type { AgentSessionEvent } from "../../session/agent-session";
 
 const MAX_RECENT_SNAPSHOTS = 8;
 
-export type CockpitContextSource = "budget" | "system" | "tools" | "messages" | "passive-recall" | "assembly-summary";
+export type CockpitContextSource =
+	| "budget"
+	| "system"
+	| "tools"
+	| "messages"
+	| "passive-recall"
+	| "concept-graph"
+	| "assembly-summary";
 
 export type CockpitContextStatus =
 	| "included"
@@ -481,6 +488,8 @@ function projectSnapshotSections(
 		expandable: true,
 	});
 
+	sections.push(projectConceptGraphSection(snapshot));
+
 	const metadata = snapshot.messages.transformMetadata;
 	if (metadata) {
 		for (const [index, decision] of metadata.decisions.entries()) {
@@ -517,6 +526,33 @@ function projectSnapshotSections(
 	});
 
 	return sections;
+}
+
+function projectConceptGraphSection(snapshot: EffectivePromptSnapshot): CockpitContextSection {
+	const context = extractConceptGraphContext(snapshot);
+	if (!context) {
+		return {
+			id: "concept-graph",
+			label: "Concept graph",
+			source: "concept-graph",
+			status: "unavailable",
+			tokenEstimate: null,
+			summary: "No concept graph context injected for this turn",
+			detailRef: { kind: "none" },
+			expandable: false,
+		};
+	}
+
+	return {
+		id: "concept-graph",
+		label: "Concept graph",
+		source: "concept-graph",
+		status: "included",
+		tokenEstimate: context.tokenEstimate,
+		summary: conceptGraphSummary(context.text),
+		detailRef: { kind: "snapshot", turnId: snapshot.turnId, section: "concept-graph" },
+		expandable: true,
+	};
 }
 
 function projectRecallSection(
@@ -649,6 +685,73 @@ function missingSnapshotSection(): CockpitContextSection {
 		detailRef: { kind: "none" },
 		expandable: false,
 	};
+}
+
+interface ExtractedConceptGraphContext {
+	text: string;
+	tokenEstimate: number;
+	factCount: number;
+	linkCount: number;
+}
+
+const CONCEPT_GRAPH_OPEN_TAG = "<concept_graph_context>";
+const CONCEPT_GRAPH_CLOSE_TAG = "</concept_graph_context>";
+
+function extractConceptGraphContext(snapshot: EffectivePromptSnapshot): ExtractedConceptGraphContext | null {
+	for (const message of snapshot.messages.final) {
+		if (getMessageRole(message) !== "developer") continue;
+		const content = messageContentText(message);
+		if (!content) continue;
+		const start = content.indexOf(CONCEPT_GRAPH_OPEN_TAG);
+		const end = content.indexOf(CONCEPT_GRAPH_CLOSE_TAG);
+		if (start === -1 || end === -1 || end <= start) continue;
+		const text = content.slice(start + CONCEPT_GRAPH_OPEN_TAG.length, end).trim();
+		return {
+			text,
+			tokenEstimate: Math.ceil(text.length / 4),
+			factCount: countMatchingLines(text, /^- \[[^\]]+\]\[[^\]]+\]\[[^\]]+\]/),
+			linkCount: countMatchingLines(text, /^- \[[^\]]+\]\[[^\]]+\] \S+ -> \S+:/),
+		};
+	}
+	return null;
+}
+
+function conceptGraphSummary(contextText: string): string {
+	const extracted = {
+		factCount: countMatchingLines(contextText, /^- \[[^\]]+\]\[[^\]]+\]\[[^\]]+\]/),
+		linkCount: countMatchingLines(contextText, /^- \[[^\]]+\]\[[^\]]+\] \S+ -> \S+:/),
+	};
+	const firstFact = contextText
+
+		.split("\n")
+		.find(line => line.startsWith("- ["))
+		?.replace(/^- \[[^\]]+\]\[[^\]]+\](?:\[[^\]]+\])?\s*/, "")
+		.trim();
+	const counts = `${extracted.factCount} facts, ${extracted.linkCount} links`;
+	return firstFact ? `${counts} · ${truncateSummary(firstFact)}` : `${counts} injected`;
+}
+
+function messageContentText(message: AgentMessage): string | null {
+	const content = message && typeof message === "object" && "content" in message ? message.content : null;
+	if (typeof content === "string") return content;
+	if (!Array.isArray(content)) return null;
+	const text = content
+		.map(block => {
+			if (typeof block === "string") return block;
+			if (block && typeof block === "object" && "text" in block && typeof block.text === "string") return block.text;
+			return "";
+		})
+		.filter(Boolean)
+		.join("\n");
+	return text.length > 0 ? text : null;
+}
+
+function countMatchingLines(text: string, pattern: RegExp): number {
+	let count = 0;
+	for (const line of text.split("\n")) {
+		if (pattern.test(line)) count += 1;
+	}
+	return count;
 }
 
 function statusFromTransform(snapshot: EffectivePromptSnapshot): CockpitContextStatus {

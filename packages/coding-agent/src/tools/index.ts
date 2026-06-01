@@ -27,6 +27,7 @@ import { BrowserTool } from "./browser";
 import { CalculatorTool } from "./calculator";
 import { CancelJobTool } from "./cancel-job";
 import { type CheckpointState, CheckpointTool, RewindTool } from "./checkpoint";
+import { ConceptGraphTool } from "./concept-graph";
 import { ExitPlanModeTool } from "./exit-plan-mode";
 import { FetchTool } from "./fetch";
 import { FindTool } from "./find";
@@ -80,6 +81,7 @@ export * from "./browser";
 export * from "./calculator";
 export * from "./cancel-job";
 export * from "./checkpoint";
+export * from "./concept-graph";
 export * from "./exit-plan-mode";
 export * from "./find";
 export * from "./gemini-image";
@@ -215,6 +217,7 @@ export const BUILTIN_TOOLS: Record<string, ToolFactory> = {
 	bash: s => new BashTool(s),
 	python: s => new PythonTool(s),
 	calc: s => new CalculatorTool(s),
+	concept_graph: s => new ConceptGraphTool(s),
 	ssh: loadSshTool,
 	edit: s => new EditTool(s),
 	gh_repo_view: GhRepoViewTool.createIf,
@@ -388,6 +391,7 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 		if (name === "search_tool_bm25") return session.settings.get("mcp.discoveryMode");
 		if (name === "lsp") return session.settings.get("lsp.enabled"); // RNA experiment: duplicate guard (upstream has two checks)
 		if (name === "calc") return session.settings.get("calc.enabled");
+		if (name === "concept_graph") return session.settings.get("conceptGraph.enabled");
 		if (name === "browser") return session.settings.get("browser.enabled");
 		if (name === "checkpoint" || name === "rewind") return session.settings.get("checkpoint.enabled");
 		if (name === "task") {

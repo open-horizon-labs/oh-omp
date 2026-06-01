@@ -1294,6 +1294,60 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	"conceptGraph.enabled": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "tools",
+			label: "Concept Graph",
+			description: "Enable concept graph tools for durable project facts and bounded context resolution",
+		},
+	},
+
+	"conceptGraph.contextEnabled": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "tools",
+			label: "Concept Graph Context",
+			description: "Inject tiny resolved concept graph context blocks through the assembler",
+			submenu: true,
+		},
+	},
+
+	"conceptGraph.maxContextFacts": {
+		type: "number",
+		default: 6,
+		ui: {
+			tab: "tools",
+			label: "Concept Graph Max Facts",
+			description: "Maximum concept graph facts to inject into assembled context",
+			submenu: true,
+		},
+	},
+
+	"conceptGraph.maxContextLinks": {
+		type: "number",
+		default: 6,
+		ui: {
+			tab: "tools",
+			label: "Concept Graph Max Links",
+			description: "Maximum concept graph links to inject into assembled context",
+			submenu: true,
+		},
+	},
+
+	"conceptGraph.maxContextTokens": {
+		type: "number",
+		default: 1200,
+		ui: {
+			tab: "tools",
+			label: "Concept Graph Context Tokens",
+			description: "Approximate token cap for injected concept graph context",
+			submenu: true,
+		},
+	},
+
 	// Search and AST tools
 	"find.enabled": {
 		type: "boolean",

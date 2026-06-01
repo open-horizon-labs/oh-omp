@@ -9,6 +9,7 @@ export { StringEnum } from "@oh-my-pi/pi-ai";
 export { Container, Markdown, Spacer, Text } from "@oh-my-pi/pi-tui";
 // Logging
 export { getAgentDir, logger, VERSION } from "@oh-my-pi/pi-utils";
+export * from "./concept-graph";
 export * from "./config/keybindings";
 export * from "./config/model-registry";
 // Prompt templates

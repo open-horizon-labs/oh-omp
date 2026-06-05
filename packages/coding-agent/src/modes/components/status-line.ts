@@ -1,5 +1,4 @@
 import * as fs from "node:fs";
-import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import { type Component, truncateToWidth, visibleWidth } from "@oh-my-pi/pi-tui";
 import { formatCount, getProjectDir } from "@oh-my-pi/pi-utils";
 import { $ } from "bun";
@@ -7,7 +6,6 @@ import { settings } from "../../config/settings";
 import type { StatusLinePreset, StatusLineSegmentId, StatusLineSeparatorStyle } from "../../config/settings-schema";
 import { theme } from "../../modes/theme/theme";
 import type { AgentSession } from "../../session/agent-session";
-import { calculatePromptTokens } from "../../session/compaction/compaction";
 import * as git from "../../utils/git";
 import { sanitizeStatusText } from "../shared";
 import {
@@ -305,15 +303,12 @@ export class StatusLineComponent implements Component {
 			tokensPerSecond: this.#getTokensPerSecond(),
 		};
 
-		// Get context percentage
-		const lastAssistantMessage = state.messages
-			.slice()
-			.reverse()
-			.find(m => m.role === "assistant" && m.stopReason !== "aborted") as AssistantMessage | undefined;
-
-		const contextTokens = lastAssistantMessage ? calculatePromptTokens(lastAssistantMessage.usage) : 0;
-		const contextWindow = state.model?.contextWindow || 0;
-		const contextPercent = contextWindow > 0 ? (contextTokens / contextWindow) * 100 : 0;
+		// Get context percentage from the same effective window used by prompt assembly.
+		const contextUsage = this.session.getContextUsage();
+		const contextWindow = contextUsage?.contextWindow ?? this.session.getEffectiveContextWindow() ?? 0;
+		const contextTokens = contextUsage?.tokens ?? 0;
+		const contextPercent =
+			contextUsage?.percent ?? (contextWindow > 0 ? (contextTokens / contextWindow) * 100 : 0);
 
 		const autoCompactEnabled = this.session.settings.get("compaction.enabled") ?? false;
 

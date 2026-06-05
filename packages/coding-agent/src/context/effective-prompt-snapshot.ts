@@ -60,7 +60,7 @@ export interface PromptSnapshotAssemblerContext {
 
 /** Budget/headroom breakdown within a snapshot. */
 export interface PromptSnapshotBudget {
-	/** Model context window in tokens. */
+	/** Effective prompt context window in tokens after provider and assembler caps. */
 	contextWindow: number;
 	/** Tokens consumed by the system prompt. */
 	systemPromptTokens: number;
@@ -99,6 +99,7 @@ export interface EffectivePromptSnapshot {
 		provider: string;
 		id: string;
 		contextWindow: number;
+		effectiveContextWindow?: number;
 	};
 	/** System prompt composition data. */
 	systemPrompt: PromptSnapshotSystemPrompt;
@@ -126,6 +127,8 @@ export interface CaptureSnapshotInput {
 	transformMetadata: TransformMetadata | null;
 	assemblerPacket: WorkingContextPacketV1 | null;
 	assemblerBudget: MemoryAssemblyBudget | null;
+	/** Effective prompt context window after provider/request and assembler caps. */
+	effectiveContextWindow?: number;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -156,7 +159,8 @@ export function captureEffectivePromptSnapshot(input: CaptureSnapshotInput): Eff
 	const systemPromptTokens = estimateTokensFromLength(input.systemPrompt.length);
 	const toolDefinitionTokens = estimateToolDefinitionTokens(input.tools);
 	const messageTokens = estimateMessageTokens(input.finalMessages);
-	const contextWindow = input.model?.contextWindow ?? 0;
+	const modelContextWindow = input.model?.contextWindow ?? 0;
+	const contextWindow = input.effectiveContextWindow ?? modelContextWindow;
 
 	const assembledContextTokens = input.assemblerPacket?.usage.consumedTokens ?? 0;
 	const allocatableTokens = input.assemblerBudget?.maxTokens ?? undefined;
@@ -171,7 +175,10 @@ export function captureEffectivePromptSnapshot(input: CaptureSnapshotInput): Eff
 		model: {
 			provider: input.model?.provider ?? "unknown",
 			id: input.model?.id ?? "unknown",
-			contextWindow,
+			contextWindow: modelContextWindow,
+			...(input.effectiveContextWindow !== undefined && input.effectiveContextWindow !== input.model?.contextWindow
+				? { effectiveContextWindow: input.effectiveContextWindow }
+				: {}),
 		},
 		systemPrompt: {
 			fingerprint: fingerprintText(input.systemPrompt),

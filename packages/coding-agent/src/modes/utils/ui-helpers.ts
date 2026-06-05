@@ -1,6 +1,7 @@
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage, ImageContent, Message } from "@oh-my-pi/pi-ai";
 import { Spacer, Text, TruncatedText } from "@oh-my-pi/pi-tui";
+import { $env } from "@oh-my-pi/pi-utils";
 import { settings } from "../../config/settings";
 import { AssistantMessageComponent } from "../../modes/components/assistant-message";
 import { BashExecutionComponent } from "../../modes/components/bash-execution";
@@ -25,6 +26,17 @@ type QueuedMessages = {
 	steering: string[];
 	followUp: string[];
 };
+
+const DEFAULT_CHAT_RENDER_TAIL_LIMIT = 200;
+const CHAT_RENDER_TAIL_ENV = "PI_CHAT_RENDER_TAIL";
+
+function getChatRenderTailLimit(): number {
+	const raw = $env.PI_CHAT_RENDER_TAIL?.trim();
+	if (!raw) return DEFAULT_CHAT_RENDER_TAIL_LIMIT;
+
+	const parsed = Number.parseInt(raw, 10);
+	return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_CHAT_RENDER_TAIL_LIMIT;
+}
 
 export class UiHelpers {
 	constructor(private ctx: InteractiveModeContext) {}
@@ -221,7 +233,29 @@ export class UiHelpers {
 		const readToolCallArgs = new Map<string, Record<string, unknown>>();
 		const readToolCallAssistantComponents = new Map<string, AssistantMessageComponent>();
 		const deferredMessages: AgentMessage[] = [];
-		for (const message of sessionContext.messages) {
+		const tailLimit = getChatRenderTailLimit();
+		const skippedMessageCount =
+			sessionContext.messages.length > tailLimit ? sessionContext.messages.length - tailLimit : 0;
+		const visibleMessages =
+			skippedMessageCount > 0 ? sessionContext.messages.slice(skippedMessageCount) : sessionContext.messages;
+
+		if (skippedMessageCount > 0) {
+			if (options.populateHistory) {
+				const skippedMessages = sessionContext.messages.slice(0, skippedMessageCount);
+				for (const message of skippedMessages) {
+					if (message.role === "user" && !(message.synthetic ?? false)) {
+						const textContent = this.ctx.getUserMessageText(message);
+						if (textContent) {
+							this.ctx.editor.addToHistory(textContent);
+						}
+					}
+				}
+			}
+
+			const message = `${theme.tree.hook} ${skippedMessageCount} older messages kept in session history but omitted from active render (live tail=${tailLimit}; override with ${CHAT_RENDER_TAIL_ENV}).`;
+			this.ctx.chatContainer.addChild(new Text(theme.fg("dim", message), 1, 0));
+		}
+		for (const message of visibleMessages) {
 			// Defer compaction summaries so they render at the bottom (visible after scroll)
 			if (message.role === "compactionSummary") {
 				deferredMessages.push(message);

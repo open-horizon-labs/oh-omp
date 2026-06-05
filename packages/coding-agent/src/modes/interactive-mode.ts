@@ -1430,6 +1430,23 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.ui.requestRender();
 	}
 
+	toggleContextCockpitVisibility(): void {
+		const visible = this.contextCockpitSplitView.toggleVisible();
+		if (visible && this.contextCockpitSplitView.isActiveForWidth(this.ui.terminal.columns)) {
+			this.cockpitProjectionStore.updateContext({
+				current: this.session.getLastPromptSnapshot(),
+				recall: this.session.getLastRecallTrace(),
+			});
+			this.showStatus("Cockpit visible");
+		} else if (!visible) {
+			this.ui.setFocus(this.editor);
+			this.showStatus("Cockpit hidden for clean terminal selection");
+		} else {
+			this.showStatus("Cockpit hidden: terminal too narrow for side pane");
+		}
+		this.ui.requestRender();
+	}
+
 	showModelSelector(options?: { temporaryOnly?: boolean }): void {
 		this.#selectorController.showModelSelector(options);
 	}

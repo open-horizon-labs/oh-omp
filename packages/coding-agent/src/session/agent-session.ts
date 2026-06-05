@@ -118,6 +118,7 @@ import planModeToolDecisionReminderPrompt from "../prompts/system/plan-mode-tool
 	type: "text",
 };
 import ttsrInterruptTemplate from "../prompts/system/ttsr-interrupt.md" with { type: "text" };
+import { resolveEffectivePromptContextWindow } from "../context/effective-context-window";
 import { deobfuscateSessionContext, type SecretObfuscator } from "../secrets/obfuscator";
 import { resolveThinkingLevelForModel, toReasoningEffort } from "../thinking";
 import type { CheckpointState } from "../tools/checkpoint";
@@ -477,6 +478,15 @@ export class AgentSession {
 	#customCommands: LoadedCustomCommand[] = [];
 	/** MCP prompt commands (updated dynamically when prompts are loaded) */
 	#mcpPromptCommands: LoadedCustomCommand[] = [];
+
+	getEffectiveContextWindow(model = this.model): number | undefined {
+		if (!model) return undefined;
+		const contextWindow = resolveEffectivePromptContextWindow({
+			model,
+			contextWindowCap: this.settings.get("assembler.contextWindowCap"),
+		});
+		return contextWindow > 0 ? contextWindow : undefined;
+	}
 
 	#skillsSettings: SkillsSettings | undefined;
 
@@ -3925,7 +3935,7 @@ export class AgentSession {
 	async #checkCompaction(assistantMessage: AssistantMessage, skipAbortedCheck = true): Promise<void> {
 		// Skip if message was aborted (user cancelled) - unless skipAbortedCheck is false
 		if (skipAbortedCheck && assistantMessage.stopReason === "aborted") return;
-		const contextWindow = this.model?.contextWindow ?? 0;
+		const contextWindow = this.getEffectiveContextWindow() ?? 0;
 		const generation = this.#promptGeneration;
 		// Skip overflow check if the message came from a different model.
 		// This handles the case where user switched from a smaller-context model (e.g. opus)
@@ -4200,7 +4210,7 @@ export class AgentSession {
 		if (!currentModel) return false;
 		if (assistantMessage.provider !== currentModel.provider || assistantMessage.model !== currentModel.id)
 			return false;
-		const contextWindow = currentModel.contextWindow ?? 0;
+		const contextWindow = this.getEffectiveContextWindow(currentModel) ?? 0;
 		if (contextWindow <= 0) return false;
 		const targetModel = await this.#resolveContextPromotionTarget(currentModel, contextWindow);
 		if (!targetModel) return false;
@@ -4229,7 +4239,8 @@ export class AgentSession {
 		const candidate = this.#resolveContextPromotionConfiguredTarget(currentModel, availableModels);
 		if (!candidate) return undefined;
 		if (modelsAreEqual(candidate, currentModel)) return undefined;
-		if (candidate.contextWindow <= contextWindow) return undefined;
+		const candidateContextWindow = this.getEffectiveContextWindow(candidate) ?? 0;
+		if (candidateContextWindow <= contextWindow) return undefined;
 		const apiKey = await this.#modelRegistry.getApiKey(candidate, this.sessionId);
 		if (!apiKey) return undefined;
 		return candidate;
@@ -4484,7 +4495,9 @@ export class AgentSession {
 			addCandidate(this.#resolveRoleModelFull(role, availableModels, currentModel).model);
 		}
 
-		const sortedByContext = [...availableModels].sort((a, b) => b.contextWindow - a.contextWindow);
+		const sortedByContext = [...availableModels].sort(
+			(a, b) => (this.getEffectiveContextWindow(b) ?? 0) - (this.getEffectiveContextWindow(a) ?? 0),
+		);
 		for (const model of sortedByContext) {
 			if (!seen.has(this.#getModelKey(model))) {
 				addCandidate(model);
@@ -4908,7 +4921,7 @@ export class AgentSession {
 		if (message.stopReason !== "error" || !message.errorMessage) return false;
 
 		// Context overflow is handled by compaction, not retry
-		const contextWindow = this.model?.contextWindow ?? 0;
+		const contextWindow = this.getEffectiveContextWindow() ?? 0;
 		if (isContextOverflow(message, contextWindow)) return false;
 
 		const err = message.errorMessage;
@@ -6106,7 +6119,7 @@ export class AgentSession {
 		const model = this.model;
 		if (!model) return undefined;
 
-		const contextWindow = model.contextWindow ?? 0;
+		const contextWindow = this.getEffectiveContextWindow(model) ?? 0;
 		if (contextWindow <= 0) return undefined;
 
 		// After compaction, the last assistant usage reflects pre-compaction context size.

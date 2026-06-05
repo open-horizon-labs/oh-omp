@@ -197,6 +197,26 @@ describe("captureEffectivePromptSnapshot", () => {
 		expect(snapshot.model.contextWindow).toBe(128_000);
 	});
 
+	test("uses effective context window for budget and headroom", () => {
+		const input = makeInput({
+			model: makeModel({
+				api: "openai-codex-responses",
+				provider: "openai-codex",
+				id: "gpt-5.2-codex",
+				contextWindow: 272_000,
+				maxTokens: 128_000,
+			}),
+			effectiveContextWindow: 128_000,
+			finalMessages: [makeUser("A".repeat(1000))],
+		});
+		const snapshot = captureEffectivePromptSnapshot(input);
+
+		expect(snapshot.model.contextWindow).toBe(272_000);
+		expect(snapshot.model.effectiveContextWindow).toBe(128_000);
+		expect(snapshot.budget!.contextWindow).toBe(128_000);
+		expect(snapshot.budget!.headroom).toBeLessThan(128_000);
+	});
+
 	test("handles undefined model gracefully", () => {
 		const input = makeInput({ model: undefined });
 		const snapshot = captureEffectivePromptSnapshot(input);

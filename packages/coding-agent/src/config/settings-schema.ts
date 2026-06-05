@@ -1317,7 +1317,7 @@ export const SETTINGS_SCHEMA = {
 
 	"conceptGraph.maxContextFacts": {
 		type: "number",
-		default: 6,
+		default: 20,
 		ui: {
 			tab: "tools",
 			label: "Concept Graph Max Facts",

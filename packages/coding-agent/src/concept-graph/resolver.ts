@@ -60,9 +60,9 @@ export interface ResolvedConceptContext {
 	markdown: string;
 }
 
-const DEFAULT_MAX_FACTS = 6;
+const DEFAULT_MAX_FACTS = 20;
 const DEFAULT_MAX_LINKS = 6;
-const MAX_FACTS = 10;
+const MAX_FACTS = 20;
 const MAX_LINKS = 10;
 const MAX_DEPTH = 1;
 const MAX_NEIGHBOR_DEPTH = 2;

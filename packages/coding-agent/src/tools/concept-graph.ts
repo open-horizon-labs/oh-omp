@@ -32,8 +32,8 @@ const conceptGraphSchema = Type.Object({
 	),
 	query: Type.Optional(Type.String({ description: "Search query for action=search" })),
 	task: Type.Optional(Type.String({ description: "Current task text for action=resolve_context" })),
-	limit: Type.Optional(Type.Number({ description: "Maximum results for search (default 6, max 10)" })),
-	max_facts: Type.Optional(Type.Number({ description: "Max facts for resolve_context (default 6, max 10)" })),
+	limit: Type.Optional(Type.Number({ description: "Maximum results for search (default 20, max 20)" })),
+	max_facts: Type.Optional(Type.Number({ description: "Max facts for resolve_context (default 20, max 20)" })),
 	max_links: Type.Optional(Type.Number({ description: "Max links for resolve_context (default 6, max 10)" })),
 	depth: Type.Optional(Type.Number({ description: "Traversal depth for action=neighbors (default 1, max 2)" })),
 	direction: Type.Optional(

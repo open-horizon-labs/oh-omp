@@ -23,7 +23,7 @@ export interface ConceptGraphContextInjection {
 	tokenEstimate: number;
 }
 
-const DEFAULT_MAX_FACTS = 6;
+const DEFAULT_MAX_FACTS = 20;
 const DEFAULT_MAX_LINKS = 6;
 const DEFAULT_MAX_TOKENS = 1_200;
 const INSPECTION_AFFORDANCE =

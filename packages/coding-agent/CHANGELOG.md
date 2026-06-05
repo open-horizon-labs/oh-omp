@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Restored `/v` to toggle the context cockpit side pane for clean terminal selection/copy while preserving the default visible cockpit layout.
+
 ## [0.10.0] - 2026-06-01
 
 ### Added

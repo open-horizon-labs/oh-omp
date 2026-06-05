@@ -362,6 +362,14 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<BuiltinSlashCommandSpec> = [
 		},
 	},
 	{
+		name: "v",
+		description: "Toggle context cockpit visibility for clean terminal selection",
+		handle: (_command, runtime) => {
+			runtime.ctx.toggleContextCockpitVisibility();
+			runtime.ctx.editor.setText("");
+		},
+	},
+	{
 		name: "recall",
 		description: "Inspect passive recall hydration for the last turn",
 		subcommands: [

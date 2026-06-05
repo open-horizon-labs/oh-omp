@@ -227,6 +227,76 @@ describe("agentLoop with AgentMessage", () => {
 		expect(convertedMessages.length).toBe(2);
 	});
 
+	it("re-runs transformContext before tool-followup model calls", async () => {
+		const toolSchema = Type.Object({ value: Type.String() });
+		const context: AgentContext = {
+			systemPrompt: "You are helpful.",
+			messages: [],
+			tools: [
+				{
+					name: "echo",
+					label: "Echo",
+					description: "Echo tool",
+					parameters: toolSchema,
+					async execute(_toolCallId, params) {
+						return {
+							content: [{ type: "text", text: `echoed: ${params.value}` }],
+							details: { value: params.value },
+						};
+					},
+				} satisfies AgentTool<typeof toolSchema, { value: string }>,
+			],
+		};
+
+		const transformSnapshots: string[][] = [];
+		const config: AgentLoopConfig = {
+			model: createModel(),
+			transformContext: async messages => {
+				transformSnapshots.push(
+					messages.map(message =>
+						message.role === "toolResult" ? `toolResult:${message.toolCallId}` : message.role,
+					),
+				);
+				return messages;
+			},
+			convertToLlm: identityConverter,
+		};
+
+		let callIndex = 0;
+		const streamFn = () => {
+			const stream = new MockAssistantStream();
+			queueMicrotask(() => {
+				if (callIndex === 0) {
+					stream.push({
+						type: "done",
+						reason: "toolUse",
+						message: createAssistantMessage(
+							[{ type: "toolCall", id: "tool-1", name: "echo", arguments: { value: "hello" } }],
+							"toolUse",
+						),
+					});
+				} else {
+					stream.push({
+						type: "done",
+						reason: "stop",
+						message: createAssistantMessage([{ type: "text", text: "done" }]),
+					});
+				}
+				callIndex++;
+			});
+			return stream;
+		};
+
+		const stream = agentLoop([createUserMessage("use the tool")], context, config, undefined, streamFn);
+		for await (const _ of stream) {
+			// consume
+		}
+
+		expect(transformSnapshots).toHaveLength(2);
+		expect(transformSnapshots[0]).toEqual(["user"]);
+		expect(transformSnapshots[1]).toContain("toolResult:tool-1");
+	});
+
 	it("provides tool call batch context", async () => {
 		const toolSchema = Type.Object({ value: Type.String() });
 		const contexts: ToolCallContext[] = [];

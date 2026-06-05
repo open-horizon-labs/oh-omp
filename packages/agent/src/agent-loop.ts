@@ -196,14 +196,10 @@ async function runLoop(
 	// Outer loop: continues when queued follow-up messages arrive after agent would stop
 	while (true) {
 		let hasMoreToolCalls = true;
-		// Hydrate/assemble context ONCE per user turn.
-		// The transformed prefix is frozen for all inner rounds so the byte
-		// prefix stays identical across tool-followup model calls, enabling
-		// Anthropic's prompt cache to hit on every round after the first.
-		const transformedPrefix = config.transformContext
-			? await config.transformContext(currentContext.messages, signal)
-			: [...currentContext.messages];
-		const snapshotLength = currentContext.messages.length;
+		// Hydrate/assemble context at each model-call boundary. Tool results and steering
+		// messages appended mid-turn can be large enough to consume the remaining provider
+		// request buffer, so they must pass through the same budget transform before the
+		// follow-up model call.
 
 		// Inner loop: process tool calls and steering messages
 		while (hasMoreToolCalls || pendingMessages.length > 0) {
@@ -229,10 +225,11 @@ async function runLoop(
 				await config.syncContextBeforeModelCall(currentContext);
 			}
 
-			// Build the model's view: frozen transformed prefix + tail messages
-			// appended since the transform ran (tool results, steering messages).
-			const tail = currentContext.messages.slice(snapshotLength);
-			const preTransformed = tail.length > 0 ? [...transformedPrefix, ...tail] : transformedPrefix;
+			// Build the model's view from the live context so any mid-turn tool results
+			// are bounded by transformContext before the next provider request.
+			const preTransformed = config.transformContext
+				? await config.transformContext(currentContext.messages, signal)
+				: [...currentContext.messages];
 
 			// Stream assistant response
 			const message = await streamAssistantResponse(

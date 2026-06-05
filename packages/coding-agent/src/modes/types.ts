@@ -203,6 +203,7 @@ export interface InteractiveModeContext {
 	showAgentsDashboard(): void;
 	showPromptInspector(): void;
 	showContextCockpit(): void;
+	toggleContextCockpitVisibility(): void;
 	showModelSelector(options?: { temporaryOnly?: boolean }): void;
 	showPluginSelector(mode?: "install" | "uninstall"): void;
 	showUserMessageSelector(): void;

@@ -51,6 +51,7 @@ import { formatAssemblySummary } from "./context/assembly-summary";
 import { ToolResultBridge } from "./context/bridge";
 import { resolveConceptGraphInjection } from "./context/concept-graph-context";
 import { captureEffectivePromptSnapshot, type EffectivePromptSnapshot } from "./context/effective-prompt-snapshot";
+import { resolveEffectivePromptContextWindow } from "./context/effective-context-window";
 import { extractPaths } from "./context/extract-paths";
 import {
 	buildRecallDebugEntries,
@@ -1737,7 +1738,10 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			const currentSystemPrompt = agent?.state.systemPrompt ?? "";
 			const currentTools = agent?.state.tools ?? [];
 			const modelWindow = currentModel?.contextWindow ?? 0;
-			const assembledContextWindow = contextWindowCap > 0 ? Math.min(modelWindow, contextWindowCap) : modelWindow;
+			const assembledContextWindow = resolveEffectivePromptContextWindow({
+				model: currentModel,
+				contextWindowCap,
+			});
 
 			// Step 1: Apply message transform (hot window + content replacement).
 			// This strips tool_result content from older turns before budget derivation
@@ -2030,6 +2034,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				transformMetadata: finalTransformMetadata,
 				assemblerPacket: null,
 				assemblerBudget: budget ?? null,
+				effectiveContextWindow: assembledContextWindow,
 			});
 
 			if (hydration.trace) {

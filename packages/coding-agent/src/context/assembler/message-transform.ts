@@ -550,6 +550,8 @@ function computeWorkingSetExemptions(
 ): Set<number> {
 	interface VersionTrack {
 		path: string;
+		/** Read view identity: path + range args. Same view + different content = proof of change. */
+		viewKey: string;
 		/** Turn of the first read of this content version (the canonical copy). */
 		canonicalTurn: number;
 		/** Re-reads of this exact content version. */
@@ -565,27 +567,39 @@ function computeWorkingSetExemptions(
 		if (!turn.hasToolResults) continue;
 		for (const msg of turn.messages) {
 			if (msg.role !== "toolResult") continue;
-			const { path } = extractToolCallInfo(turn, msg.toolCallId);
+			const { path, args: callArgs } = extractToolCallInfo(turn, msg.toolCallId);
 			if (!path) continue;
 			const text = extractText(msg);
 			if (!text) continue;
-			const key = `${path}\u0000${contentHash(text)}`;
+			const args = callArgs as { offset?: unknown; limit?: unknown };
+			const viewKey = `${path}\u0000${args.offset ?? ""}\u0000${args.limit ?? ""}`;
+			const key = `${viewKey}\u0000${contentHash(text)}`;
 			const track = tracks.get(key);
 			if (track) {
 				track.rereads++;
 				track.lastTouchTurn = idx;
 			} else {
-				tracks.set(key, { path, canonicalTurn: idx, rereads: 0, lastTouchTurn: idx });
+				tracks.set(key, { path, viewKey, canonicalTurn: idx, rereads: 0, lastTouchTurn: idx });
 			}
 		}
 	}
 	const latestTurn = turns.length - 1;
+	// Supersession: a version is provably stale when the *same view* (path +
+	// range args) was re-read with different content after its last touch
+	// (e.g. re-read after an edit). Different ranges of a file stay independent
+	// (pagination); unproven staleness is handled by age-out instead.
+	const latestViewTouch = new Map<string, number>();
+	for (const track of tracks.values()) {
+		const prev = latestViewTouch.get(track.viewKey) ?? -1;
+		if (track.lastTouchTurn > prev) latestViewTouch.set(track.viewKey, track.lastTouchTurn);
+	}
 	const qualifying = [...tracks.values()]
 		.filter(
 			(t) =>
 				t.rereads >= 2 &&
 				latestTurn - t.lastTouchTurn <= evictAfterTurns &&
-				t.canonicalTurn < hotWindowStart,
+				t.canonicalTurn < hotWindowStart &&
+				t.lastTouchTurn >= (latestViewTouch.get(t.viewKey) ?? 0),
 		)
 		.sort((a, b) => b.lastTouchTurn - a.lastTouchTurn);
 	const exempt = new Set<number>();

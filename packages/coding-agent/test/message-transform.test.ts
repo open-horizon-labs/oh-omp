@@ -1152,13 +1152,13 @@ describe("deriveBudget", () => {
 describe("working-set retention", () => {
 	let wsCall = 0;
 
-	function makeReadTurn(path: string, content: string): AgentMessage[] {
+	function makeReadTurn(path: string, content: string, extraArgs?: Record<string, unknown>): AgentMessage[] {
 		wsCall++;
 		const id = `ws-${wsCall}`;
 		const assistant = makeAssistant([{ id, name: "read" }]);
 		for (const block of assistant.content) {
 			if (typeof block === "object" && block.type === "toolCall") {
-				block.arguments = { path };
+				block.arguments = { path, ...extraArgs };
 			}
 		}
 		return [assistant, makeToolResult(id, content)];
@@ -1245,20 +1245,40 @@ describe("working-set retention", () => {
 		expect(resultTextById(result.messages, first)).not.toContain("CONTENT_A unique payload");
 	});
 
+	test("same-view re-read with changed content supersedes the stale pin", () => {
+		wsCall = 0;
+		const first = wsCall + 1;
+		const messages: AgentMessage[] = [
+			makeUser("start"),
+			...makeReadTurn("/a.ts", "OLD content payload"),
+			...makeReadTurn("/a.ts", "OLD content payload"),
+			...makeReadTurn("/a.ts", "OLD content payload"),
+			// File edited; same view now returns different content.
+			...makeReadTurn("/a.ts", "NEW content payload"),
+			...fillerTurns(2),
+		];
+		const result = transformMessages(messages, { workingSet: { enabled: true } });
+		// The provably stale OLD version must not stay pinned.
+		expect(resultTextById(result.messages, first)).not.toContain("OLD content payload");
+		const pins = result.metadata.decisions.filter((d) => d.reason === "working-set");
+		expect(pins).toHaveLength(0);
+	});
+
 	test("interleaved reads of other ranges do not reset pin candidacy", () => {
 		wsCall = 0;
 		const first = wsCall + 1;
 		const messages: AgentMessage[] = [
 			makeUser("start"),
-			...makeReadTurn("/a.ts", "RANGE_ONE payload"),
-			...makeReadTurn("/a.ts", "RANGE_TWO payload"),
-			...makeReadTurn("/a.ts", "RANGE_ONE payload"),
-			...makeReadTurn("/a.ts", "RANGE_ONE payload"),
+			...makeReadTurn("/a.ts", "RANGE_ONE payload", { offset: 1, limit: 100 }),
+			...makeReadTurn("/a.ts", "RANGE_ONE payload", { offset: 1, limit: 100 }),
+			...makeReadTurn("/a.ts", "RANGE_ONE payload", { offset: 1, limit: 100 }),
+			// Later read of a different range must not supersede range one's pin.
+			...makeReadTurn("/a.ts", "RANGE_TWO payload", { offset: 200, limit: 100 }),
 			...fillerTurns(2),
 		];
 		const result = transformMessages(messages, { workingSet: { enabled: true } });
-		// RANGE_ONE read three times → its canonical turn (1) pins despite the
-		// interleaved RANGE_TWO read.
+		// RANGE_ONE read three times → its canonical turn (1) pins; the later
+		// different-range read is pagination, not proof of change.
 		expect(resultTextById(result.messages, first)).toContain("RANGE_ONE payload");
 		const decision = result.metadata.decisions.find((d) => d.turnIndex === 1);
 		expect(decision?.reason).toBe("working-set");

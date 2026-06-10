@@ -9,10 +9,14 @@ import { renderPromptTemplate } from "../config/prompt-templates";
 import { loadCapability } from "../discovery";
 // Embed command markdown files at build time
 import initMd from "../prompts/agents/init.md" with { type: "text" };
+import workstreamMd from "../prompts/agents/workstream.md" with { type: "text" };
+import workstreamExpertCommandMd from "../prompts/commands/workstream-expert.md" with { type: "text" };
 import { parseFrontmatter } from "../utils/frontmatter";
 
 const EMBEDDED_COMMANDS: { name: string; content: string }[] = [
 	{ name: "init.md", content: renderPromptTemplate(initMd) },
+	{ name: "workstream.md", content: renderPromptTemplate(workstreamMd) },
+	{ name: "workstream-expert.md", content: renderPromptTemplate(workstreamExpertCommandMd) },
 ];
 
 export const EMBEDDED_COMMAND_TEMPLATES: ReadonlyArray<{ name: string; content: string }> = EMBEDDED_COMMANDS;

@@ -1,0 +1,143 @@
+import { describe, expect, test } from "bun:test";
+import { Effort } from "@oh-my-pi/pi-ai";
+import { loadBundledAgents } from "../../src/task/agents";
+import { expandCommand, getCommand, loadBundledCommands } from "../../src/task/commands";
+
+describe("workstream subagents", () => {
+	test("registers the OH-native workstream role agents", () => {
+		const agents = new Map(loadBundledAgents().map(agent => [agent.name, agent]));
+
+		const beancounter = agents.get("beancounter");
+		expect(beancounter).toBeDefined();
+		expect(beancounter?.source).toBe("bundled");
+		expect(beancounter?.tools).toEqual(["read", "grep", "find", "web_search", "submit_result"]);
+		expect(beancounter?.model).toEqual(["pi/slow"]);
+		expect(beancounter?.thinkingLevel).toBe(Effort.High);
+		expect(beancounter?.blocking).toBe(true);
+		expect(beancounter?.systemPrompt).toContain("## OH Workstream Frame");
+		expect(beancounter?.systemPrompt).toContain("### Problem Space");
+		expect(beancounter?.systemPrompt).toContain("### Solution Space");
+		expect(beancounter?.systemPrompt).toContain("### Execution Contract");
+		expect(beancounter?.systemPrompt).toContain("### Raw Request Alignment");
+		expect(beancounter?.systemPrompt).toContain("Ecosystem context, not scope");
+		expect(beancounter?.systemPrompt).toContain("Passing the OH Workstream Frame is not automatically the same as satisfying the original request");
+		expect(beancounter?.systemPrompt).toContain("**Worktree / branch contract:**");
+		expect(beancounter?.systemPrompt).toContain("**Delivery / PR contract:**");
+		expect(beancounter?.systemPrompt).toContain("canonical artifact");
+		expect(beancounter?.systemPrompt).toContain("Acceptance criteria map");
+		expect(beancounter?.systemPrompt).toContain("Closure semantics");
+		expect(beancounter?.systemPrompt).toContain("Existing Workstream Expert System");
+
+		const superego = agents.get("superego");
+		expect(superego).toBeDefined();
+		expect(superego?.tools).toEqual(["read", "grep", "find", "bash", "lsp", "ast_grep", "submit_result"]);
+		expect(superego?.spawns).toEqual(["explore"]);
+		expect(superego?.blocking).toBe(true);
+		expect(superego?.systemPrompt).toContain("DECISION: ALLOW | REVISE | BLOCK");
+		expect(superego?.systemPrompt).toContain("OH_FRAME_INTEGRITY");
+		expect(superego?.systemPrompt).toContain("PROBLEM_SPACE_CHECK");
+		expect(superego?.systemPrompt).toContain("SOLUTION_SPACE_CHECK");
+		expect(superego?.systemPrompt).toContain("OVER_BROADENING");
+		expect(superego?.systemPrompt).toContain("OVER_NARROWING");
+		expect(superego?.systemPrompt).toContain("DELIVERY_PR_CHECK");
+		expect(superego?.systemPrompt).toContain("CANONICAL_SOURCE_CHECK");
+		expect(superego?.systemPrompt).toContain("CLOSURE_GATE_CHECK");
+		expect(superego?.systemPrompt).toContain("spec-substitution");
+		expect(superego?.systemPrompt).toContain("persistence");
+
+		const workstreamExpert = agents.get("workstream-expert");
+		expect(workstreamExpert).toBeDefined();
+		expect(workstreamExpert?.source).toBe("bundled");
+		expect(workstreamExpert?.tools).toEqual(["read", "grep", "find", "write", "edit", "web_search", "submit_result"]);
+		expect(workstreamExpert?.blocking).toBe(true);
+		expect(workstreamExpert?.systemPrompt).toContain("# Workstream Expert System");
+		expect(workstreamExpert?.systemPrompt).toContain("## Acceptance Criteria Matrix");
+		expect(workstreamExpert?.systemPrompt).toContain("### MUST NOT");
+		expect(workstreamExpert?.systemPrompt).toContain("## Delivery / Closure Rules");
+		expect(workstreamExpert?.systemPrompt).toContain("spec-substitution");
+		expect(workstreamExpert?.systemPrompt).toContain("durable expert system for a conceptual workstream");
+		expect(workstreamExpert?.systemPrompt).toContain("## Persistence");
+		expect(workstreamExpert?.systemPrompt).toContain("Current Step 0 Contract");
+		expect(workstreamExpert?.systemPrompt).toContain("Artifact path / store");
+
+		const verifier = agents.get("verifier");
+		expect(verifier).toBeDefined();
+		expect(verifier?.tools).toEqual(["read", "grep", "find", "bash", "lsp", "ast_grep", "submit_result"]);
+		expect(verifier?.spawns).toEqual(["explore"]);
+		expect(verifier?.blocking).toBe(true);
+		expect(verifier?.systemPrompt).toContain("## Verification Review");
+		expect(verifier?.systemPrompt).toContain("**Verdict:** PASS | NEEDS_FIX | NEEDS_HUMAN");
+		expect(verifier?.systemPrompt).toContain("**Original request satisfied:** yes | no | partial");
+		expect(verifier?.systemPrompt).toContain("**Problem-space fidelity:**");
+		expect(verifier?.systemPrompt).toContain("**Solution-space fidelity:**");
+		expect(verifier?.systemPrompt).toContain("**Raw request vs OH frame audit:**");
+		expect(verifier?.systemPrompt).toContain("**Evidence strength by material claim:**");
+		expect(verifier?.systemPrompt).toContain("**Verification gap audit:**");
+		expect(verifier?.systemPrompt).toContain("**Acceptance gap / authority:**");
+		expect(verifier?.systemPrompt).toContain("**Canonical source / acceptance criteria audit:**");
+		expect(verifier?.systemPrompt).toContain("**Closure language audit:**");
+		expect(verifier?.systemPrompt).toContain("persistence path/store");
+		expect(verifier?.systemPrompt).toContain("NEEDS_HUMAN");
+	});
+
+	test("registers the workstream orchestration command", () => {
+		const commands = loadBundledCommands();
+		const command = getCommand(commands, "workstream");
+
+		expect(command).toBeDefined();
+		expect(command?.source).toBe("bundled");
+		expect(command?.description).toContain("OH-native Beancounter/Superego/Workstream-Expert/Coder/Verifier workflow");
+		expect(command?.instructions).toContain("Invoke `beancounter`");
+		expect(command?.instructions).toContain("Invoke `superego`");
+		expect(command?.instructions).toContain("Invoke `verifier`");
+		expect(command?.instructions).toContain("invoke `workstream-expert`");
+		expect(command?.instructions).toContain("# Workstream Expert System");
+		expect(command?.instructions).toContain("Workstream expert system satisfied");
+		expect(command?.instructions).toContain("Aim → Problem Space → Solution Space → Execution Contract → Verification/Learning");
+		expect(command?.instructions).toContain("## OH Workstream Frame");
+		expect(command?.instructions).toContain("Frame Delta");
+		expect(command?.instructions).toContain("Problem-space fidelity");
+		expect(command?.instructions).toContain("Solution-space fidelity");
+		expect(command?.instructions).toContain("# Friction Log");
+		expect(command?.instructions).toContain("OH Layer");
+		expect(command?.instructions).toContain("Original request satisfied");
+		expect(command?.instructions).toContain("Raw request vs OH frame");
+		expect(command?.instructions).toContain("Verification gap audit");
+		expect(command?.instructions).toContain("Risk acceptance authority");
+		expect(command?.instructions).toContain("fresh worktree");
+		expect(command?.instructions).toContain("Target branch");
+		expect(command?.instructions).toContain("Delivery / PR");
+		expect(command?.instructions).toContain("Human decision needed: none` is only allowed");
+		expect(command?.instructions).toContain("Canonical source rule");
+		expect(command?.instructions).toContain("Closure rule");
+		expect(command?.instructions).toContain("acceptance criteria were mapped");
+		expect(command?.instructions).toContain("Closes");
+		expect(command?.instructions).toContain("Partially addresses");
+		expect(command?.instructions).toContain("Expert-system rule");
+		expect(command?.instructions).toContain("expert-system-build");
+		expect(command?.instructions).toContain("durable local law");
+		expect(command?.instructions).toContain("Artifact path / store");
+		expect(command?.instructions).toContain("Current Step 0 contract persisted");
+
+		const builderCommand = getCommand(commands, "workstream-expert");
+		expect(builderCommand).toBeDefined();
+		expect(builderCommand?.source).toBe("bundled");
+		expect(builderCommand?.description).toContain("Interactively build or update a durable Workstream Expert System without coding");
+		expect(builderCommand?.instructions).toContain("builder-only");
+		expect(builderCommand?.instructions).toContain("explicitly interactive");
+		expect(builderCommand?.instructions).toContain("Use `ask`");
+		expect(builderCommand?.instructions).toContain("Invoke `beancounter`");
+		expect(builderCommand?.instructions).toContain("Invoke `workstream-expert`");
+		expect(builderCommand?.instructions).toContain("Do not invoke coder execution");
+		expect(builderCommand?.instructions).toContain("Step 0 contract persisted");
+		expect(builderCommand?.instructions).toContain("/workstream <task>");
+
+		const expandedBuilder = builderCommand ? expandCommand(builderCommand, "build kraken expert system") : "";
+		expect(expandedBuilder).toContain("build kraken expert system");
+		expect(expandedBuilder).not.toContain("$@");
+
+		const expanded = command ? expandCommand(command, "fix the frobnicator") : "";
+		expect(expanded).toContain("fix the frobnicator");
+		expect(expanded).not.toContain("$@");
+	});
+});

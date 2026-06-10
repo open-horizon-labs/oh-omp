@@ -625,3 +625,56 @@ describe("Tool argument coercion", () => {
 		expect(() => validateToolArguments(tool, toolCall)).toThrow("Validation failed");
 	});
 });
+
+
+describe("Validation error required-shape skeleton", () => {
+	const taskLikeTool: Tool = {
+		name: "task",
+		description: "",
+		parameters: Type.Object({
+			agent: Type.String(),
+			context: Type.Optional(Type.String()),
+			tasks: Type.Array(
+				Type.Object({
+					id: Type.String(),
+					description: Type.String(),
+					assignment: Type.String(),
+				}),
+			),
+		}),
+	};
+
+	it("shows the required shape when a required property is missing", () => {
+		const toolCall: ToolCall = {
+			type: "toolCall",
+			id: "call-skel-1",
+			name: "task",
+			// The observed trap: agent + context filled, tasks omitted entirely.
+			arguments: { agent: "reviewer", context: "## Goal\nReview the thing" },
+		};
+		try {
+			validateToolArguments(taskLikeTool, toolCall);
+			throw new Error("expected validation to throw");
+		} catch (err) {
+			const message = String(err instanceof Error ? err.message : err);
+			expect(message).toContain("Required shape:");
+			expect(message).toContain('"tasks": [{ "id": string, "description": string, "assignment": string }]');
+			expect(message).toContain('"agent": string');
+		}
+	});
+
+	it("omits the skeleton for non-missing-property failures", () => {
+		const toolCall: ToolCall = {
+			type: "toolCall",
+			id: "call-skel-2",
+			name: "task",
+			arguments: { agent: 42, tasks: [{ id: "a", description: "b", assignment: "c" }] },
+		};
+		try {
+			validateToolArguments(taskLikeTool, toolCall);
+		} catch (err) {
+			const message = String(err instanceof Error ? err.message : err);
+			expect(message).not.toContain("Required shape:");
+		}
+	});
+});

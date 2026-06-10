@@ -613,6 +613,39 @@ function compileSchema(schema: object): import("ajv").ValidateFunction {
 const MAX_TYPE_COERCION_PASSES = 5;
 
 /**
+ * Render a compact required-shape skeleton from a JSON schema: required
+ * properties only, two levels deep. Appended to validation errors when a
+ * required property is missing, so the model sees what a valid call looks
+ * like at the moment of failure instead of only the missing property name.
+ */
+function renderRequiredSkeleton(schema: unknown, depth = 0): string | null {
+	if (depth > 2 || typeof schema !== "object" || schema === null) return null;
+	const s = schema as {
+		type?: string;
+		properties?: Record<string, unknown>;
+		required?: string[];
+		items?: unknown;
+	};
+	if (s.type === "object" && s.properties) {
+		const required = s.required ?? [];
+		if (required.length === 0) return "{}";
+		const fields = required
+			.map(name => {
+				const prop = s.properties?.[name] as { type?: string } | undefined;
+				const nested = renderRequiredSkeleton(prop, depth + 1);
+				return `"${name}": ${nested ?? prop?.type ?? "any"}`;
+			})
+			.join(", ");
+		return `{ ${fields} }`;
+	}
+	if (s.type === "array") {
+		const item = renderRequiredSkeleton(s.items, depth + 1);
+		return `[${item ?? "…"}]`;
+	}
+	return null;
+}
+
+/**
  * Finds a tool by name and validates the tool call arguments against its TypeBox schema
  * @param tools Array of tool definitions
  * @param toolCall The tool call from the LLM
@@ -689,9 +722,16 @@ export function validateToolArguments(tool: Tool, toolCall: ToolCall): ToolCall[
 			}
 		: originalArgs;
 
+	// When a required property is missing, show the full required shape —
+	// the dominant failure mode is models omitting a container property
+	// (e.g. task's `tasks` array) while confidently filling sibling fields.
+	const hasMissingRequired = validate.errors?.some((err: any) => err.keyword === "required") ?? false;
+	const skeleton = hasMissingRequired ? renderRequiredSkeleton(tool.parameters) : null;
+	const skeletonHint = skeleton ? `\n\nRequired shape:\n${skeleton}` : "";
+
 	const errorMessage = `Validation failed for tool "${
 		toolCall.name
-	}":\n${errors}\n\nReceived arguments:\n${JSON.stringify(receivedArgs, null, 2)}`;
+	}":\n${errors}${skeletonHint}\n\nReceived arguments:\n${JSON.stringify(receivedArgs, null, 2)}`;
 
 	throw new Error(errorMessage);
 }

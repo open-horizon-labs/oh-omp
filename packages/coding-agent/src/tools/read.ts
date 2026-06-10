@@ -814,7 +814,9 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 			".gd",
 			".gdscript",
 		]);
-		if (!offset && CODE_EXTENSIONS.has(ext) && this.session.settings.get("rna.enabled")) {
+		// raw/limit/offset are explicit requests for actual file content — the
+		// structural view must never substitute for them.
+		if (!offset && !limit && !raw && CODE_EXTENSIONS.has(ext) && this.session.settings.get("rna.enabled")) {
 			const rnaResult = await tryRnaFileMap(absolutePath, this.session.cwd);
 			if (rnaResult) {
 				return toolResult({})

@@ -191,8 +191,20 @@ export class GrepTool implements AgentTool<typeof grepSchema, GrepToolDetails> {
 			const effectiveLimit = normalizedLimit ?? DEFAULT_MATCH_LIMIT;
 			const internalLimit = Math.min(effectiveLimit * 5, 2000);
 
-			// RNA experiment: try structural search first for identifier-like patterns
-			if (this.session.settings.get("rna.enabled") && looksLikeIdentifier(normalizedPattern)) {
+			// RNA experiment: try structural search first for identifier-like patterns.
+			// Only when no precision filters are in play — tryRnaSearch ignores
+			// glob/type/case/multiline/context/offset, so substituting its result
+			// while those are set returns wrong results (e.g. glob '*.md' answered
+			// with TS symbols and the markdown never searched).
+			const hasPrecisionFilters =
+				globFilter !== undefined ||
+				(type?.trim() ?? "") !== "" ||
+				ignoreCase ||
+				effectiveMultiline ||
+				pre !== undefined ||
+				post !== undefined ||
+				normalizedOffset > 0;
+			if (this.session.settings.get("rna.enabled") && !hasPrecisionFilters && looksLikeIdentifier(normalizedPattern)) {
 				const rnaResult = await tryRnaSearch(normalizedPattern, this.session.cwd, searchDir?.trim() || undefined);
 				if (rnaResult) {
 					const details: GrepToolDetails = {
@@ -202,7 +214,11 @@ export class GrepTool implements AgentTool<typeof grepSchema, GrepToolDetails> {
 						files: [],
 						truncated: false,
 					};
-					return toolResult(details).text(`[RNA structural search]\n${rnaResult}`).done();
+					return toolResult(details)
+						.text(
+							`[RNA structural search — symbol index, not text grep; add glob/type or regex syntax to force text search]\n${rnaResult}`,
+						)
+						.done();
 				}
 			}
 

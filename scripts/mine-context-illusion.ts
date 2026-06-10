@@ -41,6 +41,8 @@ export const FETCH_TOOLS = new Set(["read", "grep", "find", "bash"]);
 export const MUTATING_TOOLS = new Set(["edit", "write", "ast_edit", "notebook", "apply_patch"]);
 /** Cap replay invocations per session to bound runtime on pathological sessions. */
 const MAX_REPLAYS_PER_SESSION = 2000;
+/** Set via --working-set: replay classification under the retention policy. */
+const WORKING_SET_REPLAY = { enabled: false };
 
 interface CliArgs {
 	since: number;
@@ -48,12 +50,16 @@ interface CliArgs {
 }
 
 function parseArgs(): CliArgs {
+	// Mutated via --working-set: replay history under the retention policy.
+
 	const args = process.argv.slice(2);
 	let since = Date.parse("2026-05-04");
+
 	let jsonOut: string | undefined;
 	for (let i = 0; i < args.length; i++) {
 		if (args[i] === "--since" && args[i + 1]) since = Date.parse(args[++i]!);
 		if (args[i] === "--json" && args[i + 1]) jsonOut = args[++i];
+		if (args[i] === "--working-set") WORKING_SET_REPLAY.enabled = true;
 	}
 	return { since, jsonOut };
 }
@@ -265,6 +271,7 @@ function classifyEarlierStatus(
 		const result = transformMessages(prefix, {
 			hotWindowTurns: HOT_WINDOW_TURNS,
 			codecs: CODECS,
+			workingSet: WORKING_SET_REPLAY.enabled ? { enabled: true } : undefined,
 		});
 		cache.value = {
 			assistantIdx,
@@ -279,6 +286,7 @@ function classifyEarlierStatus(
 	switch (decision.reason) {
 		case "hot-window":
 		case "no-tool-results":
+		case "working-set":
 			return "visible";
 		case "beyond-hot-window":
 			return "stubbed";
@@ -338,6 +346,9 @@ async function main(): Promise<void> {
 
 		// target -> most recent earlier fetch's result message index
 		let lastFetchResultByTarget = new Map<string, number>();
+		// First fetch of a target since its last mutation: the canonical copy that
+		// dedup back-refs (and the working-set pin) point to.
+		let firstFetchResultByTarget = new Map<string, number>();
 		const lastMutationIdxByPath = new Map<string, number>();
 		let nextCompaction = 0;
 		let replays = 0;
@@ -354,6 +365,7 @@ async function main(): Promise<void> {
 			) {
 				if (lastFetchResultByTarget.size > 0) stats.compactionResets++;
 				lastFetchResultByTarget = new Map();
+				firstFetchResultByTarget = new Map();
 				nextCompaction++;
 			}
 
@@ -393,7 +405,10 @@ async function main(): Promise<void> {
 				// File changed between fetches: re-read is correct behavior, not an illusion break.
 				agg.mutationJustifiedRereads++;
 				const justifiedResultIdx = resultIdxByCallId.get(call.callId);
-				if (justifiedResultIdx !== undefined) lastFetchResultByTarget.set(call.target, justifiedResultIdx);
+				if (justifiedResultIdx !== undefined) {
+					lastFetchResultByTarget.set(call.target, justifiedResultIdx);
+					firstFetchResultByTarget.set(call.target, justifiedResultIdx);
+				}
 				continue;
 			}
 			if (earlierResultIdx !== undefined && earlierResultIdx < call.assistantIdx) {
@@ -401,6 +416,18 @@ async function main(): Promise<void> {
 				if (replays < MAX_REPLAYS_PER_SESSION) {
 					if (!replayCache.value || replayCache.value.assistantIdx !== call.assistantIdx) replays++;
 					status = classifyEarlierStatus(messages, call.assistantIdx, earlierResultIdx, replayCache);
+					// Content may live verbatim at the canonical first-read turn even when
+					// the latest copy is collapsed (dedup back-refs point at the canonical
+					// copy; the working-set policy pins it).
+					const canonicalIdx = firstFetchResultByTarget.get(call.target);
+					if (
+						status !== "visible" &&
+						canonicalIdx !== undefined &&
+						canonicalIdx !== earlierResultIdx &&
+						classifyEarlierStatus(messages, call.assistantIdx, canonicalIdx, replayCache) === "visible"
+					) {
+						status = "visible";
+					}
 				} else {
 					stats.replaysCapped++;
 				}
@@ -432,7 +459,10 @@ async function main(): Promise<void> {
 			}
 
 			const resultIdx = resultIdxByCallId.get(call.callId);
-			if (resultIdx !== undefined) lastFetchResultByTarget.set(call.target, resultIdx);
+			if (resultIdx !== undefined) {
+				lastFetchResultByTarget.set(call.target, resultIdx);
+				if (!firstFetchResultByTarget.has(call.target)) firstFetchResultByTarget.set(call.target, resultIdx);
+			}
 			if (recallPending !== null && call.assistantIdx - recallPending > 2) recallPending = null;
 		}
 		stats.uniqueTargets += seenTargets.size;

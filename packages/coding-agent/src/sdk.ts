@@ -1712,6 +1712,11 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			assemblerBridge.getToolResultStubPointer(message.toolName, message.toolCallId);
 
 		const codecs = [dedupCodec, readCodec, warmCodec]; // Order matters: dedup → read → warm (catch-all)
+		const workingSet = {
+			enabled: assemblerSettings.workingSetEnabled,
+			evictAfterTurns: assemblerSettings.workingSetEvictTurns,
+			tokenCap: assemblerSettings.workingSetTokenCap,
+		};
 
 		const buildConceptGraphTask = (candidateMessages: AgentMessage[]): string => {
 			const turns = segmentIntoTurns(candidateMessages);
@@ -1750,6 +1755,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				hotWindowTurns,
 				resolveToolResultStub,
 				codecs,
+				workingSet,
 			});
 			const transformedMessages = firstPass.messages;
 
@@ -1977,6 +1983,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 					hotWindowTurns,
 					resolveToolResultStub,
 					codecs,
+					workingSet,
 					relevanceScores,
 				});
 				boundedMessages = boundedPass.messages;

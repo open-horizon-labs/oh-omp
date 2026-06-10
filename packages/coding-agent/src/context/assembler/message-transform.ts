@@ -97,6 +97,10 @@ const DEFAULT_SAFETY_MARGIN_PERCENT = 5;
 const DEFAULT_MESSAGE_BUDGET_PERCENT = 50;
 const DEFAULT_HYDRATION_BUDGET_PERCENT = 50;
 const DEFAULT_TURN_BUFFER_PERCENT = 20;
+/** Working-set defaults: evict after N untouched turns; cap on pinned verbatim tokens. */
+const DEFAULT_WORKING_SET_EVICT_TURNS = 8;
+const DEFAULT_WORKING_SET_TOKEN_CAP = 16_000;
+
 export function deriveBudget(input: BudgetDerivationInput): MemoryAssemblyBudget {
 	const safetyPercent = input.safetyMarginPercent ?? DEFAULT_SAFETY_MARGIN_PERCENT;
 	const messagePercent = input.messageBudgetPercent ?? DEFAULT_MESSAGE_BUDGET_PERCENT;
@@ -190,6 +194,24 @@ export interface MessageTransformOptions {
 	 * hot-window embedding. Missing entries default to keep-verbatim.
 	 */
 	relevanceScores?: Map<number, number>;
+
+	/**
+	 * Working-set retention: keep the canonical (first-read) copy of actively
+	 * re-read files verbatim beyond the hot window, so dedup back-references
+	 * point at full content instead of a codec skeleton. Disabled unless
+	 * `enabled` is explicitly true.
+	 */
+	workingSet?: WorkingSetOptions;
+}
+
+/** Options for working-set retention (see {@link MessageTransformOptions.workingSet}). */
+export interface WorkingSetOptions {
+	/** Master switch; the policy only runs when explicitly enabled. */
+	enabled?: boolean;
+	/** Evict a path after this many turns without an unchanged re-read (default {@link DEFAULT_WORKING_SET_EVICT_TURNS}). */
+	evictAfterTurns?: number;
+	/** Max total estimated tokens held verbatim by pinned turns (default {@link DEFAULT_WORKING_SET_TOKEN_CAP}). */
+	tokenCap?: number;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -226,6 +248,7 @@ export interface TurnDecision {
 	 *   - `"no-tool-results"`   — beyond hot window but no tool results to stub.
 	 *   - `"beyond-hot-window"` — tool results replaced with stubs.
 	 *   - `"codec-compressed"`  — tool results replaced with codec warm representation.
+	 *   - `"working-set"`       — beyond hot window but pinned: canonical copy of an actively re-read file, kept verbatim.
 	 *   - `"budget-exceeded"`   — dropped to fit the token budget.
 	 *   - `"conversation-compressed"` — non-tool turn compressed via head+tail based on semantic relevance.
 	 *   - `"developer-dropped"` — developer message beyond hot window dropped (regenerated each turn).
@@ -235,6 +258,7 @@ export interface TurnDecision {
 		| "no-tool-results"
 		| "beyond-hot-window"
 		| "codec-compressed"
+		| "working-set"
 		| "budget-exceeded"
 		| "conversation-compressed"
 		| "developer-dropped";
@@ -502,6 +526,85 @@ function updateReadHistoryForTurn(turn: Turn, history: Map<string, FileReadEntry
 		const { path: toolCallPath } = extractToolCallInfo(turn, msg.toolCallId);
 		updateReadHistory(history, msg, turnIndex, toolCallPath);
 	}
+}
+
+/**
+ * Compute working-set exemptions: turns whose tool results stay verbatim
+ * beyond the hot window because the model has demonstrated active use of a
+ * file (repeated unchanged re-reads).
+ *
+ * The pinned turn is the *canonical first read* of the current content
+ * version — the same turn dedup back-references point to — so refs resolve
+ * to full content instead of a codec skeleton, and the pinned turn never
+ * changes representation while pinned (cache-stable).
+ *
+ * Pure function of the turn sequence: deterministic per request, replayable.
+ * Granularity is whole turns (pairing invariant); a pinned turn keeps all of
+ * its tool results verbatim.
+ */
+function computeWorkingSetExemptions(
+	turns: Turn[],
+	hotWindowStart: number,
+	evictAfterTurns: number,
+	tokenCap: number,
+): Set<number> {
+	interface VersionTrack {
+		path: string;
+		/** Turn of the first read of this content version (the canonical copy). */
+		canonicalTurn: number;
+		/** Re-reads of this exact content version. */
+		rereads: number;
+		lastTouchTurn: number;
+	}
+	// Keyed by path + content hash: each content version tracks independently,
+	// so interleaved reads of other ranges/versions (pagination) do not reset
+	// pin candidacy. Mirrors dedup semantics (readHistory keys on content).
+	const tracks = new Map<string, VersionTrack>();
+	for (let idx = 0; idx < turns.length; idx++) {
+		const turn = turns[idx];
+		if (!turn.hasToolResults) continue;
+		for (const msg of turn.messages) {
+			if (msg.role !== "toolResult") continue;
+			const { path } = extractToolCallInfo(turn, msg.toolCallId);
+			if (!path) continue;
+			const text = extractText(msg);
+			if (!text) continue;
+			const key = `${path}\u0000${contentHash(text)}`;
+			const track = tracks.get(key);
+			if (track) {
+				track.rereads++;
+				track.lastTouchTurn = idx;
+			} else {
+				tracks.set(key, { path, canonicalTurn: idx, rereads: 0, lastTouchTurn: idx });
+			}
+		}
+	}
+	const latestTurn = turns.length - 1;
+	const qualifying = [...tracks.values()]
+		.filter(
+			(t) =>
+				t.rereads >= 2 &&
+				latestTurn - t.lastTouchTurn <= evictAfterTurns &&
+				t.canonicalTurn < hotWindowStart,
+		)
+		.sort((a, b) => b.lastTouchTurn - a.lastTouchTurn);
+	const exempt = new Set<number>();
+	const pinnedPaths = new Set<string>();
+	let pinnedTokens = 0;
+	for (const track of qualifying) {
+		// One version per path: most recently touched wins (stale versions age out).
+		if (pinnedPaths.has(track.path)) continue;
+		if (exempt.has(track.canonicalTurn)) {
+			pinnedPaths.add(track.path);
+			continue;
+		}
+		const tokens = estimateTurnTokens(turns[track.canonicalTurn]);
+		if (pinnedTokens + tokens > tokenCap && exempt.size > 0) break;
+		pinnedTokens += tokens;
+		exempt.add(track.canonicalTurn);
+		pinnedPaths.add(track.path);
+	}
+	return exempt;
 }
 
 /**
@@ -809,11 +912,22 @@ export function transformMessages(messages: AgentMessage[], options: MessageTran
 	const hotWindowStart = Math.max(0, totalTurns - hotWindowTurns);
 	const readHistory = new Map<string, FileReadEntry>();
 
+	const workingSetExemptions =
+		options.workingSet?.enabled === true
+			? computeWorkingSetExemptions(
+					originalTurns,
+					hotWindowStart,
+					options.workingSet.evictAfterTurns ?? DEFAULT_WORKING_SET_EVICT_TURNS,
+					options.workingSet.tokenCap ?? DEFAULT_WORKING_SET_TOKEN_CAP,
+				)
+			: undefined;
+
 	const replacementResults: ContentReplacementResult[] = [];
 	for (let idx = 0; idx < totalTurns; idx++) {
 		const turn = originalTurns[idx];
-		if (idx >= hotWindowStart) {
-			// Hot window: keep verbatim, but still update history for future passes.
+		if (idx >= hotWindowStart || workingSetExemptions?.has(idx) === true) {
+			// Hot window or working-set pin: keep verbatim, but still update
+			// history so later re-reads dedup against the canonical copy.
 			updateReadHistoryForTurn(turn, readHistory, idx);
 			replacementResults.push({ turn, codecUsed: false });
 		} else {
@@ -897,22 +1011,37 @@ export function transformMessages(messages: AgentMessage[], options: MessageTran
 			totalTokensAfter += tokensBefore;
 			keptCount++;
 		} else if (originalTurns[i].hasToolResults) {
-			// Beyond hot window with tool results: compressed or stubbed
+			// Beyond hot window with tool results: pinned (working set), compressed, or stubbed
 			const tokensAfter = transformedTokens[i];
-			const wasCompressed = replacementResults[i].codecUsed;
-			decisions.push({
-				turnIndex: i,
-				action: wasCompressed ? "compressed" : "stubbed",
-				reason: wasCompressed ? "codec-compressed" : "beyond-hot-window",
-				messageCount: originalTurns[i].messages.length,
-				hasToolResults: true,
-				tokensBefore,
-				tokensAfter,
-				sourceTags,
-			});
-			totalTokensAfter += tokensAfter;
-			if (wasCompressed) compressedCount++;
-			else stubbedCount++;
+			if (workingSetExemptions?.has(i) === true) {
+				decisions.push({
+					turnIndex: i,
+					action: "kept",
+					reason: "working-set",
+					messageCount: originalTurns[i].messages.length,
+					hasToolResults: true,
+					tokensBefore,
+					tokensAfter,
+					sourceTags,
+				});
+				totalTokensAfter += tokensAfter;
+				keptCount++;
+			} else {
+				const wasCompressed = replacementResults[i].codecUsed;
+				decisions.push({
+					turnIndex: i,
+					action: wasCompressed ? "compressed" : "stubbed",
+					reason: wasCompressed ? "codec-compressed" : "beyond-hot-window",
+					messageCount: originalTurns[i].messages.length,
+					hasToolResults: true,
+					tokensBefore,
+					tokensAfter,
+					sourceTags,
+				});
+				totalTokensAfter += tokensAfter;
+				if (wasCompressed) compressedCount++;
+				else stubbedCount++;
+			}
 		} else {
 			// Beyond hot window, no tool results.
 			const role = originalTurns[i].messages[0]?.role;

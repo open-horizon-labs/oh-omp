@@ -1143,3 +1143,163 @@ describe("deriveBudget", () => {
 		expect(budget.hydrationBudgetMax).toBe(0);
 	});
 });
+
+
+// ════════════════════════════════════════════════════════════════════════
+// Working-set retention
+// ════════════════════════════════════════════════════════════════════════
+
+describe("working-set retention", () => {
+	let wsCall = 0;
+
+	function makeReadTurn(path: string, content: string): AgentMessage[] {
+		wsCall++;
+		const id = `ws-${wsCall}`;
+		const assistant = makeAssistant([{ id, name: "read" }]);
+		for (const block of assistant.content) {
+			if (typeof block === "object" && block.type === "toolCall") {
+				block.arguments = { path };
+			}
+		}
+		return [assistant, makeToolResult(id, content)];
+	}
+
+	function fillerTurns(count: number): AgentMessage[] {
+		const out: AgentMessage[] = [];
+		for (let i = 0; i < count; i++) {
+			out.push(makeUser(`filler ${wsCall}-${i}`), makeAssistant());
+		}
+		return out;
+	}
+
+	function resultTextById(messages: AgentMessage[], idSuffix: number): string {
+		const msg = messages.find((m) => m.role === "toolResult" && m.toolCallId === `ws-${idSuffix}`);
+		if (!msg || msg.role !== "toolResult" || !Array.isArray(msg.content)) return "";
+		return msg.content
+			.map((c) => (typeof c === "object" && c.type === "text" ? c.text : ""))
+			.join("");
+	}
+
+	test("third unchanged read pins the canonical first-read turn beyond the hot window", () => {
+		wsCall = 0;
+		const first = wsCall + 1;
+		const messages: AgentMessage[] = [
+			makeUser("start"),
+			...makeReadTurn("/a.ts", "CONTENT_A unique payload"),
+			...makeReadTurn("/a.ts", "CONTENT_A unique payload"),
+			...makeReadTurn("/a.ts", "CONTENT_A unique payload"),
+			...fillerTurns(2),
+		];
+		const result = transformMessages(messages, { workingSet: { enabled: true } });
+		// Canonical first read (turn 1) is beyond the hot window yet kept verbatim.
+		expect(resultTextById(result.messages, first)).toContain("CONTENT_A unique payload");
+		// The re-reads are still deduped/stubbed as usual.
+		expect(resultTextById(result.messages, first + 1)).not.toContain("CONTENT_A unique payload");
+		const decision = result.metadata.decisions.find((d) => d.turnIndex === 1);
+		expect(decision?.action).toBe("kept");
+		expect(decision?.reason).toBe("working-set");
+	});
+
+	test("pin evicts after evictAfterTurns without a re-read", () => {
+		wsCall = 0;
+		const first = wsCall + 1;
+		const messages: AgentMessage[] = [
+			makeUser("start"),
+			...makeReadTurn("/a.ts", "CONTENT_A unique payload"),
+			...makeReadTurn("/a.ts", "CONTENT_A unique payload"),
+			...makeReadTurn("/a.ts", "CONTENT_A unique payload"),
+			...fillerTurns(3),
+		];
+		const result = transformMessages(messages, {
+			workingSet: { enabled: true, evictAfterTurns: 2 },
+		});
+		expect(resultTextById(result.messages, first)).not.toContain("CONTENT_A unique payload");
+		const decision = result.metadata.decisions.find((d) => d.turnIndex === 1);
+		expect(decision?.reason).not.toBe("working-set");
+	});
+
+	test("disabled unless explicitly enabled", () => {
+		wsCall = 0;
+		const first = wsCall + 1;
+		const messages: AgentMessage[] = [
+			makeUser("start"),
+			...makeReadTurn("/a.ts", "CONTENT_A unique payload"),
+			...makeReadTurn("/a.ts", "CONTENT_A unique payload"),
+			...makeReadTurn("/a.ts", "CONTENT_A unique payload"),
+			...fillerTurns(2),
+		];
+		const result = transformMessages(messages, {});
+		expect(resultTextById(result.messages, first)).not.toContain("CONTENT_A unique payload");
+	});
+
+	test("a single re-read does not pin", () => {
+		wsCall = 0;
+		const first = wsCall + 1;
+		const messages: AgentMessage[] = [
+			makeUser("start"),
+			...makeReadTurn("/a.ts", "CONTENT_A unique payload"),
+			...makeReadTurn("/a.ts", "CONTENT_A unique payload"),
+			...fillerTurns(3),
+		];
+		const result = transformMessages(messages, { workingSet: { enabled: true } });
+		expect(resultTextById(result.messages, first)).not.toContain("CONTENT_A unique payload");
+	});
+
+	test("interleaved reads of other ranges do not reset pin candidacy", () => {
+		wsCall = 0;
+		const first = wsCall + 1;
+		const messages: AgentMessage[] = [
+			makeUser("start"),
+			...makeReadTurn("/a.ts", "RANGE_ONE payload"),
+			...makeReadTurn("/a.ts", "RANGE_TWO payload"),
+			...makeReadTurn("/a.ts", "RANGE_ONE payload"),
+			...makeReadTurn("/a.ts", "RANGE_ONE payload"),
+			...fillerTurns(2),
+		];
+		const result = transformMessages(messages, { workingSet: { enabled: true } });
+		// RANGE_ONE read three times → its canonical turn (1) pins despite the
+		// interleaved RANGE_TWO read.
+		expect(resultTextById(result.messages, first)).toContain("RANGE_ONE payload");
+		const decision = result.metadata.decisions.find((d) => d.turnIndex === 1);
+		expect(decision?.reason).toBe("working-set");
+	});
+
+	test("content change resets the pin candidate", () => {
+		wsCall = 0;
+		const messages: AgentMessage[] = [
+			makeUser("start"),
+			...makeReadTurn("/a.ts", "CONTENT_A unique payload"),
+			...makeReadTurn("/a.ts", "CONTENT_A unique payload"),
+			...makeReadTurn("/a.ts", "CONTENT_B changed payload"),
+			...fillerTurns(2),
+		];
+		const result = transformMessages(messages, { workingSet: { enabled: true } });
+		const decisions = result.metadata.decisions.filter((d) => d.reason === "working-set");
+		expect(decisions).toHaveLength(0);
+	});
+
+	test("token cap pins most recently touched paths first", () => {
+		wsCall = 0;
+		const firstA = wsCall + 1;
+		const bigA = `A${"a".repeat(600)}`;
+		const bigB = `B${"b".repeat(600)}`;
+		const messages: AgentMessage[] = [
+			makeUser("start"),
+			...makeReadTurn("/a.ts", bigA),
+			...makeReadTurn("/a.ts", bigA),
+			...makeReadTurn("/a.ts", bigA),
+			...makeReadTurn("/b.ts", bigB),
+			...makeReadTurn("/b.ts", bigB),
+			makeUser("q"),
+			...makeReadTurn("/b.ts", bigB),
+			...fillerTurns(2),
+		];
+		const result = transformMessages(messages, {
+			workingSet: { enabled: true, tokenCap: 200 },
+		});
+		const pinnedTurns = result.metadata.decisions.filter((d) => d.reason === "working-set");
+		expect(pinnedTurns).toHaveLength(1);
+		// /b.ts touched later → wins the cap; /a.ts canonical stays compressed.
+		expect(resultTextById(result.messages, firstA)).not.toContain(bigA);
+	});
+});

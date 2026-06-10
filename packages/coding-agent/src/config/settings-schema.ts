@@ -375,6 +375,39 @@ export const SETTINGS_SCHEMA = {
 			condition: "isAssemblerMode",
 		},
 	},
+	"assembler.workingSetEnabled": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "agent",
+			label: "Working-set retention",
+			description: "Keep actively re-read files verbatim beyond the hot window (pinned working set)",
+			submenu: true,
+			condition: "isAssemblerMode",
+		},
+	},
+	"assembler.workingSetEvictTurns": {
+		type: "number",
+		default: 8,
+		ui: {
+			tab: "agent",
+			label: "Working-set eviction",
+			description: "Evict a pinned file after this many turns without a re-read",
+			submenu: true,
+			condition: "isAssemblerMode",
+		},
+	},
+	"assembler.workingSetTokenCap": {
+		type: "number",
+		default: 16000,
+		ui: {
+			tab: "agent",
+			label: "Working-set token cap",
+			description: "Max estimated tokens held verbatim by the pinned working set",
+			submenu: true,
+			condition: "isAssemblerMode",
+		},
+	},
 	"assembler.hotWindowTurns": {
 		type: "number",
 		default: 4,
@@ -2167,6 +2200,9 @@ export interface AssemblerSettings {
 	recentWindowDays: number;
 	turnBufferPercent: number;
 	contextWindowCap: number;
+	workingSetEnabled: boolean;
+	workingSetEvictTurns: number;
+	workingSetTokenCap: number;
 }
 
 /** Map group prefix -> typed settings interface */

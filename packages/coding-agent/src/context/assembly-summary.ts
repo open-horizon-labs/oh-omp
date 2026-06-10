@@ -46,6 +46,10 @@ export function formatAssemblySummary(snapshot: EffectivePromptSnapshot): string
 				turnParts.push(`${meta.keptCount} kept`);
 			}
 		}
+		const pinnedCount = meta.decisions.filter(d => d.reason === "working-set").length;
+		if (pinnedCount > 0) {
+			turnParts.push(`${pinnedCount} pinned (working set)`);
+		}
 		if (meta.stubbedCount > 0) {
 			const range = describeStubbedRange(meta.decisions);
 			turnParts.push(range ? `${meta.stubbedCount} stubbed (${range})` : `${meta.stubbedCount} stubbed`);

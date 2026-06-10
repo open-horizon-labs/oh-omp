@@ -78,6 +78,43 @@ describe("formatAssemblySummary", () => {
 		expect(result).toContain("2 budget-dropped");
 	});
 
+	test("includes pinned working-set count when present", () => {
+		const meta: TransformMetadata = {
+			decisions: [
+				makeDecision(0, "kept", "working-set"),
+				makeDecision(1, "stubbed", "beyond-hot-window"),
+				makeDecision(2, "kept", "hot-window"),
+				makeDecision(3, "kept", "hot-window"),
+			],
+			totalTurns: 4,
+			keptCount: 3,
+			stubbedCount: 1,
+			compressedCount: 0,
+			droppedCount: 0,
+			tokensBefore: 4000,
+			tokensAfter: 3200,
+			scoredCount: 0,
+		};
+		const result = formatAssemblySummary(makeSnapshot({ meta }));
+		expect(result).toContain("1 pinned (working set)");
+	});
+
+	test("omits pinned count when no working-set pins exist", () => {
+		const meta: TransformMetadata = {
+			decisions: [makeDecision(0, "kept", "hot-window")],
+			totalTurns: 1,
+			keptCount: 1,
+			stubbedCount: 0,
+			compressedCount: 0,
+			droppedCount: 0,
+			tokensBefore: 1000,
+			tokensAfter: 1000,
+			scoredCount: 0,
+		};
+		const result = formatAssemblySummary(makeSnapshot({ meta }));
+		expect(result).not.toContain("pinned");
+	});
+
 	test("includes budget usage and headroom", () => {
 		const budget: EffectivePromptSnapshot["budget"] = {
 			contextWindow: 200_000,

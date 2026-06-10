@@ -412,6 +412,10 @@ function pathToSettingDef(path: SettingPath): SettingDef | null {
 		return { ...base, type: "enum", values };
 	}
 
+	if (schemaType === "number" && path === "assembler.contextWindowCap") {
+		return { ...base, type: "text" };
+	}
+
 	if (schemaType === "number" && ui.submenu) {
 		const provider = OPTION_PROVIDERS[path];
 		if (provider) {

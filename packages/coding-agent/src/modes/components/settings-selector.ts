@@ -331,7 +331,7 @@ export class SettingsSelectorComponent extends Container {
 					id: def.path,
 					label: def.label,
 					description: def.description,
-					currentValue: (currentValue as string) ?? "",
+					currentValue: String(currentValue ?? ""),
 					submenu: (cv, done) => this.#createTextInput(def, cv, done),
 				};
 		}
@@ -427,7 +427,7 @@ export class SettingsSelectorComponent extends Container {
 			options,
 			currentValue,
 			value => {
-				this.#setSettingValue(def.path, value);
+				if (!this.#setSettingValue(def.path, value)) return;
 				this.callbacks.onChange(def.path, value);
 				done(value);
 			},
@@ -460,7 +460,7 @@ export class SettingsSelectorComponent extends Container {
 			value => {
 				// Empty string clears the setting; undefined-typed string settings
 				// store "" which the browser.ts expandPath ignores (no-op fallback).
-				this.#setSettingValue(def.path, value);
+				if (!this.#setSettingValue(def.path, value)) return;
 				this.callbacks.onChange(def.path, value);
 				wrappedDone(value);
 			},
@@ -471,16 +471,19 @@ export class SettingsSelectorComponent extends Container {
 	/**
 	 * Set a setting value, handling type conversion.
 	 */
-	#setSettingValue(path: SettingPath, value: string): void {
+	#setSettingValue(path: SettingPath, value: string): boolean {
 		// Handle number conversions
 		const currentValue = settings.get(path);
 		if (typeof currentValue === "number") {
-			settings.set(path, Number(value) as never);
+			const parsed = Number(value);
+			if (!Number.isFinite(parsed)) return false;
+			settings.set(path, parsed as never);
 		} else if (typeof currentValue === "boolean") {
 			settings.set(path, (value === "true") as never);
 		} else {
 			settings.set(path, value as never);
 		}
+		return true;
 	}
 
 	/**

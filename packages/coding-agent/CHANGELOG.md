@@ -6,6 +6,10 @@
 
 - Restored `/v` to toggle the context cockpit side pane for clean terminal selection/copy while preserving the default visible cockpit layout.
 
+### Changed
+
+- Assembled context injections (recalled-context, concept-graph facts, assembly summary) moved from the front of the message array to the tail. Front placement regenerated message 0 every request, invalidating the Anthropic prompt cache for the entire transcript each turn (measured cache write/read ratio 2.3–8.0 vs ~0.1 for non-assembler traffic); tail placement preserves the conversation prefix so cache writes are incremental.
+
 ## [0.10.0] - 2026-06-01
 
 ### Added

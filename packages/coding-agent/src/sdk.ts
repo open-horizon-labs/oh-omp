@@ -2010,7 +2010,14 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				});
 			}
 
-			// Step 6: Inject bounded context inputs as developer messages.
+			// Step 6: Inject bounded context inputs as developer messages at the TAIL.
+			// Cache discipline: Anthropic prompt caching matches on a stable message
+			// prefix. These blocks regenerate every request (recalled-context entries,
+			// concept-graph facts), so placing them at the front invalidated the cache
+			// at message 0 every turn — the entire transcript was rewritten at
+			// cache-write prices (measured write/read 2.3–8.0 vs ~0.1 control).
+			// At the tail they cost one block of fresh input per request and never
+			// break the conversation prefix.
 			const contextMessages: AgentMessage[] = [];
 			if (conceptGraphText) {
 				contextMessages.push({
@@ -2028,7 +2035,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 					timestamp: Date.now(),
 				});
 			}
-			const finalMessages = contextMessages.length > 0 ? [...contextMessages, ...boundedMessages] : boundedMessages;
+			const finalMessages = contextMessages.length > 0 ? [...boundedMessages, ...contextMessages] : boundedMessages;
 
 			// Step 7: Capture effective-prompt snapshot.
 			const turnId = `turn-${Date.now()}`;
@@ -2062,17 +2069,19 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				}
 			}
 
-			// Step 8: Inject assembly summary as developer message.
+			// Step 8: Append assembly summary as the final developer message.
+			// Tail placement for the same cache reason as Step 6: the summary's
+			// counts and budget numbers change every request.
 			const summary = formatAssemblySummary(lastPromptSnapshot);
 			if (summary) {
 				return [
+					...finalMessages,
 					{
 						role: "developer" as const,
 						content: summary,
 						attribution: "agent" as const,
 						timestamp: Date.now(),
 					} satisfies AgentMessage,
-					...finalMessages,
 				];
 			}
 

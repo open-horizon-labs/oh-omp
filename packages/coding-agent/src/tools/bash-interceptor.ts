@@ -17,6 +17,53 @@ export interface InterceptionResult {
 }
 
 /**
+ * Blank quoted segments, keeping the quote characters. Quoted content is
+ * shell *data*, not syntax — interception rules must never match on it
+ * (e.g. `echo "a > b"` is not a redirection, `python -c 'sed -i ...'` is
+ * not a sed invocation).
+ */
+function blankQuotedSegments(command: string): string {
+	let out = "";
+	for (let i = 0; i < command.length; i++) {
+		const ch = command[i];
+		if (ch === "\\") {
+			i++; // Escaped char outside quotes is data — drop both.
+			continue;
+		}
+		if (ch === "'") {
+			out += "''";
+			const end = command.indexOf("'", i + 1);
+			if (end === -1) return out; // Unterminated quote — rest is data.
+			i = end;
+			continue;
+		}
+		if (ch === '"') {
+			out += '""';
+			let j = i + 1;
+			while (j < command.length && command[j] !== '"') {
+				if (command[j] === "\\") j++;
+				j++;
+			}
+			if (j >= command.length) return out;
+			i = j;
+			continue;
+		}
+		out += ch;
+	}
+	return out;
+}
+
+/**
+ * Composite commands (pipes, chains, substitution) signal shell composition
+ * that read-only suggested tools cannot express — e.g. `find … | xargs wc`
+ * has no `find`-tool equivalent. Detected on the quote-blanked command so
+ * quoted `|`/`;` don't count.
+ */
+function isCompositeCommand(blankedCommand: string): boolean {
+	return /\||&&|;|\$\(|`/.test(blankedCommand);
+}
+
+/**
  * Compile bash interceptor rules into regexes, skipping invalid patterns.
  */
 function compileRules(rules: BashInterceptorRule[]): Array<{ rule: BashInterceptorRule; regex: RegExp }> {
@@ -44,8 +91,10 @@ export function checkBashInterception(
 	availableTools: string[],
 	rules: BashInterceptorRule[] = DEFAULT_BASH_INTERCEPTOR_RULES,
 ): InterceptionResult {
-	// Normalize command for pattern matching
+	// Match against the quote-blanked command: quoted content is data.
 	const normalizedCommand = command.trim();
+	const matchable = blankQuotedSegments(normalizedCommand);
+	const composite = isCompositeCommand(matchable);
 	const compiled = compileRules(rules);
 
 	for (const { rule, regex } of compiled) {
@@ -53,8 +102,12 @@ export function checkBashInterception(
 		if (!availableTools.includes(rule.tool)) {
 			continue;
 		}
+		// Rules whose tool cannot express composition skip composite commands.
+		if (rule.simpleCommandsOnly && composite) {
+			continue;
+		}
 
-		if (regex.test(normalizedCommand)) {
+		if (regex.test(matchable)) {
 			return {
 				block: true,
 				message: `Blocked: ${rule.message}\n\nOriginal command: ${command}`,

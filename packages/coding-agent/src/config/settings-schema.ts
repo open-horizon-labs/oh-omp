@@ -175,11 +175,15 @@ export const DEFAULT_BASH_INTERCEPTOR_RULES: BashInterceptorRule[] = [
 		pattern: "^\\s*(grep|rg|ripgrep|ag|ack)\\s+",
 		tool: "grep",
 		message: "Use the `grep` tool instead of grep/rg. It respects .gitignore and provides structured output.",
+		// The grep tool cannot express pipelines/chains — only simple commands.
+		simpleCommandsOnly: true,
 	},
 	{
 		pattern: "^\\s*(find|fd|locate)\\s+.*(-name|-iname|-type|--type|-glob)",
 		tool: "find",
 		message: "Use the `find` tool instead of find/fd. It respects .gitignore and is faster for glob patterns.",
+		// The find tool cannot express pipelines/chains — only simple commands.
+		simpleCommandsOnly: true,
 	},
 	{
 		pattern: "^\\s*sed\\s+(-i|--in-place)",
@@ -2185,6 +2189,12 @@ export interface BashInterceptorRule {
 	tool: string;
 	message: string;
 	allowSubcommands?: string[];
+	/**
+	 * Only intercept simple commands. Composite commands (pipes, chains,
+	 * substitution) signal shell composition the suggested tool cannot
+	 * express, so they pass through.
+	 */
+	simpleCommandsOnly?: boolean;
 }
 
 export interface ContextManagerSettings {

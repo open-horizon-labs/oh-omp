@@ -542,6 +542,37 @@ function updateReadHistoryForTurn(turn: Turn, history: Map<string, FileReadEntry
  * Granularity is whole turns (pairing invariant); a pinned turn keeps all of
  * its tool results verbatim.
  */
+/** Tools whose calls mutate a file at `args.path`/`args.notebook_path`. */
+const MUTATING_TOOL_NAMES = new Set(["edit", "write", "ast_edit", "notebook", "apply_patch"]);
+
+/**
+ * Collect paths mutated in-session: path → turn index of the last observed
+ * mutating tool call. Pure transcript signal (external changes invisible);
+ * used by codecs to flag provably stale read stubs.
+ */
+function collectMutatedPaths(turns: Turn[]): Map<string, number> {
+	const mutated = new Map<string, number>();
+	for (let idx = 0; idx < turns.length; idx++) {
+		for (const msg of turns[idx].messages) {
+			if (msg.role !== "assistant" || !Array.isArray(msg.content)) continue;
+			for (const block of msg.content) {
+				if (typeof block !== "object" || block === null) continue;
+				const b = block as { type?: string; name?: string; arguments?: unknown };
+				if (b.type !== "toolCall" || !b.name || !MUTATING_TOOL_NAMES.has(b.name)) continue;
+				const args = (b.arguments ?? {}) as { path?: unknown; notebook_path?: unknown };
+				const path =
+					typeof args.path === "string"
+						? args.path
+						: typeof args.notebook_path === "string"
+							? args.notebook_path
+							: undefined;
+				if (path !== undefined) mutated.set(path, idx);
+			}
+		}
+	}
+	return mutated;
+}
+
 function computeWorkingSetExemptions(
 	turns: Turn[],
 	hotWindowStart: number,
@@ -639,6 +670,7 @@ function replaceToolResultContent(
 	sourceTags: string[],
 	turnIndex: number,
 	readHistory: Map<string, FileReadEntry>,
+	mutatedPaths: ReadonlyMap<string, number>,
 ): ContentReplacementResult {
 	if (!turn.hasToolResults) return { turn, codecUsed: false };
 
@@ -657,6 +689,7 @@ function replaceToolResultContent(
 			toolCallArgs,
 			turnIndex,
 			readHistory,
+			mutatedPaths,
 		};
 
 		// Try codecs first
@@ -926,6 +959,8 @@ export function transformMessages(messages: AgentMessage[], options: MessageTran
 	const hotWindowStart = Math.max(0, totalTurns - hotWindowTurns);
 	const readHistory = new Map<string, FileReadEntry>();
 
+	const mutatedPaths = collectMutatedPaths(originalTurns);
+
 	const workingSetExemptions =
 		options.workingSet?.enabled === true
 			? computeWorkingSetExemptions(
@@ -946,7 +981,7 @@ export function transformMessages(messages: AgentMessage[], options: MessageTran
 			replacementResults.push({ turn, codecUsed: false });
 		} else {
 			const tags = extractSourceTags(turn.messages);
-			replacementResults.push(replaceToolResultContent(turn, options, tags, idx, readHistory));
+			replacementResults.push(replaceToolResultContent(turn, options, tags, idx, readHistory, mutatedPaths));
 		}
 	}
 

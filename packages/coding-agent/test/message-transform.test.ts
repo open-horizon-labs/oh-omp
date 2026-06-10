@@ -3,11 +3,14 @@ import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage, DeveloperMessage, ToolResultMessage, UserMessage } from "@oh-my-pi/pi-ai";
 import {
 	DEFAULT_HOT_WINDOW_TURNS,
+	dedupCodec,
 	deriveBudget,
 	formatStubText,
+	readCodec,
 	segmentIntoTurns,
 	TOOL_RESULT_STUB_TEXT,
 	transformMessages,
+	warmCodec,
 } from "@oh-my-pi/pi-coding-agent/context/assembler";
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1321,5 +1324,94 @@ describe("working-set retention", () => {
 		expect(pinnedTurns).toHaveLength(1);
 		// /b.ts touched later → wins the cap; /a.ts canonical stays compressed.
 		expect(resultTextById(result.messages, firstA)).not.toContain(bigA);
+	});
+});
+
+// ════════════════════════════════════════════════════════════════════════
+// Stub recovery recipes
+// ════════════════════════════════════════════════════════════════════════
+
+describe("stub recovery recipes", () => {
+	const PROD_CODECS = [dedupCodec, readCodec, warmCodec];
+	let rrCall = 0;
+
+	function makeToolTurn(name: string, args: Record<string, unknown>, resultText: string): AgentMessage[] {
+		rrCall++;
+		const id = `rr-${rrCall}`;
+		const assistant = makeAssistant([{ id, name }]);
+		for (const block of assistant.content) {
+			if (typeof block === "object" && block.type === "toolCall") {
+				block.arguments = args;
+			}
+		}
+		return [assistant, makeToolResult(id, resultText, name)];
+	}
+
+	function resultText(messages: AgentMessage[], idSuffix: number): string {
+		const msg = messages.find((m) => m.role === "toolResult" && m.toolCallId === `rr-${idSuffix}`);
+		if (!msg || msg.role !== "toolResult" || !Array.isArray(msg.content)) return "";
+		return msg.content
+			.map((c) => (typeof c === "object" && c.type === "text" ? c.text : ""))
+			.join("");
+	}
+
+	const EIGHT_LINES = Array.from({ length: 8 }, (_, i) => `read content line ${i}`).join("\n");
+
+	test("read stub carries a recall recipe when the file is unchanged in session", () => {
+		rrCall = 0;
+		const first = rrCall + 1;
+		const messages: AgentMessage[] = [
+			makeUser("start"),
+			...makeToolTurn("read", { path: "/proj/alpha.ts" }, EIGHT_LINES),
+			makeUser("next"),
+			makeAssistant(),
+			makeUser("more"),
+			makeAssistant(),
+			makeUser("again"),
+			makeAssistant(),
+		];
+		const result = transformMessages(messages, { codecs: PROD_CODECS });
+		const stub = resultText(result.messages, first);
+		expect(stub).toContain('recall("/proj/alpha.ts") expands');
+		expect(stub).toContain("unchanged in session");
+	});
+
+	test("read stub flags staleness when the file was edited later in session", () => {
+		rrCall = 0;
+		const first = rrCall + 1;
+		const messages: AgentMessage[] = [
+			makeUser("start"),
+			...makeToolTurn("read", { path: "/proj/alpha.ts" }, EIGHT_LINES),
+			...makeToolTurn("edit", { path: "/proj/alpha.ts" }, "Updated /proj/alpha.ts"),
+			makeUser("more"),
+			makeAssistant(),
+			makeUser("again"),
+			makeAssistant(),
+		];
+		const result = transformMessages(messages, { codecs: PROD_CODECS });
+		const stub = resultText(result.messages, first);
+		expect(stub).toContain("edited since this read");
+		expect(stub).toContain("re-read for current state");
+		expect(stub).not.toContain('recall("');
+	});
+
+	test("warm stub carries a generic recall recipe for non-file tools", () => {
+		rrCall = 0;
+		const first = rrCall + 1;
+		const grepOutput = Array.from({ length: 9 }, (_, i) => `match ${i}: some line`).join("\n");
+		const messages: AgentMessage[] = [
+			makeUser("start"),
+			...makeToolTurn("grep", { pattern: "needle" }, grepOutput),
+			makeUser("next"),
+			makeAssistant(),
+			makeUser("more"),
+			makeAssistant(),
+			makeUser("again"),
+			makeAssistant(),
+		];
+		const result = transformMessages(messages, { codecs: PROD_CODECS });
+		const stub = resultText(result.messages, first);
+		expect(stub).toContain("warm:grep");
+		expect(stub).toContain("recall expands");
 	});
 });

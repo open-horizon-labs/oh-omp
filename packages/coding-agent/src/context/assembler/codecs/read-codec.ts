@@ -106,6 +106,23 @@ function isStructuralLine(content: string, lang: Language): boolean {
 }
 
 /**
+ * Build the recovery recipe carried in stub headers, so the cheap recovery
+ * path is visible at the point of need instead of only in the system prompt.
+ *
+ * - File edited later in this session (provable from the transcript):
+ *   re-reading is the *correct* recovery — say so, with the staleness reason.
+ * - Otherwise: `recall("<path>")` re-expands the original content without a
+ *   fresh full-price read.
+ */
+function recoveryRecipe(ctx: CodecContext, filePath: string): string {
+	const mutatedAt = ctx.mutatedPaths?.get(filePath);
+	if (mutatedAt !== undefined && mutatedAt > ctx.turnIndex) {
+		return " | edited since this read — re-read for current state";
+	}
+	return ` | unchanged in session — recall("${filePath}") expands`;
+}
+
+/**
  * Extract an anchored skeleton from hashline-formatted source text.
  *
  * Keeps only structural lines (declarations, scope boundaries, imports)
@@ -116,7 +133,7 @@ function isStructuralLine(content: string, lang: Language): boolean {
  *
  * Returns null if the text has no hashlines or no structural lines.
  */
-function extractAnchoredSkeleton(text: string, filePath: string): string | null {
+function extractAnchoredSkeleton(text: string, filePath: string, recipe: string): string | null {
 	const lang = detectLanguage(filePath);
 	if (lang === "unknown") return null;
 
@@ -142,7 +159,7 @@ function extractAnchoredSkeleton(text: string, filePath: string): string | null 
 	// Build header with line range info
 	const lineInfo = extractLineInfo(text);
 	const rangeHint = lineInfo ? ` | lines ${lineInfo.start}-${lineInfo.end} of ${lineInfo.total}` : "";
-	const header = `[warm:read:${filePath}${rangeHint} | skeleton: ${structural.length} structural lines]`;
+	const header = `[warm:read:${filePath}${rangeHint} | skeleton: ${structural.length} structural lines${recipe}]`;
 
 	return `${header}\n${structural.join("\n")}`;
 }
@@ -164,19 +181,20 @@ export const readCodec: ContentCodec = {
 		if (!text) return null;
 
 		const filePath = ctx.toolCallPath ?? "unknown";
+		const recipe = recoveryRecipe(ctx, filePath);
 
 		// Case 1: RNA structural view — already compact. Preserve it.
 		if (isRnaStructuralView(text)) {
-			return [{ type: "text", text: `[warm:read:${filePath}]\n${text}` }];
+			return [{ type: "text", text: `[warm:read:${filePath}${recipe}]\n${text}` }];
 		}
 
 		// Case 2: Source read with line range — extract anchored skeleton.
 		const lineInfo = extractLineInfo(text);
 		if (lineInfo) {
-			const skeleton = extractAnchoredSkeleton(text, filePath);
+			const skeleton = extractAnchoredSkeleton(text, filePath, recipe);
 			if (skeleton) return [{ type: "text", text: skeleton }];
 			// No skeleton (no hashlines or no structural lines) — fall back to metadata.
-			const warmText = `[warm:read:${filePath} | lines ${lineInfo.start}-${lineInfo.end} of ${lineInfo.total}]`;
+			const warmText = `[warm:read:${filePath} | lines ${lineInfo.start}-${lineInfo.end} of ${lineInfo.total}${recipe}]`;
 			return [{ type: "text", text: warmText }];
 		}
 
@@ -186,8 +204,8 @@ export const readCodec: ContentCodec = {
 			// Very short content — preserve as-is, not worth compressing.
 			return null;
 		}
-		const skeleton = extractAnchoredSkeleton(text, filePath);
+		const skeleton = extractAnchoredSkeleton(text, filePath, recipe);
 		if (skeleton) return [{ type: "text", text: skeleton }];
-		return [{ type: "text", text: `[warm:read:${filePath} | ${lineCount} lines]` }];
+		return [{ type: "text", text: `[warm:read:${filePath} | ${lineCount} lines${recipe}]` }];
 	},
 };

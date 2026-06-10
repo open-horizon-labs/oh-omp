@@ -85,6 +85,13 @@ export interface CodecContext {
 	 * Built incrementally by the transform loop; codecs read but do not mutate.
 	 */
 	readHistory?: ReadonlyMap<string, FileReadEntry>;
+	/**
+	 * Paths mutated later in the conversation (path → turn index of the last
+	 * observed in-session mutation). Lets codecs flag provably stale reads and
+	 * pick the right recovery recipe. In-session signal only — external file
+	 * changes are not visible here.
+	 */
+	mutatedPaths?: ReadonlyMap<string, number>;
 }
 
 /**

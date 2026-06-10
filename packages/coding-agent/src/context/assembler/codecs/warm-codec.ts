@@ -61,6 +61,17 @@ export const warmCodec: ContentCodec = {
 		const headerParts = [`warm:${toolName}`];
 		if (argSummary) headerParts.push(argSummary);
 		headerParts.push(`${lineCount} lines`);
+		// Recovery recipe at the point of need: path-scoped recall when the call
+		// targeted a file (and it wasn't edited since), generic recall otherwise.
+		const path = ctx.toolCallPath;
+		const mutatedAt = path ? ctx.mutatedPaths?.get(path) : undefined;
+		if (path && mutatedAt !== undefined && mutatedAt > ctx.turnIndex) {
+			headerParts.push("path edited since — re-run for current state");
+		} else if (path) {
+			headerParts.push(`recall("${path}") expands`);
+		} else {
+			headerParts.push("recall expands");
+		}
 		const header = `[${headerParts.join(" | ")}]`;
 
 		const peek = buildPeek(lines, lineCount);

@@ -8,7 +8,7 @@ Search the recall store for relevant past context. The recall store is global an
 - Results are diversity-ranked to avoid repetitive matches
 - Use `mode: "keyword"` for exact text search (BM25 ranking) over tool results AND conversation messages. Best for identifiers, error codes, file paths, exact values, and specific terms that vector search blurs together in long sessions. Default mode is `"semantic"` (vector search).
 - **Expand compressed content:** Two methods depending on the compression type:
-  - `[warm:…]` or `[ref:…]` stubs: use `turn: N` to retrieve the full original content at that turn number. No query needed.
+  - `[warm:…]` or `[ref:…]` stubs: follow the stub's inline recipe when it has one (e.g. `recall("<path>")` as the query; a stub flagged `edited since this read` means re-read instead — the stored copy is stale). For stubs without a recipe, search by `query` first; result entries include turn numbers, and `turn: N` with a number from those results expands that turn in full. Turn numbers come from recall results, not from stubs.
   - `[… N lines compressed — use recall(query=…) to expand]`: use `query` with text from the visible head/tail lines to find the full original message via semantic search.
 </instruction>
 

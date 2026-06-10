@@ -2236,6 +2236,17 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	{
 		const pendingArgs = new Map<string, unknown>();
 		let ingestTurn = 0;
+		// Resume safety: the recall store outlives the process, but this counter
+		// does not. Without seeding, a resumed session re-numbers from 0 and
+		// recall(turn=N) merges unrelated turns from before/after the restart.
+		if (recallStore) {
+			try {
+				const maxTurn = await recallStore.maxTurn(sessionManager.getSessionId());
+				if (maxTurn !== null) ingestTurn = maxTurn + 1;
+			} catch (error) {
+				logger.warn("Recall ingest turn seed failed; starting at 0", { error: String(error) });
+			}
+		}
 		session.subscribe(event => {
 			if (event.type === "tool_execution_start") {
 				pendingArgs.set(event.toolCallId, event.args);

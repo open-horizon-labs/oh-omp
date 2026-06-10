@@ -98,6 +98,31 @@ export class RecallStore {
 		return Promise.race([query as Promise<RecallRow[]>, timeout]);
 	}
 
+	/**
+	 * Highest ingested turn number for a session, or null when the session has
+	 * no rows (or the scan timed out). Used to seed the ingest turn counter on
+	 * resume so post-restart rows never reuse turn numbers already occupied by
+	 * earlier rows of the same session.
+	 */
+	async maxTurn(sessionId: string): Promise<number | null> {
+		const filter = `session_id = '${sessionId.replace(/'/g, "''")}'`;
+		const scan = this.#table
+			.query()
+			.where(filter)
+			.select(["turn"])
+			.toArray()
+			.then(rows => {
+				let max: number | null = null;
+				for (const row of rows as { turn: number }[]) {
+					const turn = Number(row.turn);
+					if (Number.isFinite(turn) && (max === null || turn > max)) max = turn;
+				}
+				return max;
+			});
+		const timeout = Bun.sleep(5000).then(() => null);
+		return Promise.race([scan, timeout]);
+	}
+
 	async getByLookupKeys(keys: RecallLookupKey[]): Promise<Map<string, RecallRow>> {
 		if (keys.length === 0) return new Map();
 

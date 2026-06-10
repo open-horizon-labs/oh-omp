@@ -53,7 +53,7 @@ Produce a system prompt that:
 9. **Foregrounds context management** — the agent operates in long sessions where older messages are compressed to save budget. The compiled prompt must make clear:
    - What compression markers look like (`[warm:…]`, `[ref:…]`, `[… N lines compressed]`)
    - That all compressed content is recoverable — never silently lost
-   - How to recover each type: `recall(turn=N)` for tool stubs, `recall(query=…)` for conversation turns
+   - How to recover each type: follow the inline recipe on tool stubs (`recall("<path>")`, or re-read when flagged `edited since this read`); `recall(query=…)` for conversation turns and pathless stubs, then `recall(turn=N)` using turn numbers taken from recall results (stubs do not carry recall turn numbers)
    - That recall/expansion is a primary workflow tool for fighting context decay, not a secondary search utility
 
 ## Output Contract

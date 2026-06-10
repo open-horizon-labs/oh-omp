@@ -9,15 +9,146 @@ type LanceData = Record<string, unknown>[];
 
 const TABLE_NAME = "tasks";
 
+/**
+ * Compaction cutoff. LanceDB versions every write; pruning recent versions
+ * while another agent process holds a table handle is the dominant cause of
+ * `Object at location ... not found` task-store failures. A wide cutoff
+ * keeps compaction (version manifests do accumulate) while making the
+ * cross-process prune race practically impossible.
+ */
+const COMPACTION_CUTOFF_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Storage-corruption error classifier. Only these trigger the recovery
+ * ladder (reopen → salvage+rebuild); anything else (bad filter, programmer
+ * error) propagates untouched — rebuild on arbitrary errors would be data
+ * loss for no reason.
+ */
+export function isLanceStorageError(err: unknown): boolean {
+	const message = err instanceof Error ? err.message : String(err);
+	return (
+		/object at location .* not found/i.test(message) ||
+		/no such file or directory/i.test(message) ||
+		/manifest/i.test(message) ||
+		/dataset .*(not found|corrupt)/i.test(message) ||
+		/invalid .*version/i.test(message)
+	);
+}
+
+/** Open the tasks table, creating it (via seed row) when missing. */
+async function ensureTable(db: Connection): Promise<Table> {
+	const names = await db.tableNames();
+	if (names.includes(TABLE_NAME)) return db.openTable(TABLE_NAME);
+	const seedRow: Task = {
+		id: "__seed__",
+		content: "",
+		details: "",
+		status: "open",
+		agent: "",
+		session: "",
+		labels: "[]",
+		depends_on: "[]",
+		notes: "",
+		project: "__seed__",
+		created_at: 0,
+		updated_at: 0,
+	};
+	const table = await db.createTable(TABLE_NAME, [seedRow] as unknown as LanceData);
+	await table.delete("id = '__seed__'");
+	return table;
+}
+
+/** Re-materialize a salvaged row as a plain Task (drops Arrow proxies/extras). */
+function toPlainTask(row: Task): Task {
+	return {
+		id: String(row.id),
+		content: String(row.content ?? ""),
+		details: String(row.details ?? ""),
+		status: row.status,
+		agent: String(row.agent ?? ""),
+		session: String(row.session ?? ""),
+		labels: String(row.labels ?? "[]"),
+		depends_on: String(row.depends_on ?? "[]"),
+		notes: String(row.notes ?? ""),
+		project: String(row.project ?? ""),
+		created_at: Number(row.created_at ?? 0),
+		updated_at: Number(row.updated_at ?? 0),
+	};
+}
+
 export class TaskStore {
 	#db: Connection;
 	#table: Table;
 	#project: string;
+	#agentDir: string;
 
-	constructor(db: Connection, table: Table, project: string) {
+	constructor(db: Connection, table: Table, project: string, agentDir: string) {
 		this.#db = db;
 		this.#table = table;
 		this.#project = project;
+		this.#agentDir = agentDir;
+	}
+
+	/**
+	 * Run a store operation with tiered recovery for storage corruption:
+	 * 1. reopen the table (stale-handle race after cross-process compaction —
+	 *    the common case; data is intact, only our handle is dead) and retry;
+	 * 2. salvage readable rows → JSON backup → drop → recreate → re-insert,
+	 *    then retry once more.
+	 * Non-storage errors propagate unchanged.
+	 */
+	async #withRecovery<T>(opName: string, op: () => Promise<T>): Promise<T> {
+		try {
+			return await op();
+		} catch (err) {
+			if (!isLanceStorageError(err)) throw err;
+			logger.warn("TaskStore storage error — reopening table", { op: opName, error: String(err) });
+			try {
+				this.#table = await this.#db.openTable(TABLE_NAME);
+				return await op();
+			} catch (err2) {
+				if (!isLanceStorageError(err2)) throw err2;
+				logger.error("TaskStore reopen failed — salvaging and rebuilding", {
+					op: opName,
+					error: String(err2),
+				});
+				await this.#salvageRebuild();
+				return await op();
+			}
+		}
+	}
+
+	/**
+	 * Last-resort rebuild: salvage whatever rows are still readable, back them
+	 * up to a timestamped JSON sidecar, recreate the table, re-insert salvage.
+	 * Worst-case loss = rows unreadable at corruption time; the backup attempt
+	 * is on disk either way.
+	 */
+	async #salvageRebuild(): Promise<void> {
+		let salvaged: Task[] = [];
+		try {
+			const table = await this.#db.openTable(TABLE_NAME);
+			salvaged = ((await table.query().toArray()) as Task[]).map(toPlainTask);
+		} catch (err) {
+			logger.error("TaskStore salvage scan failed — rebuilding empty", { error: String(err) });
+		}
+		const backupPath = path.join(this.#agentDir, `tasks-backup-${Date.now()}.json`);
+		try {
+			await Bun.write(backupPath, JSON.stringify(salvaged, null, 2));
+			logger.warn("TaskStore wrote salvage backup", { path: backupPath, rows: salvaged.length });
+		} catch (err) {
+			logger.error("TaskStore backup write failed", { path: backupPath, error: String(err) });
+		}
+		try {
+			await this.#db.dropTable(TABLE_NAME);
+		} catch {
+			// Table may be unreadable/already gone — recreate regardless.
+		}
+		this.#table = await ensureTable(this.#db);
+		if (salvaged.length > 0) {
+			await this.#table.add(salvaged as unknown as LanceData);
+		}
+		logger.warn("TaskStore rebuilt", { restoredRows: salvaged.length });
 	}
 
 	static async open(agentDir: string, project: string): Promise<TaskStore> {
@@ -29,29 +160,15 @@ export class TaskStore {
 		if (names.includes(TABLE_NAME)) {
 			table = await db.openTable(TABLE_NAME);
 			// Fire-and-forget compaction — prunes accumulated version manifests.
-			const cutoff = new Date(Date.now() - 2 * 60_000);
+			// Wide cutoff: see COMPACTION_CUTOFF_MS.
+			const cutoff = new Date(Date.now() - COMPACTION_CUTOFF_MS);
 			table.optimize({ cleanupOlderThan: cutoff }).catch(() => {});
 		} else {
-			const seedRow: Task = {
-				id: "__seed__",
-				content: "",
-				details: "",
-				status: "open",
-				agent: "",
-				session: "",
-				labels: "[]",
-				depends_on: "[]",
-				notes: "",
-				project: "__seed__",
-				created_at: 0,
-				updated_at: 0,
-			};
-			table = await db.createTable(TABLE_NAME, [seedRow] as unknown as LanceData);
-			await table.delete("id = '__seed__'");
+			table = await ensureTable(db);
 		}
 
 		logger.debug("TaskStore initialized", { path: dbPath });
-		return new TaskStore(db, table, project);
+		return new TaskStore(db, table, project, agentDir);
 	}
 
 	async create(inputs: TaskCreateInput[], session: string): Promise<string[]> {
@@ -90,17 +207,19 @@ export class TaskStore {
 			});
 		}
 
-		await this.#table.add(rows as unknown as LanceData);
+		await this.#withRecovery("create", () => this.#table.add(rows as unknown as LanceData));
 		logger.debug("TaskStore created tasks", { count: rows.length, ids });
 		return ids;
 	}
 
 	async get(id: string): Promise<Task | undefined> {
-		const results = await this.#table
-			.query()
-			.where(`id = '${this.#escape(id)}'`)
-			.limit(1)
-			.toArray();
+		const results = await this.#withRecovery("get", () =>
+			this.#table
+				.query()
+				.where(`id = '${this.#escape(id)}'`)
+				.limit(1)
+				.toArray(),
+		);
 		return results[0] as Task | undefined;
 	}
 
@@ -119,16 +238,19 @@ export class TaskStore {
 			updated_at: Date.now(),
 		};
 
-		// LanceDB doesn't have native update — delete + re-insert
-		await this.#table.delete(`id = '${this.#escape(id)}'`);
-		await this.#table.add([updated] as unknown as LanceData);
+		// LanceDB doesn't have native update — delete + re-insert. Wrapped as one
+		// recovery op: a retry re-deletes (no-op) and re-adds, never losing the row.
+		await this.#withRecovery("update", async () => {
+			await this.#table.delete(`id = '${this.#escape(id)}'`);
+			await this.#table.add([updated] as unknown as LanceData);
+		});
 		return true;
 	}
 
 	async remove(id: string): Promise<boolean> {
 		const existing = await this.get(id);
 		if (!existing) return false;
-		await this.#table.delete(`id = '${this.#escape(id)}'`);
+		await this.#withRecovery("remove", () => this.#table.delete(`id = '${this.#escape(id)}'`));
 		return true;
 	}
 
@@ -148,7 +270,9 @@ export class TaskStore {
 			filters.push(`status = '${this.#escape(params.status)}'`);
 		}
 
-		const allRows = (await this.#table.query().where(filters.join(" AND ")).toArray()) as Task[];
+		const allRows = (await this.#withRecovery("query", () =>
+			this.#table.query().where(filters.join(" AND ")).toArray(),
+		)) as Task[];
 
 		// Build a lookup for dependency resolution
 		const statusById = new Map<string, TaskStatus>();
@@ -161,10 +285,12 @@ export class TaskStore {
 		if (params.status === "ready" || params.status === "blocked" || !params.status) {
 			if (filters.length > 1) {
 				// We filtered by more than just project — need full project set for dep resolution
-				const fullSet = (await this.#table
-					.query()
-					.where(`project = '${this.#escape(this.#project)}'`)
-					.toArray()) as Task[];
+				const fullSet = (await this.#withRecovery("query", () =>
+					this.#table
+						.query()
+						.where(`project = '${this.#escape(this.#project)}'`)
+						.toArray(),
+				)) as Task[];
 				for (const row of fullSet) {
 					statusById.set(row.id, row.status);
 				}

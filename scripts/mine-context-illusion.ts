@@ -32,13 +32,13 @@ import {
 	transformMessages,
 } from "../packages/coding-agent/src/context/assembler/message-transform";
 
-const SESSIONS_ROOT = join(homedir(), ".oh-omp", "agent", "sessions");
+export const SESSIONS_ROOT = join(homedir(), ".oh-omp", "agent", "sessions");
 /** Mirror production: sdk.ts builds [dedup, read, warm] in this order. */
 const CODECS = [dedupCodec, readCodec, warmCodec];
 /** Mirror production default: settings-schema assembler.hotWindowTurns = 4. */
 const HOT_WINDOW_TURNS = 4;
-const FETCH_TOOLS = new Set(["read", "grep", "find", "bash"]);
-const MUTATING_TOOLS = new Set(["edit", "write", "ast_edit", "notebook", "apply_patch"]);
+export const FETCH_TOOLS = new Set(["read", "grep", "find", "bash"]);
+export const MUTATING_TOOLS = new Set(["edit", "write", "ast_edit", "notebook", "apply_patch"]);
 /** Cap replay invocations per session to bound runtime on pathological sessions. */
 const MAX_REPLAYS_PER_SESSION = 2000;
 
@@ -58,7 +58,7 @@ function parseArgs(): CliArgs {
 	return { since, jsonOut };
 }
 
-interface ToolCallRef {
+export interface ToolCallRef {
 	/** Index of the assistant message containing the call. */
 	assistantIdx: number;
 	callId: string;
@@ -147,7 +147,7 @@ function normalizeTarget(tool: string, args: Record<string, unknown>): string | 
 	}
 }
 
-function listSessionFiles(root: string, since: number): string[] {
+export function listSessionFiles(root: string, since: number): string[] {
 	const out: string[] = [];
 	let projects: string[] = [];
 	try {
@@ -176,13 +176,13 @@ function listSessionFiles(root: string, since: number): string[] {
 	return out;
 }
 
-interface LoadedSession {
+export interface LoadedSession {
 	messages: AgentMessage[];
 	/** Message indices at which a compaction record appeared (history before is not what the model saw). */
 	compactionBoundaries: number[];
 }
 
-async function loadSession(path: string): Promise<LoadedSession | null> {
+export async function loadSession(path: string): Promise<LoadedSession | null> {
 	const text = await Bun.file(path).text();
 	const messages: AgentMessage[] = [];
 	const compactionBoundaries: number[] = [];
@@ -204,7 +204,7 @@ async function loadSession(path: string): Promise<LoadedSession | null> {
 	return { messages, compactionBoundaries };
 }
 
-function extractToolCalls(messages: AgentMessage[]): ToolCallRef[] {
+export function extractToolCalls(messages: AgentMessage[]): ToolCallRef[] {
 	const calls: ToolCallRef[] = [];
 	for (let i = 0; i < messages.length; i++) {
 		const message = messages[i] as AgentMessage & { model?: string };
@@ -497,4 +497,4 @@ async function main(): Promise<void> {
 	}
 }
 
-await main();
+if (import.meta.main) await main();

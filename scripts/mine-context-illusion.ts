@@ -101,6 +101,8 @@ interface Aggregates {
 	recallTurnExpansions: number;
 	recallQueries: number;
 	recallThenRefetch: number;
+	/** Turn expansions that returned empty/no-content — failed recovery attempts (layer-3 evidence gate). */
+	recallTurnEmptyResults: number;
 	postCompactionRefetches: number;
 	wastedTokensEstimate: number;
 	mutationJustifiedRereads: number;
@@ -322,6 +324,7 @@ async function main(): Promise<void> {
 		recallTurnExpansions: 0,
 		recallQueries: 0,
 		recallThenRefetch: 0,
+		recallTurnEmptyResults: 0,
 		postCompactionRefetches: 0,
 		wastedTokensEstimate: 0,
 		mutationJustifiedRereads: 0,
@@ -384,7 +387,22 @@ async function main(): Promise<void> {
 						)
 						.map((b) => b.arguments)[0],
 				);
-				if (args.turn !== undefined) agg.recallTurnExpansions++;
+				if (args.turn !== undefined) {
+					agg.recallTurnExpansions++;
+					// Layer-3 evidence gate: a turn expansion returning nothing is a
+					// failed recovery (likely the process/transcript numbering seam).
+					const resultMsg = messages.find(
+						(m) =>
+							(m as { role?: string }).role === "toolResult" &&
+							(m as { toolCallId?: string }).toolCallId === call.callId,
+					);
+					const resultText = resultMsg
+						? JSON.stringify((resultMsg as { content?: unknown }).content ?? "")
+						: "";
+					if (resultText.length < 120 || /no (results|rows|messages) found/i.test(resultText)) {
+						agg.recallTurnEmptyResults++;
+					}
+				}
 				else agg.recallQueries++;
 				recallPending = call.assistantIdx;
 				continue;
@@ -493,7 +511,7 @@ async function main(): Promise<void> {
 	lines.push(``);
 	lines.push(`## Proxy 2 — recovery split`);
 	lines.push(
-		`- recall calls: ${agg.recallCalls} (turn expansions: ${agg.recallTurnExpansions}, queries: ${agg.recallQueries})`,
+		`- recall calls: ${agg.recallCalls} (turn expansions: ${agg.recallTurnExpansions}, of which empty/failed: ${agg.recallTurnEmptyResults}, queries: ${agg.recallQueries})`,
 	);
 	lines.push(`- fresh re-fetches of compressed content: ${illusionBreaks}`);
 	lines.push(``);

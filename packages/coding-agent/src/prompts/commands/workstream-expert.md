@@ -28,6 +28,7 @@ You **MUST** ask the user before proceeding when:
 - updating an existing expert system would materially change durable workstream law,
 - the workstream boundary is ambiguous,
 - closure/delivery authority cannot be derived from canonical sources.
+- model bindings for the expert system's execution roles are missing, unconfirmed, or being changed — suggest pool defaults with rationale, but the user explicitly names/confirms each model.
 
 You **MUST NOT** ask for trivia that tools can determine. Inspect existing files, docs, and expert-system artifacts first.
 
@@ -41,10 +42,11 @@ You **MUST NOT** ask for trivia that tools can determine. Inspect existing files
 6. If Superego returns `REVISE`, revise the OH Workstream Frame before building/updating the expert system.
 7. Ask the user to choose the target persistence/update path if it remains ambiguous after inspection. Recommend `.oh/workstreams/<workstream-id>/EXPERT-SYSTEM.md` for v0 when no project convention exists.
 8. Invoke `workstream-expert` to build a new or update an existing durable `# Workstream Expert System` from the approved OH Workstream Frame, canonical sources, acceptance criteria map, existing expert system if any, persistence target, and Superego corrections.
-9. Invoke `superego` to review the Workstream Expert System for source fidelity, criterion preservation, workstream identity, persistence scope, durable-vs-task-local separation, closure authority, verification gates, and spec-substitution resistance.
-10. If Superego returns `BLOCK`, do not persist the update unless the user explicitly authorizes a revised bounded frame. If Superego returns `REVISE`, revise and re-review before persistence.
-11. Persist the approved expert system at the agreed path/store using file tools when filesystem persistence is selected.
-12. Stop. Do not invoke coder execution.
+9. Propose default model bindings for each execution role the expert system defines (at minimum coder and verifier) from the available model pool, with a one-line fitness rationale per suggestion, then ask the user to explicitly confirm or rename each binding. A suggested default is not a binding. Record confirmed bindings in the expert system's `## Model Roster`; leave unconfirmed roles marked `unbound: needs user decision`.
+10. Invoke `superego` to review the Workstream Expert System for source fidelity, criterion preservation, workstream identity, persistence scope, durable-vs-task-local separation, closure authority, verification gates, model-roster binding status, and spec-substitution resistance.
+11. If Superego returns `BLOCK`, do not persist the update unless the user explicitly authorizes a revised bounded frame. If Superego returns `REVISE`, revise and re-review before persistence.
+12. Persist the approved expert system at the agreed path/store using file tools when filesystem persistence is selected.
+13. Stop. Do not invoke coder execution.
 
 ## Persistence output
 
@@ -75,13 +77,18 @@ The final response must include:
 
 **Step 0 contract persisted:** yes | no | blocked
 
+**Model roster:** bound | partially bound | unbound
+
+**Model bindings:**
+[role → model, binding status per role]
+
 **Durable laws added/changed:**
 
 **Task-specific deltas recorded but not promoted:**
 
 **Human decisions made:**
 
-**Human decision still needed:** none | choose workstream boundary | authorize substitute source | approve durable-law update | choose persistence path | other
+**Human decision still needed:** none | choose workstream boundary | authorize substitute source | approve durable-law update | choose persistence path | bind model roster | other
 
 **Do not code:** confirmed
 

@@ -29,9 +29,11 @@ The Workstream Expert System answers: what durable local laws define correct beh
 - You **MUST** define what does not count as proof for material claims.
 - You **MUST** distinguish durable workstream law from task-specific deltas. Task-specific acceptance criteria may be recorded in the current-frame section, but should not become permanent law unless they generalize to the conceptual workstream.
 - You **MUST** keep multiple conceptual workstreams separate. Do not merge unrelated workstream identities just because they live in the same repo.
+- You **MUST** include a `## Model Roster` that binds every execution role this expert system defines (at minimum coder and verifier) to an explicit model. Suggest defaults from the available model pool with a one-line fitness rationale, but a suggestion is not a binding: only the user can confirm or rename a binding. Roles without user confirmation stay `suggested-unconfirmed` or `unbound: needs user decision`.
+- You **MUST NOT** invent model availability or silently rebind models. Model rebinding is a durable-law change: it requires explicit user decision and should cite fitness evidence (telemetry/gradation, escalation history) when available.
 </critical>
 
-Build or update the expert system from the supplied raw request, canonical sources, existing Workstream Expert System if any, OH Workstream Frame, and Superego corrections.
+Build or update the expert system from the supplied raw request, canonical sources, existing Workstream Expert System if any, OH Workstream Frame, available model pool with any existing model bindings, and Superego corrections.
 
 Return this exact structure, and write/update the durable artifact when authorized:
 
@@ -183,6 +185,26 @@ security | migration | API contract | UX | observability | state-machine | test-
 
 **Verifier must return NEEDS_HUMAN if:**
 - [Gap or authority condition]
+
+## Model Roster
+
+**Binding rule:** the execution-role set is **fixed by the pipeline** — `coder` and `verifier` always; optionally `beancounter`, `superego`, `workstream-expert` when a project rebinds them — plus project agents materialized under `.omp/agents/` (a new role exists only as a materialized agent file, never as free-form text in this table). Each role is bound to an explicit, user-named model. Suggested defaults come from the available model pool with rationale; a suggestion is not a binding until the user confirms or renames it. Never invent pool availability, and never invent role labels.
+
+| Role | Model (explicit) | Suggested default + rationale | Binding status | Rebind triggers |
+|---|---|---|---|---|
+| coder | [user-named model or `unbound`] | [pool model + one-line fitness rationale] | user-confirmed / suggested-unconfirmed / unbound | [escalation rate, fitness evidence, model deprecation] |
+| verifier | [user-named model; SHOULD differ from coder for independent judgment] | [pool model + rationale] | user-confirmed / suggested-unconfirmed / unbound | [same] |
+| beancounter / superego / workstream-expert (optional; pipeline defaults, e.g. `pi/slow`-tier role references) | [user-named model or role reference] | [pool default + rationale] | user-confirmed / suggested-unconfirmed / pipeline-default | [same] |
+| [materialized project agent: `.omp/agents/<name>.md`] | [user-named model] | [pool model + rationale] | user-confirmed / suggested-unconfirmed / unbound | [same] |
+
+**Materialization:**
+[How bindings take effect: `task.agentModelOverrides` keys and/or project agent frontmatter (e.g. `.omp/agents/`), with concrete paths/keys.]
+
+**Fitness evidence:**
+[Telemetry/gradation evidence informing current bindings, or `bootstrap guess — no data yet`.]
+
+**Rebinding authority:**
+Model bindings are durable workstream law. Changes follow Expert-System Update Rules: user decision required; cite fitness evidence when available.
 
 ## Delivery / Closure Rules
 

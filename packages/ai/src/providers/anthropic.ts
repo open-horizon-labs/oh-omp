@@ -1123,6 +1123,11 @@ type CacheControlBlock = {
 	cache_control?: AnthropicCacheControl | null;
 };
 
+type AnthropicMessageConversion = {
+	messages: MessageParam[];
+	cacheCandidateMessageIndexes: number[];
+};
+
 function applyCacheControlToLastBlock<T extends CacheControlBlock>(
 	blocks: T[],
 	cacheControl: AnthropicCacheControl,
@@ -1146,7 +1151,11 @@ function applyCacheControlToLastTextBlock(
 	applyCacheControlToLastBlock(blocks, cacheControl);
 }
 
-function applyPromptCaching(params: MessageCreateParamsStreaming, cacheControl?: AnthropicCacheControl): void {
+function applyPromptCaching(
+	params: MessageCreateParamsStreaming,
+	cacheControl?: AnthropicCacheControl,
+	cacheCandidateMessageIndexes?: number[],
+): void {
 	if (!cacheControl) return;
 
 	// Skip if cache_control breakpoints were already placed externally on messages.
@@ -1174,9 +1183,9 @@ function applyPromptCaching(params: MessageCreateParamsStreaming, cacheControl?:
 
 	if (cacheBreakpointsUsed >= MAX_CACHE_BREAKPOINTS) return;
 
-	const userIndexes = params.messages
-		.map((message, index) => (message.role === "user" ? index : -1))
-		.filter(index => index >= 0);
+	const userIndexes =
+		cacheCandidateMessageIndexes ??
+		params.messages.map((message, index) => (message.role === "user" ? index : -1)).filter(index => index >= 0);
 
 	if (userIndexes.length >= 2) {
 		const penultimateUserIndex = userIndexes[userIndexes.length - 2];
@@ -1358,9 +1367,10 @@ function buildParams(
 	options?: AnthropicOptions,
 ): MessageCreateParamsStreaming {
 	const { cacheControl } = getCacheControl(baseUrl, options?.cacheRetention);
+	const convertedMessages = convertAnthropicMessagesWithMetadata(context.messages, model, useClaudeCompatibleShape);
 	const params: AnthropicSamplingParams = {
 		model: model.id,
-		messages: convertAnthropicMessages(context.messages, model, useClaudeCompatibleShape),
+		messages: convertedMessages.messages,
 		max_tokens: options?.maxTokens || (model.maxTokens / 3) | 0,
 		stream: true,
 	};
@@ -1432,19 +1442,26 @@ function buildParams(
 	}
 	disableThinkingIfToolChoiceForced(params);
 	ensureMaxTokensForThinking(params, model);
-	applyPromptCaching(params, cacheControl);
+	applyPromptCaching(params, cacheControl, convertedMessages.cacheCandidateMessageIndexes);
 	enforceCacheControlLimit(params, 4);
 	normalizeCacheControlTtlOrdering(params);
 
 	return params;
 }
 
-export function convertAnthropicMessages(
+function convertAnthropicMessagesWithMetadata(
 	messages: Message[],
 	model: Model<"anthropic-messages">,
 	useClaudeCompatibleShape: boolean,
-): MessageParam[] {
+): AnthropicMessageConversion {
 	const params: MessageParam[] = [];
+	const cacheCandidateMessageIndexes: number[] = [];
+
+	const pushUserParam = (message: MessageParam, cacheCandidate: boolean): void => {
+		const index = params.length;
+		params.push(message);
+		if (cacheCandidate) cacheCandidateMessageIndexes.push(index);
+	};
 
 	const transformedMessages = transformMessages(messages, model, normalizeToolCallId);
 
@@ -1454,12 +1471,16 @@ export function convertAnthropicMessages(
 		if (msg.role === "user" || msg.role === "developer") {
 			if (!msg.content) continue;
 
+			const cacheCandidate = msg.role === "user" && !msg.synthetic;
 			if (typeof msg.content === "string") {
 				if (msg.content.trim().length > 0) {
-					params.push({
-						role: "user",
-						content: msg.content.toWellFormed(),
-					});
+					pushUserParam(
+						{
+							role: "user",
+							content: msg.content.toWellFormed(),
+						},
+						cacheCandidate,
+					);
 				}
 			} else {
 				const blocks: ContentBlockParam[] = msg.content.map(item => {
@@ -1486,10 +1507,13 @@ export function convertAnthropicMessages(
 					return true;
 				});
 				if (filteredBlocks.length === 0) continue;
-				params.push({
-					role: "user",
-					content: filteredBlocks,
-				});
+				pushUserParam(
+					{
+						role: "user",
+						content: filteredBlocks,
+					},
+					cacheCandidate,
+				);
 			}
 		} else if (msg.role === "assistant") {
 			const blocks: ContentBlockParam[] = [];
@@ -1583,19 +1607,33 @@ export function convertAnthropicMessages(
 			// Skip the messages we've already processed
 			i = j - 1;
 
-			// Add a single user message with all tool results
-			params.push({
-				role: "user",
-				content: toolResults,
-			});
+			// Add a single user message with all tool results. Tool results are stable
+			// transcript facts, so they remain eligible cache breakpoints even though
+			// Anthropic transports them as user messages.
+			pushUserParam(
+				{
+					role: "user",
+					content: toolResults,
+				},
+				true,
+			);
 		}
 	}
 
 	if (params.length > 0 && params[params.length - 1]?.role === "assistant") {
+		// Synthetic fallback required by Anthropic, not a stable transcript boundary.
 		params.push({ role: "user", content: "Continue." });
 	}
 
-	return params;
+	return { messages: params, cacheCandidateMessageIndexes };
+}
+
+export function convertAnthropicMessages(
+	messages: Message[],
+	model: Model<"anthropic-messages">,
+	useClaudeCompatibleShape: boolean,
+): MessageParam[] {
+	return convertAnthropicMessagesWithMetadata(messages, model, useClaudeCompatibleShape).messages;
 }
 
 function convertTools(tools: Tool[], useClaudeCompatibleShape: boolean): Anthropic.Messages.Tool[] {

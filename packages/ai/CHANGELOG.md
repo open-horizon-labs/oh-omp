@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+
+### Fixed
+
+- Fixed Anthropic prompt-cache marker placement to use source-message eligibility before developer/tool-result messages are flattened into Anthropic user messages. Synthetic developer tail context no longer receives message cache markers, while stable user/tool-result transcript messages remain cache candidates.
 ## [13.19.0] - 2026-04-05
 
 ### Fixed

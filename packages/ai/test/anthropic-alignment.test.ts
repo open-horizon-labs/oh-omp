@@ -317,6 +317,107 @@ describe("Anthropic request fingerprint alignment", () => {
 		expect(payload.system?.some(block => block.text === claudeCodeSystemInstruction)).toBe(false);
 		expect(payload.tools?.[0]?.name).toBe("Read");
 	});
+	it("does not place message cache markers on synthetic developer tail context", async () => {
+		const payload = (await captureAnthropicPayload(
+			ANTHROPIC_MODEL,
+			{
+				systemPrompt: "Stay concise.",
+				messages: [
+					{ role: "user", content: "stable real user", timestamp: Date.now() },
+					{
+						role: "assistant",
+						content: [{ type: "text", text: "stable assistant" }],
+						api: "anthropic",
+						provider: "anthropic",
+						model: ANTHROPIC_MODEL.id,
+						usage: {
+							input: 1,
+							output: 1,
+							cacheRead: 0,
+							cacheWrite: 0,
+							totalTokens: 2,
+							cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+						},
+						stopReason: "stop",
+						timestamp: Date.now(),
+					},
+					{
+						role: "developer",
+						content: '<recalled-context now="volatile">tail</recalled-context>',
+						timestamp: Date.now(),
+					},
+					{ role: "developer", content: "[Assembly: volatile summary]", timestamp: Date.now() },
+				],
+			},
+			{ isOAuth: false },
+		)) as { messages: Array<{ role: string; content: string | Array<Record<string, unknown>> }> };
+
+		const messages = payload.messages;
+		const stableUser = messages.find(message => JSON.stringify(message.content).includes("stable real user"));
+		const recalledContext = messages.find(message => JSON.stringify(message.content).includes("recalled-context"));
+		const assemblySummary = messages.find(message => JSON.stringify(message.content).includes("[Assembly:"));
+
+		expect(stableUser?.content).toEqual([
+			{ type: "text", text: "stable real user", cache_control: { type: "ephemeral" } },
+		]);
+		expect(JSON.stringify(recalledContext?.content)).not.toContain("cache_control");
+		expect(JSON.stringify(assemblySummary?.content)).not.toContain("cache_control");
+	});
+
+	it("allows tool-result transcript messages to receive message cache markers", async () => {
+		const payload = (await captureAnthropicPayload(
+			ANTHROPIC_MODEL,
+			{
+				systemPrompt: "Stay concise.",
+				messages: [
+					{ role: "user", content: "read a file", timestamp: Date.now() },
+					{
+						role: "assistant",
+						content: [{ type: "toolCall", id: "toolu_123", name: "Read", arguments: { path: "README.md" } }],
+						api: "anthropic",
+						provider: "anthropic",
+						model: ANTHROPIC_MODEL.id,
+						usage: {
+							input: 1,
+							output: 1,
+							cacheRead: 0,
+							cacheWrite: 0,
+							totalTokens: 2,
+							cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+						},
+						stopReason: "toolUse",
+						timestamp: Date.now(),
+					},
+					{
+						role: "toolResult",
+						toolCallId: "toolu_123",
+						toolName: "Read",
+						content: [{ type: "text", text: "stable tool result" }],
+						isError: false,
+						timestamp: Date.now(),
+					},
+					{ role: "developer", content: "[Assembly: volatile summary]", timestamp: Date.now() },
+				],
+			},
+			{ isOAuth: false },
+		)) as { messages: Array<{ role: string; content: string | Array<Record<string, unknown>> }> };
+
+		const toolResultMessage = payload.messages.find(message =>
+			JSON.stringify(message.content).includes("stable tool result"),
+		);
+		const assemblySummary = payload.messages.find(message => JSON.stringify(message.content).includes("[Assembly:"));
+
+		expect(toolResultMessage?.content).toEqual([
+			{
+				type: "tool_result",
+				tool_use_id: "toolu_123",
+				content: "stable tool result",
+				is_error: false,
+				cache_control: { type: "ephemeral" },
+			},
+		]);
+		expect(JSON.stringify(assemblySummary?.content)).not.toContain("cache_control");
+	});
 
 	it("preserves valid caller metadata.user_id for OAuth requests", async () => {
 		const userId = generateClaudeCloakingUserId();

@@ -1,7 +1,7 @@
 # Workstream Expert System
 
-> **PERSISTED LAW — durable-law delta APPROVED by user 2026-06-12; roster user-confirmed and materialized via `task.agentModelOverrides`; persisted at `.oh/workstreams/oh-omp/EXPERT-SYSTEM.md`. Commit remains gated per invocation (B14/S12).**
-> Provenance: U-N1/U-N2/U-N4/U-N5 resolved; all seven delta items approved; fixed Model Roster roles bound by explicit user decision to `openai-codex/gpt-5.5`; config persistence complete through agent overrides; final artifact written 2026-06-12. OH Phase Mapping amendment approved by user 2026-06-13: `execute` is a composed workflow, `ship` is PR/MR review-delivery, and release is a separate workspace-specific `oh-omp-release` flow. Superego Phase-Handoff Gate amendment approved by user 2026-06-13: authority-bearing OH phase handoffs default to Superego review, with mandatory review for law/architecture/protocol/model-routing/execution/ship/release authority and explicit low-risk skip rationale only for reversible mechanical handoffs.
+> **PERSISTED LAW — durable-law delta APPROVED by user 2026-06-12; roster user-confirmed and materialized via `task.agentModelOverrides`; persisted at `.oh/workstreams/oh-omp/EXPERT-SYSTEM.md`. Workstream default outcome is now PR/MR-ready useful work; merge/release/destructive side effects remain human-owned.**
+> Provenance: U-N1/U-N2/U-N4/U-N5 resolved; all seven delta items approved; fixed Model Roster roles bound by explicit user decision to `openai-codex/gpt-5.5`; config persistence complete through agent overrides; final artifact written 2026-06-12. OH Phase Mapping amendment approved by user 2026-06-13: `execute` is a composed workflow, `ship` is PR/MR review-delivery, and release is a separate workspace-specific `oh-omp-release` flow. Superego Phase-Handoff Gate amendment approved by user 2026-06-13. PR-as-outcome amendment approved by user 2026-06-13: workstreams default to PR/MR-ready changes, and commit/branch/push/open-PR are normal reviewable delivery mechanics, not human-only gates.
 
 ## Persistence
 
@@ -9,12 +9,12 @@
 `oh-omp` — project-wide development governance for this repository.
 
 **Artifact path / store:**
-`.oh/workstreams/oh-omp/EXPERT-SYSTEM.md`, committed to git when explicitly instructed (user decision; `.gitignore` verified compatible — only `.oh/.cache/` ignored). The draft remains at `.oh/workstreams/oh-omp/EXPERT-SYSTEM.draft.md` as provenance after final persistence. The commit ACTION remains gated per-invocation (B14/S12): the in-principle persistence decision does not waive explicit user commit instruction.
+`.oh/workstreams/oh-omp/EXPERT-SYSTEM.md`, persisted as durable project law. In an invoked workstream/ship flow, committing this artifact and opening a PR/MR are normal reviewable delivery mechanics unless the task explicitly says local-only/no-PR. Merge, release, publish, tagging, destructive/non-reviewable external side effects, and unresolved human-owned decisions remain human-owned gates.
 
 **Lifecycle:** durable conceptual workstream
 
 **Version / updated at:**
-`v1.2 (bootstrap; delta-approved; roster-bound; OH phase mapping amended; Superego phase-handoff gate amended)`, 2026-06-13. Initial creation compiled from the approved frame `.oh/workstreams/oh-omp/FRAME.md` (superego-ALLOWed round 2, high confidence, zero required corrections) with four binding superego advisories applied; durable-law delta approved by user 2026-06-12; fixed Model Roster roles user-confirmed to `openai-codex/gpt-5.5` and materialized through `task.agentModelOverrides`; OH Phase Mapping amendment approved by user 2026-06-13; Superego Phase-Handoff Gate amendment approved by user 2026-06-13.
+`v1.3 (bootstrap; delta-approved; roster-bound; OH phase mapping amended; Superego phase-handoff gate amended; PR-as-outcome amended)`, 2026-06-13. Initial creation compiled from the approved frame `.oh/workstreams/oh-omp/FRAME.md` (superego-ALLOWed round 2, high confidence, zero required corrections) with four binding superego advisories applied; durable-law delta approved by user 2026-06-12; fixed Model Roster roles user-confirmed to `openai-codex/gpt-5.5` and materialized through `task.agentModelOverrides`; OH Phase Mapping amendment, Superego Phase-Handoff Gate amendment, and PR-as-outcome amendment approved by user 2026-06-13.
 
 **Applies to:**
 ALL development tasks in this repository (oh-omp) — coding, mechanical work, ADR authoring, releases, issue/PR work, expert-system maintenance, and the model-routing build-out itself when its tasks run.
@@ -50,7 +50,7 @@ Round-2 advisories, all applied in this draft:
 4. Chapter B matrix rows compiled strictly as criterion + verifier check + citation; the frame's paraphrased detail is not expanded here (shadow-copy containment — the cited files hold the authoritative specifics).
 
 **Validity status:** valid; final-ready
-All canonical sources readable; the governing frame is superego-ALLOWed; no criterion unknown. Durable-law delta approved by user 2026-06-12: U-N1/U-N2/U-N4/U-N5 are resolved-law; U-N3 has an owner; U-N6 remains open under its conservative interim; U-1/model pool binding is resolved for the fixed roster by the user's `openai-codex/gpt-5.5` decision; A17 bootstrap-v0 seeding, persistence, and commit follow their gates.
+All canonical sources readable; the governing frame is superego-ALLOWed; no criterion unknown. Durable-law delta approved by user 2026-06-12: U-N1/U-N2/U-N4/U-N5 are resolved-law; U-N3 has an owner; U-N6 remains open under its conservative interim; U-1/model pool binding is resolved for the fixed roster by the user's `openai-codex/gpt-5.5` decision; A17 bootstrap-v0 seeding and persistence follow their delivery gates.
 
 ## Workstream Identity
 
@@ -67,7 +67,7 @@ The entire repo's development surface — `packages/coding-agent` (primary focus
 Inspectable, NOT modifiable without scope promotion: `session/agent-session.ts` hot paths, `interactive-mode.ts` plan-mode switch, pi-ai rate-limit internals, smol utility internals, the upstream remote.
 
 **Acceptance authority:**
-User (Drazen) — for all residual risk, resolved durable-law decisions (U-N1, U-N2, U-N4, U-N5), unresolved U-N6/bootstrap-v0 questions, model bindings, persistence and its commit. Superego holds ALLOW/REVISE/BLOCK review authority as a gate before persistence and before future durable-law changes; it cannot accept risk on the user's behalf.
+User (Drazen) — for all residual risk, resolved durable-law decisions (U-N1, U-N2, U-N4, U-N5), unresolved U-N6/bootstrap-v0 questions, model bindings/rebindings, merge/release/destructive side effects, and human-owned unresolved material decisions. Superego holds ALLOW/REVISE/BLOCK review authority for frame/law/authority/drift gates before persistence and before future durable-law changes; it cannot accept risk on the user's behalf and is not a permission system for routine execution or PR delivery.
 
 **Closure authority:**
 Non-closing by default. Closure language (`Closes`/`Fixes`/`Resolves`) is permitted only when a task's original request satisfaction target is `full` and every canonical criterion is satisfied or explicitly accepted by the authorized owner; otherwise `Refs`/`Partially addresses`. B19's `fixes #N` convention is the mechanism for closure when closure is EARNED, never a default. This expert system grants no closure authority (A16).
@@ -90,7 +90,7 @@ Two laws of different character merged into one system. Chapter A is a compiled 
 
 **Slop risks:**
 Carried from the frame's failure modes (a)–(h):
-(a) Diluting or dropping a Chapter A criterion during merge/maintenance. (b) Forking AGENTS.md content verbatim into this artifact, creating drifting shadow law. (c) Re-inventing per-package applicability (U-N1) or rule-source precedence (U-N2) instead of applying the user-resolved law recorded here. (d) Treating this system's governance of routing as authorization to implement routing (A1 gates: governance now, implementation after ADR). (e) Restoring pre-dissent claim strength while restructuring. (f) Scope creep into other repos or interactive routing. (g) Over-narrowing: dropping dogfooding governance or the universal categorical-dispatch reading of A6. (h) Committing artifacts without per-invocation user instruction (B14 vs persistence-decision confusion).
+(a) Diluting or dropping a Chapter A criterion during merge/maintenance. (b) Forking AGENTS.md content verbatim into this artifact, creating drifting shadow law. (c) Re-inventing per-package applicability (U-N1) or rule-source precedence (U-N2) instead of applying the user-resolved law recorded here. (d) Treating this system's governance of routing as authorization to implement routing (A1 gates: governance now, implementation after ADR). (e) Restoring pre-dissent claim strength while restructuring. (f) Scope creep into other repos or interactive routing. (g) Over-narrowing: dropping dogfooding governance or the universal categorical-dispatch reading of A6. (h) Kneecapping workstreams into plan-only/governance-only output after solution-space has selected a bounded viable implementation; missing artifacts constrain confidence/closure/scope, not execution itself.
 
 **Definitions:**
 - **Effort classes**: `frame / plan / review / implement / mechanical` — the routing taxonomy; definitions, boundary examples, and the "too small to route" floor live in policy data/protocol doc, never engine code. [`.oh/model-routing.md` § Protocol; A5]
@@ -108,50 +108,50 @@ Carried from the frame's failure modes (a)–(h):
 
 ## OH Phase Mapping
 
-This project uses Open Horizons as workflow structure, but OH phases are not automatically agent roles. The fixed execution-role law (A12) still governs: new project agents exist only when materialized under `.omp/agents/`, and no phase label may bypass `beancounter → coder → verifier` accountability.
+This project uses Open Horizons as workflow structure, but OH phases are not automatically agent roles. The fixed execution-role law (A12) still governs: new project agents exist only when materialized under `.omp/agents/`, and no phase label may bypass `beancounter → coder → verifier` accountability. A workstream invocation authorizes the full OH flow through delivery-to-review by default: problem-space → solution-space → selected solution → material dissent/Superego when needed → execution loop → PR/MR-ready change.
 
 | OH phase / flow | Routing semantics | Role / agent mapping | Durable notes |
 |---|---|---|---|
-| `aim` | Clarify desired behavior change and success condition | Orchestrator or `beancounter` | Frame-class; no implementation authority |
-| `problem-space` | Map objective, constraints, terrain, assumptions, frame-stress signals | Orchestrator or `beancounter`; may use `explore` for terrain discovery | Frame-class; no implementation authority |
+| `aim` | Clarify desired behavior change and success condition | Orchestrator or `beancounter` | Frame-class; creates authority only when used as later-phase handoff |
+| `problem-space` | Map objective, constraints, terrain, assumptions, frame-stress signals | Orchestrator or `beancounter`; may use `explore` for terrain discovery | Frame-class; does not imply plan-only/no-code output |
 | `problem-statement` | Convert terrain into a bounded challenge | `beancounter` | Frame-class |
-| `solution-space` | Compare materially different approaches before execution | `plan` / `oracle` with orchestrator judgment; `beancounter` preserves frame | Plan-class; no implementation |
-| `execute` | Turn approved work into bounded implementation plus verification | Composed workflow: `beancounter → coder → verifier`; insert `superego` for durable law, architecture, protocol, high-risk, or disputed-frame gates | **Not an agent. `oh-execute` SHALL NOT be materialized.** |
-| `ship` | Delivery-to-review: prepare branch, open PR/MR against `main`/`master`, wait for RNA and CodeRabbit review, route review fixes through the fixed execution chain, stop before merge | Future project agent may be `.omp/agents/oh-ship.md`; until materialized, orchestrator uses this protocol with fixed roles | Merge is human-only; no release tagging/publishing in `ship` |
-| `release` | Workspace-specific release flow: versioning, changelog/release procedure, tags, publish/package, origin-only push, release records | Future project agent may be `.omp/agents/oh-omp-release.md`; generated from oh-omp law, not copied from another workspace | Governed by B21 and explicit human authorization gates; separate from `ship` |
+| `solution-space` | Compare materially different approaches before execution and select a bounded viable path when one exists | `plan` / `oracle` with orchestrator judgment; `beancounter` preserves frame | Plan-class phase; its selected solution hands off to execution by default |
+| `execute` | Turn the selected solution into bounded implementation plus verification | Composed workflow: `beancounter → coder → verifier`; insert `superego` for durable law, architecture, protocol, high-risk, disputed-frame, or human-owned authority gates | **Not an agent. `oh-execute` SHALL NOT be materialized.** |
+| `ship` | Delivery-to-review: create/use a branch, commit logical units, push to `origin`, open PR/MR against `main`/`master` or repo default, wait for RNA and CodeRabbit review, route review fixes through the fixed execution chain, stop before merge | Future project agent may be `.omp/agents/oh-ship.md`; until materialized, orchestrator uses this protocol with fixed roles | PR/MR-ready change is the default terminal artifact for implementation work; merge is human-only; no release tagging/publishing in `ship` |
+| `release` | Workspace-specific release flow: versioning, changelog/release procedure, release tags, publish/package, release records, release-side pushes | Future project agent may be `.omp/agents/oh-omp-release.md`; generated from oh-omp law, not copied from another workspace | Governed by B21 and explicit human authorization gates; separate from `ship` |
 
 **Phase-agent materialization rule:** `oh-aim`, `oh-problem-space`, `oh-problem-statement`, and `oh-solution-space` are not materialized yet. If future dogfooding shows repeated re-briefing or unstable phase routing, materialize only the needed phase agents via S5/A13. `oh-ship` MAY be materialized as a PR/MR review-delivery project agent. `oh-omp-release` MAY be materialized as a workspace-specific release project agent. `oh-execute` MUST NOT be materialized.
 
 ## Superego Phase-Handoff Gate
 
-Every OH phase handoff that produces an artifact, decision, selected approach, risk acceptance, or readiness claim used as authority by a later phase SHOULD receive Superego review before the handoff is accepted. This is a phase-boundary safety net, not permission for Superego to perform implementation or replace verifier correctness checks.
+Every OH phase handoff that produces an artifact, decision, selected approach, risk acceptance, or readiness claim used as authority by a later phase SHOULD receive Superego review before the handoff is accepted. This is a phase-boundary safety net, not permission for Superego to perform implementation, prevent routine PR delivery, or replace verifier correctness checks.
 
 Superego review is REQUIRED before handoff when the phase output:
 - changes, interprets, or amends durable law;
 - affects architecture, ADRs, protocol, RPC/SSE, lifecycle events, completion signaling, context-manager activation, or model routing;
 - changes model taxonomy, model bindings, routing policy, project-agent materialization, or role labels;
-- authorizes non-trivial execution or carries unresolved frame uncertainty into a more concrete phase;
-- affects ship/release readiness, closure language, PR/MR merge readiness, or release side effects;
+- crosses a human-owned authority boundary or carries unresolved material frame uncertainty into a more concrete phase;
+- affects release readiness, closure language, PR/MR merge readiness, destructive/non-reviewable side effects, or release side effects;
 - changes scope, non-goals, risk acceptance, decision authority, or stop/pivot triggers;
 - conflicts with canonical sources, the expert system, or an existing Superego/verifier finding.
 
-Superego review MAY be skipped only when the handoff is explicitly marked low-risk, mechanical, reversible, not durable authority, not architecture/protocol/model-routing/ship/release related, and not carrying unresolved uncertainty forward. The skip rationale MUST be recorded in the phase artifact or final response.
+Superego review MAY be skipped only when the handoff is explicitly marked low-risk, mechanical, reversible, not durable authority, not architecture/protocol/model-routing/release/merge/destructive-side-effect related, and not carrying unresolved uncertainty forward. The skip rationale MUST be recorded in the phase artifact or final response.
 
-Verifier remains responsible for task correctness and evidence against acceptance criteria. Superego remains responsible for frame, law, authority, drift, and whether the next phase is allowed to treat the handoff as authority. Superego may recommend readiness; it cannot authorize merge/release side effects or accept human-owned risk.
+Verifier remains responsible for task correctness and evidence against acceptance criteria. Superego remains responsible for frame, law, authority, and drift. Superego may recommend readiness; it cannot authorize merge/release side effects, accept human-owned risk, or convert a selected bounded implementation into governance-only output.
 
 ## Current Step 0 Contract
 
 **Current task frame:**
-Standing project-wide law for `oh-omp`, now amended with explicit OH Phase Mapping and a Superego Phase-Handoff Gate. This artifact governs future work; it is not an implementation task, not a PR itself, and not a release.
+Standing project-wide law for `oh-omp`, now amended with explicit OH Phase Mapping, a Superego Phase-Handoff Gate, and PR-as-outcome semantics. This artifact governs future work: useful work normally reaches a PR/MR-ready terminal artifact, not a performative plan-only stop.
 
 **Task-specific acceptance criteria:**
-For the 2026-06-13 amendments: (1) `execute` is explicitly a composed workflow (`beancounter → coder → verifier`, with `superego` gates as needed), not a materialized agent; (2) `ship` means PR/MR review-delivery and stops before merge; (3) release is split into a separate workspace-specific `oh-omp-release` flow governed by B21; (4) no `.omp/agents/` files or model bindings are created by these amendments; (5) authority-bearing OH phase handoffs default to Superego review and require Superego review for law/architecture/protocol/model-routing/execution/ship/release authority.
+For the 2026-06-13 amendments: (1) `execute` is explicitly a composed workflow (`beancounter → coder → verifier`, with `superego` gates as needed), not a materialized agent; (2) a workstream's default outcome is PR/MR-ready useful work when code or artifact changes are selected; (3) `ship` includes branch/commit/push/open-PR as normal reviewable delivery mechanics and stops before merge; (4) release is split into a separate workspace-specific `oh-omp-release` flow governed by B21; (5) no `.omp/agents/` files or model bindings are created by these amendments; (6) authority-bearing OH phase handoffs default to Superego review, but Superego is a material-risk safety review, not a permission system for routine execution or PR delivery.
 
 **Task-specific non-goals / stop conditions:**
-These amendments do not create `oh-ship` or `oh-omp-release`, do not port OHK agents, do not materialize `oh-execute`, do not change model bindings, and do not commit. Future project-agent creation or binding follows A12/A13/S4/S5. Low-risk mechanical handoff skip rationales must be explicit; silent bypass of a required handoff gate is blocked.
+These amendments do not create `oh-ship` or `oh-omp-release`, do not port OHK agents, do not materialize `oh-execute`, do not change model bindings, do not merge, and do not release. Future project-agent creation or binding follows A12/A13/S4/S5. Low-risk mechanical handoff skip rationales must be explicit; silent bypass of a required material-risk handoff gate is blocked.
 
 **Frame delta from prior expert system:**
-Amendment only: adds OH Phase Mapping, separates ship (PR/MR review-delivery) from release (`oh-omp-release`), and adds mandatory/default Superego review at OH phase handoff boundaries. All prior A/B criteria remain in force.
+Amendment only: adds PR-as-outcome semantics, corrects ship to include routine branch/commit/push/open-PR delivery mechanics, separates ship from release (`oh-omp-release`), and narrows Superego handoff review to material frame/law/authority risk rather than permission bureaucracy. All prior A/B criteria remain in force except where this amendment scopes B14/B15 delivery mechanics inside an invoked workstream/ship flow.
 
 ## Acceptance Criteria Matrix
 
@@ -198,8 +198,8 @@ U-N1 resolved-law applicability: full Chapter B binds all TS packages unless a r
 | B11 **Bun over Node**: Bun APIs per the source's table; never spawn shell for operations with proper APIs; namespace imports for node builtins | `AGENTS.md` § Bun Over Node (table + Anti-Patterns) | durable | required | Diff review against the source table; grep for named fs/path imports, trivial `spawnSync` | unproven |
 | B12 **Async I/O discipline**: no sync calls or exists-before-read in async flows; patterns per source | `AGENTS.md` § File I/O + Anti-Patterns + Streams | durable | required | Grep/review on diff for sync calls and exists-before-read in async paths | unproven |
 | B13 **Check commands**: `bun check` family only; never `tsc`/`npx tsc`; never `bun run dev`/`bun test` without user instruction | `AGENTS.md` § Commands | durable | required | Session command audit (S18) | unproven |
-| B14 **Never commit unless the user asks** — the in-principle "EXPERT-SYSTEM.md is committed to git" decision does not waive per-invocation commit authorization | `AGENTS.md` § Commands | durable | required | Session audit: every commit traces to explicit user instruction (S12) | unproven |
-| B15 **Git remotes**: all work targets `origin`; never push to `upstream` | `AGENTS.md` § Git Remotes; § Releasing | durable | required | Session audit + reflog; any upstream push attempt = absolute stop (S13) | unproven |
+| B14 **Commit authority is scoped**: outside an invoked workstream/ship flow, never commit unless the user asks; inside an invoked workstream whose selected solution is implemented, logical commits are normal reviewable delivery mechanics needed to produce the PR/MR-ready outcome. The workstream/ship invocation is the ask for those commits unless the task explicitly says local-only/no-PR. | `AGENTS.md` § Commands, as resolved by user PR-as-outcome decision 2026-06-13 | durable | required | Session audit: commits either trace to explicit ad hoc instruction or to an invoked workstream/ship flow whose selected solution was executed; no merge/release/destructive side effects are inferred | unproven |
+| B15 **Git remotes**: all work targets `origin`; never push to `upstream`. Pushes to `origin` for PR/MR branches are normal ship mechanics; release/tag/publish pushes remain release gates. | `AGENTS.md` § Git Remotes; § Releasing; PR-as-outcome decision 2026-06-13 | durable | required | Session audit + reflog; any upstream push attempt = absolute stop (S13); origin branch push tied to PR/MR delivery | unproven |
 | B16 **Testing law**: one nameable, externally observable contract per test; full enumerated rules in source (incl. never `mock.module()`) | `AGENTS.md` § Testing Guidance | durable | required | Test-diff review against the source's enumerated rules; named contract per new test | unproven |
 | B17 **`hookFetch` in tests**: never assign/spy `globalThis.fetch`; use `hookFetch` from `@oh-my-pi/pi-utils` with `using` disposal | `.omp/rules/ts-hook-fetch.md` (durable, mechanically enforced) | durable | required | Rule engine fires on matching test edits; grep diff for forbidden patterns | unproven |
 | B18 **Changelog law**: per-package `CHANGELOG.md`, `## [Unreleased]` placement, immutable released sections, attribution formats per source | `AGENTS.md` § Changelog; `packages/coding-agent/CHANGELOG.md` (precedent) | durable | required | Changelog diff review: placement, immutability, attribution format | unproven |
@@ -222,13 +222,13 @@ All rules durable unless marked task-specific. Sources in brackets.
 - Observe-only phase and label audit precede any routing authority. [A9; durable]
 - The Model Roster uses only the fixed role labels + materialized `.omp/agents/` files; every binding is user-confirmed. [A12, A13; durable]
 - All diffs pass the Chapter B gates relevant to the touched surface, with the cited files as authoritative detail. [B1–B22; durable]
-- `bun check` family used for type checks; commits, pushes, and test runs follow B13–B15. [durable]
+- `bun check` family used for type checks; test runs follow B13; commit/branch/push/open-PR follow B14/B15 scoped ship semantics. [durable]
 - Durable-law changes (including AGENTS.md-sourced ones, conservatively, until U-N6 is decided) go through the delta protocol: delta presentation + user approval + superego review. [S5, U-N6; durable]
-- OH phases route through the OH Phase Mapping: `execute` decomposes into `beancounter → coder → verifier`, with `superego` inserted only for durable-law, architecture, protocol, high-risk, or disputed-frame gates. [OH Phase Mapping; durable]
-- `ship` means PR/MR review-delivery: open or prepare a PR/MR against `main`/`master`, wait for RNA and CodeRabbit review, route review fixes through the fixed execution chain, and stop before merge. [user decision 2026-06-13; durable]
-- Release is separate from `ship` and workspace-specific to oh-omp; release tasks follow B21 and explicit human authorization gates. [B21; user decision 2026-06-13; durable]
-- Authority-bearing OH phase handoffs SHOULD receive Superego review before the next phase accepts them; handoff review is REQUIRED for durable law, architecture/ADR/protocol, model routing/taxonomy/bindings, project-agent materialization, non-trivial execution authorization, ship/release/closure authority, unresolved frame uncertainty, scope/risk/decision-authority changes, or canonical-source conflict. [Superego Phase-Handoff Gate; durable]
-- This artifact is final-persisted through the documented checkpoint sequence; commit remains gated by explicit user instruction despite the approved delta and roster-bound config materialization. [task-specific]
+- OH phases route through the OH Phase Mapping: `execute` decomposes into `beancounter → coder → verifier`, with `superego` inserted only for durable-law, architecture, protocol, high-risk, disputed-frame, or human-owned authority gates. [OH Phase Mapping; durable]
+- A workstream invocation defaults to useful work: after solution-space selects a bounded viable implementation, execution proceeds toward a PR/MR-ready terminal artifact unless a true stop gate fires or the user explicitly requested plan-only/local-only/no-PR mode. [PR-as-outcome; durable]
+- `ship` means PR/MR review-delivery: create/use a branch, commit logical units, push to `origin`, open or prepare a PR/MR against `main`/`master` or repo default, wait for RNA and CodeRabbit review, route review fixes through the fixed execution chain, and stop before merge. [user decision 2026-06-13; durable]
+- Release is separate from `ship` and workspace-specific to oh-omp; release tasks follow B21 and explicit human authorization gates for tag/publish/release/destructive side effects. [B21; user decision 2026-06-13; durable]
+- Authority-bearing OH phase handoffs SHOULD receive Superego review before the next phase accepts them; handoff review is REQUIRED for durable law, architecture/ADR/protocol, model routing/taxonomy/bindings, project-agent materialization, release/merge/destructive authority, unresolved material frame uncertainty, scope/risk/decision-authority changes, or canonical-source conflict. [Superego Phase-Handoff Gate; durable]
 
 ### MUST NOT
 - The orchestrator must not perform implement/mechanical work in-session on any oh-omp task. [A6; durable]
@@ -242,11 +242,11 @@ All rules durable unless marked task-specific. Sources in brackets.
 - Never invent facts, weaken canonical criteria, or grant closure authority via this expert system. [A16; durable]
 - Never fork AGENTS.md/.omp-rules/ADR detail verbatim into this artifact (citation-first; shadow-copy containment). [frame core tension, advisory 4; durable]
 - Never use `console.*` in coding-agent, prompts in code, `ReturnType<>`, `mock.module()`, `globalThis.fetch` assignment in tests, sync I/O in async flows, or the other Chapter B forbidden patterns — per the cited sources. [B6–B12, B16, B17; durable]
-- Never commit without explicit user instruction; never push to upstream. [B14, B15; durable]
+- Never commit in ad hoc/non-workstream contexts without explicit user instruction; never push to upstream. Inside an invoked workstream/ship flow, logical commits and origin branch pushes for PR/MR delivery are normal reviewable mechanics. [B14, B15; durable]
 - Never resolve U-N6, U-6, or U-10 by builder/coder judgment; U-N1/U-N2/U-N4/U-N5 are user-resolved law and must be applied as recorded. [frame + user delta 2026-06-12; durable]
 - Never materialize `oh-execute` as a project agent or let any single agent hide the execution chain. [OH Phase Mapping; durable]
 - Never copy generic `oh-ship`/release assumptions from another workspace; `oh-ship` and `oh-omp-release` must be generated from oh-omp law if materialized. [OH Phase Mapping; durable]
-- Never merge a PR/MR, tag, push, publish, or perform release side effects without explicit human authorization. Merge is human-only. [B14, B15, B21; user decision 2026-06-13; durable]
+- Never merge a PR/MR, tag, publish, release, push release tags/branches, or perform destructive/non-reviewable external side effects without explicit human authorization. Merge is human-only. [B14, B15, B21; user decision 2026-06-13; durable]
 - Never silently advance an authority-bearing OH phase handoff into the next phase when the Superego Phase-Handoff Gate requires review; a skip is allowed only for explicitly low-risk, mechanical, reversible, non-durable handoffs with recorded rationale. [Superego Phase-Handoff Gate; durable]
 
 ### BLOCK IF
@@ -261,8 +261,8 @@ All rules durable unless marked task-specific. Sources in brackets.
 - S9: Observe-only audit shows wildly inconsistent effort labels → no authority transfer. [carried]
 - S10: Task tool schema additions break protocol clients → frame invalidated for that work. [carried]
 - S11: Superego BLOCK on a build/persistence step → no persistence without explicit user authorization; canonical source unreadable → block. [carried]
-- S12: Any commit without explicit user instruction → stop; includes this artifact. [AGENTS.md § Commands]
-- S13: Any push to `upstream` → absolute stop; remotes verified before push. [AGENTS.md § Git Remotes]
+- S12: Ad hoc/non-workstream commit without explicit user instruction → stop. In an invoked workstream/ship flow, logical commits for PR/MR-ready delivery are authorized by the workflow unless the task explicitly says local-only/no-PR. [AGENTS.md § Commands; PR-as-outcome decision]
+- S13: Any push to `upstream` → absolute stop; remotes verified before push. Push to `origin` for a PR/MR branch is normal ship, not a release gate. [AGENTS.md § Git Remotes; PR-as-outcome decision]
 - S14: Prompt text being authored in code → stop. [AGENTS.md § Code Quality]
 - S15: Architectural change without an ADR in `docs/adr/` → stop. [AGENTS.md § Patterns to Follow]
 - S16: Change requiring deep edits across many core files → ADR 0001 re-evaluation trigger, stop. [AGENTS.md § Anti-Patterns; ADR 0001]
@@ -270,7 +270,7 @@ All rules durable unless marked task-specific. Sources in brackets.
 - S18: `bun run dev`/`bun test` (or `tsc`/`npx tsc`) about to run without user instruction → stop. [AGENTS.md § Commands]
 - S19: Interactive-session routing work requested without explicit user re-scoping → BLOCK. [A18 + advisory 3]
 - S20: `oh-execute` materialization, override, or assignment proposed → BLOCK; execution must decompose into fixed roles. [OH Phase Mapping]
-- S21: `ship` tries to merge, tag, publish, release, or bypass RNA/CodeRabbit review routing → stop; merge is human-only and release is separate. [OH Phase Mapping; B14/B15/B21]
+- S21: `ship` tries to merge, tag, publish, release, bypass RNA/CodeRabbit review routing, or perform destructive/non-reviewable external side effects → stop; merge is human-only and release is separate. Branch/commit/push/open-PR to `origin` are normal ship mechanics. [OH Phase Mapping; B14/B15/B21]
 - S22: `oh-ship` or `oh-omp-release` is copied from another workspace without rewriting against oh-omp law → stop and reframe. [OH Phase Mapping]
 - S23: Authority-bearing OH phase handoff in a REQUIRED-review class lacks Superego review → stop before accepting the handoff as next-phase authority. Authority-bearing OH phase handoff outside the REQUIRED class lacks both Superego review and an explicit low-risk mechanical/reversible skip rationale → stop before accepting the handoff as next-phase authority. [Superego Phase-Handoff Gate]
 
@@ -323,7 +323,7 @@ Project-law altitude: this system is the top of repo law (with AGENTS.md as its 
 
 **Coder must not:**
 - Implement anything routing-related before the approved ADR (A1/S7).
-- Touch forbidden seams; commit (S12) or push (S13) without explicit user instruction; run gated commands (S18).
+- Touch forbidden seams; perform ad hoc/non-workstream commits (S12), push to `upstream` or release/tag branches without release authority (S13), or run gated commands (S18).
 - Resolve open items (U-N6, U-6, U-10) by local judgment; re-open or reinterpret U-N1/U-N2/U-N4/U-N5 instead of applying the user-resolved law.
 - Weaken, re-derive, or restate-as-stronger any dissent-calibrated claim (A10).
 
@@ -332,7 +332,7 @@ Project-law altitude: this system is the top of repo law (with AGENTS.md as its 
 - The assignment conflicts with this expert system, the frame, or a cited source (frame delta / source contradiction).
 - The work demands scope expansion beyond the assignment's named files/seams.
 - Verification cannot reach the evidence strength this system requires for the claim being made.
-- Worktree/branch/PR or closure expectations are uncertain.
+- Worktree/branch/PR state is unsafe in a way that prevents PR/MR delivery; ordinary target-branch uncertainty should be inferred from repo defaults/current conventions or resolved during ship, not used to block local execution.
 - The work's cognitive-content class remains ambiguous after applying U-N5's boundary test (RECORD decisions being made = frame; RESTATE decisions already made = mechanical): stop and route to the orchestrator/user rather than self-classify.
 
 ## Verification Rules
@@ -341,8 +341,8 @@ Project-law altitude: this system is the top of repo law (with AGENTS.md as its 
 - `bun check` (or `check:ts`/`check:rs`) — proves type/compile integrity only (B8, B13). Never `tsc` directly.
 - Grep/ast-grep on the diff per the B-criteria verifier column: `console.(log|error|warn)` (B6), `any`/accessibility keywords/`ReturnType<`/type-position `import(` (B8), prompt-like strings in `.ts` (B9), `new Promise(` (B10), named node-builtin imports and trivial `spawnSync` (B11), sync-in-async and exists-before-read (B12), `globalThis.fetch` assignment/spy in tests (B17).
 - Diff reviews: protocol/event/lifecycle names (A2/B2), blast radius (B3/S16), context-manager activation (B4/S17), memory-tier payloads and bridge/assembler seam (B5), TUI sanitization paths (B7), test contracts (B16), changelog placement (B18), authored-text style (B20), removal intent (B22).
-- Session audits: orchestrator never-codes (A6), command discipline (B13/S18), commit/push authorization (B14/B15, S12/S13), and per-session session-policy↔AGENTS.md drift check by the orchestrator (U-N3; divergence routes through S5).
-- Phase-handoff audits: when a phase artifact/decision/approach/readiness claim is used as next-phase authority, first classify whether the handoff is in a REQUIRED-review class. REQUIRED-review cases must have Superego review; skip rationales cannot satisfy them. Non-required handoffs need either Superego review or an explicit low-risk mechanical/reversible skip rationale; otherwise route through S23.
+- Session audits: orchestrator never-codes (A6), command discipline (B13/S18), scoped commit/push handling (B14/B15, S12/S13), and per-session session-policy↔AGENTS.md drift check by the orchestrator (U-N3; divergence routes through S5).
+- Phase-handoff audits: when a phase artifact/decision/approach/readiness claim is used as next-phase authority, first classify whether the handoff is in a REQUIRED material-risk review class. REQUIRED-review cases must have Superego review; skip rationales cannot satisfy them. Non-required handoffs need either Superego review or an explicit low-risk mechanical/reversible skip rationale; otherwise route through S23. Routine execution/ship toward PR/MR-ready output is not itself a Superego permission gate.
 - Routing-era checks (once ADR exists): precedence test cases per level (A3), regression that param-less dispatch behaves as today (A2), telemetry schema review (A14/A15), rollout sequencing evidence (A9), selection-rule review (A7/A11).
 
 **Evidence strength required by claim:**
@@ -363,11 +363,11 @@ Project-law altitude: this system is the top of repo law (with AGENTS.md as its 
 - Suggested defaults or non-answers treated as binding consent (A13).
 
 **Verifier must return NEEDS_HUMAN if:**
-- U-N6 (AGENTS.md amendment interplay) is in play; bootstrap-v0 seed execution is requested before persistence/commit gates are satisfied; or a proposed change would re-open/contradict resolved-law U-N1/U-N2/U-N4/U-N5.
+- U-N6 (AGENTS.md amendment interplay) is in play; bootstrap-v0 seed execution is requested before persistence gates are satisfied; or a proposed change would re-open/contradict resolved-law U-N1/U-N2/U-N4/U-N5.
 - A future binding decision is requested or implied (rebinding, pool changes, first binding for newly materialized project agents) — A13/S4.
 - Closure language is proposed for any artifact (closure must be earned per Delivery/Closure Rules; the verifier cannot grant it).
 - A one-way decision flagged Needs Human Verification surfaces: precedence position of dispatch `model:` (U-6), `model:` param audience (U-10), telemetry privacy (U-11).
-- Bootstrap-v0 policy seeding is about to be executed before the remaining persistence/commit gates are satisfied (A17 — delta-approved, roster-bound, and structural-only until final persistence).
+- Bootstrap-v0 policy seeding is about to be executed before the remaining persistence gates are satisfied (A17 — delta-approved, roster-bound, and structural-only until final persistence).
 - Any S1–S23 condition is met or a canonical source contradicts the assignment.
 
 ## Model Roster
@@ -395,16 +395,16 @@ Model bindings are durable workstream law (A13). Changes follow Expert-System Up
 ## Delivery / Closure Rules
 
 **Ship semantics:**
-`ship` means delivery-to-review, not release. A ship workflow may prepare a branch, open a PR/MR against `main`/`master`, wait for RNA and CodeRabbit review, and route required review fixes back through `beancounter → coder → verifier` (with `superego` where S5/high-risk gates apply). `ship` stops before merge. Merging the PR/MR is human-only.
+`ship` means delivery-to-review, not release. For implementation work, the normal terminal artifact is a PR/MR-ready change: create/use a branch, commit logical units, push the branch to `origin`, open a PR/MR against `main`/`master` or the repo default, wait for RNA and CodeRabbit review, and route required review fixes back through `beancounter → coder → verifier` (with `superego` where S5/high-risk/material authority gates apply). `ship` stops before merge. Merging the PR/MR is human-only.
 
 **PR/MR required:**
-For implementation tasks that are ready for delivery, yes: ship targets a PR/MR against `main`/`master` on `origin` (B15/B19/B20), unless the task contract explicitly states that no PR is needed (e.g. local governance artifact only). `.oh/` governance artifacts may still be updated directly in the worktree when the user authorizes that path; commits remain explicitly gated (B14/S12).
+For implementation tasks that are ready for delivery, yes: ship targets a PR/MR against `main`/`master` or repo default on `origin` (B15/B19/B20), unless the task contract explicitly states local-only/no-PR. `.oh/` governance artifacts are still workstream artifacts: when they are the selected change, commit/branch/push/open-PR are normal delivery mechanics unless the task explicitly says no-PR.
 
 **Release semantics:**
-Release is separate from `ship`. Release tasks are workspace-specific and SHOULD be represented as `oh-omp-release` if materialized. Release follows B21 and `.oh/skills/oh-ship/SKILL.md`: fork versioning, changelog/version/package checks, tags, publish/package steps, release records, and origin-only push. Commit/tag/push/publish/release side effects require explicit human authorization.
+Release is separate from `ship`. Release tasks are workspace-specific and SHOULD be represented as `oh-omp-release` if materialized. Release follows B21 and `.oh/skills/oh-ship/SKILL.md`: fork versioning, changelog/version/package checks, release tags, publish/package steps, release records, and release-side origin pushes. Tag/publish/release side effects and destructive/non-reviewable external actions require explicit human authorization.
 
 **Target branch:**
-Ship PR/MR target is `main`/`master` as appropriate for the repo; remote is always `origin`, never `upstream` (B15). `.oh/` governance artifacts use the current working branch unless the task contract says otherwise.
+Ship PR/MR target is `main`/`master` or the repo default as appropriate for the repo; remote is always `origin`, never `upstream` (B15). If the branch/base is not specified, infer from repo conventions/current branch/default branch. Branch uncertainty blocks only PR creation when it is genuinely ambiguous or unsafe; it does not block local execution of a selected bounded implementation.
 
 **Allowed PR language:**
 Non-closing refs by default (`Refs`, `Partially addresses`). `Closes`/`Fixes`/`Resolves` permitted only when earned: original request satisfaction target `full` AND every canonical criterion satisfied or explicitly accepted by the authorized owner (frame closure semantics; B19's `fixes #N` is the mechanism for earned closure, never a default).
@@ -412,8 +412,8 @@ Non-closing refs by default (`Refs`, `Partially addresses`). `Closes`/`Fixes`/`R
 **Required PR body disclosures:**
 Summary of change; evidence per the Verification Rules (named checks actually run); residual risk; per-criterion status for the canonical criteria the task touches; RNA/CodeRabbit review status once available; any deferred items with their authority.
 
-**Human approval required before closure if:**
-Any canonical criterion is unsatisfied, deferred, or unknown; any delta-agenda item is implicated; any verifier NEEDS_HUMAN condition fired; the commit/push itself is not explicitly authorized (B14/B15); or merge/release is requested. Merge is always human-only.
+**Human approval required before closure/side effects if:**
+Any canonical criterion is unsatisfied, deferred, or unknown; any delta-agenda item is implicated; any verifier NEEDS_HUMAN condition fired; merge/release/tag/publish/destructive side effects are requested; or closure language is proposed without earned full satisfaction. Merge is always human-only.
 
 ## Expert-System Update Rules
 
@@ -421,11 +421,11 @@ Any canonical criterion is unsatisfied, deferred, or unknown; any delta-agenda i
 - Any durable-law change: workstream identity/boundary, canonical-source interpretation, acceptance authority, invariants (MUST/MUST NOT/BLOCK IF), verification standards, delivery/closure rules, criteria additions/removals/weakening (S5).
 - Conservatively, AGENTS.md-driven law changes flow through the same S5 delta protocol until the user resolves U-N6 (AGENTS.md amendment interplay) — interim rule, explicitly conservative, not a resolution of U-N6.
 - Restating any dissent-calibrated claim (A10) — superego checks claim strength is not restored to pre-dissent levels.
-- Authority-bearing OH phase handoffs per the Superego Phase-Handoff Gate: default review before next-phase acceptance; mandatory review for durable law, architecture/protocol/model-routing, non-trivial execution authorization, ship/release/closure authority, unresolved frame uncertainty, scope/risk/decision-authority changes, or canonical-source conflict.
+- Authority-bearing OH phase handoffs per the Superego Phase-Handoff Gate: default review before next-phase acceptance; mandatory review for durable law, architecture/protocol/model-routing, release/merge/destructive authority, unresolved material frame uncertainty, scope/risk/decision-authority changes, or canonical-source conflict. Routine execution/ship to PR/MR-ready output is not a permission gate.
 
 **Requires user/maintainer decision:**
-- Model bindings and rebinding (A13/S4); roster role additions via `.omp/agents/` materialization.
-- Open or future user decisions: U-N6 AGENTS.md interplay, future model rebinding (A13/S4), taxonomy changes (A5/S3), future materialization/binding of `oh-ship` or `oh-omp-release`, Superego Phase-Handoff Gate changes, and one-way ADR decisions. Delta-approved execution still gated: bootstrap-v0 policy seeding (A17 — roster-bound and materialized, but execution follows persistence/commit gates). Resolved-law carried by this artifact: U-N1 Chapter B applicability, U-N2 rule-source jurisdiction, U-N4 superseded-frame move, U-N5 cognitive-content classification, OH Phase Mapping (`execute` composed; `ship` PR/MR review-delivery; release separate as `oh-omp-release`), and Superego Phase-Handoff Gate; changes to those require S5.
+- Model bindings and rebinding (A13/S4); roster role additions via `.omp/agents/` materialization; merge; release/tag/publish; destructive/non-reviewable external side effects; unresolved material decisions the workstream cannot resolve.
+- Open or future user decisions: U-N6 AGENTS.md interplay, future model rebinding (A13/S4), taxonomy changes (A5/S3), future materialization/binding of `oh-ship` or `oh-omp-release`, Superego Phase-Handoff Gate changes, PR-as-outcome law changes, and one-way ADR decisions. Delta-approved execution still gated: bootstrap-v0 policy seeding (A17 — roster-bound and materialized, but execution follows persistence gates). Resolved-law carried by this artifact: U-N1 Chapter B applicability, U-N2 rule-source jurisdiction, U-N4 superseded-frame move, U-N5 cognitive-content classification, OH Phase Mapping (`execute` composed; `ship` PR/MR delivery; release separate as `oh-omp-release`), Superego Phase-Handoff Gate, and PR-as-outcome; changes to those require S5.
 - Taxonomy changes — manual only, always (A5/S3).
 - Re-opening Option D (only by explicitly revisiting its recorded rationale), promoting Option C from aspiration, un-gating interactive routing (A18 re-scoping).
 - One-way ADR decisions: precedence position (U-6), `model:` audience (U-10), telemetry privacy (U-11).

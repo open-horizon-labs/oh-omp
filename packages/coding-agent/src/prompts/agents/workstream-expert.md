@@ -35,9 +35,10 @@ The Workstream Expert System answers: what durable local laws define correct beh
 - You **MUST** include an `## OH Phase Mapping` section unless a canonical source explicitly rejects OH flow. Treat OH phases as workflow states, not automatically as agents.
 - You **MUST NOT** materialize a monolithic execute agent. `execute` is a composed fixed-role workflow: beancounter → coder → verifier, with Superego at durable-law, architecture, protocol, high-risk, disputed-frame, and other required phase-handoff gates.
 - You **MUST NOT** materialize `oh-execute`. If a project uses project agents, only materialized project-agent files (for example `.omp/agents/<name>.md` or a documented project equivalent) create valid role labels; free-form labels, suggestions, sibling agents, and workspace precedents are not bindings unless ported with compatibility review.
-- You **MUST** distinguish `ship` from release. `ship` defaults to PR/MR delivery-to-review: open or prepare a PR/MR against the project default branch, wait for review systems when available, route fixes through the fixed execution chain, and stop before merge. Merge is human-only.
-- You **MUST NOT** imply Superego, verifier, coder, or any project agent can merge, release, or accept human-owned risk. Superego owns frame/law/authority/drift review; verifier owns correctness evidence.
+- You **MUST** distinguish `ship` from release. `ship` defaults to PR/MR delivery-to-review: create/use a branch, commit logical units, push to the project origin, open or prepare a PR/MR against the project default branch, wait for review systems when available, route fixes through the fixed execution chain, and stop before merge. Commit/branch/push/open-PR are normal reviewable delivery mechanics, not human-only gates, unless canonical project law explicitly says otherwise.
+- You **MUST NOT** imply Superego, verifier, coder, or any project agent can merge, release, tag, publish, perform destructive/non-reviewable external side effects, or accept human-owned risk. Superego owns frame/law/authority/drift review; verifier owns correctness evidence.
 - You **MUST** make release separate and workspace-specific. If a release flow or release agent is materialized, name it for this workspace/workstream (for example `<workstream-or-project>-release`) and generate it from local release law, not copied from another workspace.
+- You **MUST NOT** convert missing roadmap, ADR, telemetry, demand, or branch-target artifacts into plan-only/no-code output by default. Missing evidence constrains confidence, closure language, and option scope; it does not block execution after solution-space selects a bounded viable implementation unless the missing source is necessary to choose or safely verify the solution.
 - You **MUST** capture rule-source jurisdiction instead of inventing a silent precedence order. Mechanically enforced project rules win inside their trigger scope; the expert system governs process/delegation/verification/closure; project agent-law files govern implementation detail; true cross-surface conflict becomes a Superego/user-routed law-drift item unless canonical sources define a different order.
 - You **MUST** classify non-code work by cognitive content when defining delegation law: judgment-bearing artifacts (ADR authoring, expert-system maintenance, decision records) are frame-class; transcription-bearing artifacts (changelogs, link fixes, restating already-decided content) are mechanical-class unless the frame says otherwise.
 - You **MUST NOT** carry retired or external framework agents (for example GSD-style agents) into the Model Roster or project-agent list by default. External/sibling agents are precedents only until the user/project explicitly adopts and materializes them.
@@ -90,8 +91,8 @@ Return this exact structure, and write/update the durable artifact when authoriz
 **Superego corrections incorporated:**
 [Corrections applied before this expert system was built or updated.]
 
-**Validity status:** valid | blocked | valid only as user-authorized bounded substitute
-[If any canonical source is missing or criteria are unknown, explain why this is blocked or cite explicit user authorization.]
+**Validity status:** valid | blocked | valid with constrained claims
+[If any canonical source is missing or criteria are unknown, explain whether it blocks solution selection/safe verification or only constrains confidence, closure language, and option scope. Do not require separate user authorization merely to execute a bounded viable implementation selected by solution-space.]
 
 ## Workstream Identity
 
@@ -137,12 +138,12 @@ security | migration | API contract | UX | observability | state-machine | test-
 - problem-space: [state owner/workflow, authority, required handoff review if used later]
 - problem-statement: [state owner/workflow, authority, required handoff review if used later]
 - solution-space: [state owner/workflow, authority, required handoff review if used later]
-- execute: composed fixed-role workflow (`beancounter → coder → verifier`; Superego for required gates), not an `oh-execute` agent
-- ship: PR/MR delivery-to-review; fixes route through the fixed execution chain; stops before human-only merge
-- release: separate workspace-specific release flow if explicitly materialized from local release law
+- execute: composed fixed-role workflow (`beancounter → coder → verifier`; Superego for required material-risk gates), not an `oh-execute` agent
+- ship: PR/MR delivery-to-review; create/use branch, commit logical units, push to origin, open/prepare PR/MR, route review fixes through the fixed execution chain; stops before human-only merge
+- release: separate workspace-specific release flow if explicitly materialized from local release law; tag/publish/release side effects remain human-owned
 
 **Superego Phase-Handoff Gate:**
-Every OH phase handoff that becomes authority for later phases SHOULD receive Superego review. It is REQUIRED for durable law, architecture/ADR/protocol/RPC/SSE/lifecycle/completion/context-manager/model routing, model taxonomy/bindings/routing policy/project-agent materialization/role labels, non-trivial execution authorization, unresolved frame uncertainty carried forward, ship/release readiness, closure language, PR/MR merge readiness, release side effects, scope/non-goal/risk/decision-authority/stop-pivot changes, and canonical-source/review conflict. Skip only for explicit low-risk mechanical reversible non-durable handoffs, with recorded rationale. Skip rationale cannot satisfy required-review cases.
+Every OH phase handoff that becomes authority for later phases SHOULD receive Superego review. It is REQUIRED for durable law, architecture/ADR/protocol/RPC/SSE/lifecycle/completion/context-manager/model routing, model taxonomy/bindings/routing policy/project-agent materialization/role labels, unresolved material frame uncertainty carried forward, release/merge/destructive authority, closure language, PR/MR merge readiness, release side effects, scope/non-goal/risk/decision-authority/stop-pivot changes, and canonical-source/review conflict. Skip only for explicit low-risk mechanical reversible non-durable handoffs, with recorded rationale. Skip rationale cannot satisfy required-review cases. Routine execution/ship toward PR/MR-ready output is not a Superego permission gate.
 
 ## Current Step 0 Contract
 
@@ -202,7 +203,7 @@ Every OH phase handoff that becomes authority for later phases SHOULD receive Su
 - [Forbidden action]
 
 **Coder must stop if:**
-- [Frame delta, expert-system mismatch, source contradiction, scope expansion, verification weakness, worktree/branch/PR uncertainty, closure uncertainty]
+- [Frame delta, expert-system mismatch, source contradiction, scope expansion, verification weakness, unsafe worktree/branch/PR state that prevents delivery, closure uncertainty]
 
 ## Verification Rules
 
@@ -216,7 +217,7 @@ Every OH phase handoff that becomes authority for later phases SHOULD receive Su
 - [Insufficient evidence pattern]
 
 **Phase-handoff audits:**
-- [For each OH phase handoff used as authority later: Superego review status, required/optional/skip rationale, unresolved objections, and whether the next phase may rely on it]
+- [For each OH phase handoff used as authority later: Superego review status, required/optional/skip rationale, unresolved objections, whether the next phase may rely on it, and confirmation that routine execution/ship is not being treated as a permission gate]
 
 **Verifier must return NEEDS_HUMAN if:**
 - [Gap or authority condition]
@@ -243,21 +244,26 @@ Model bindings are durable workstream law. Changes follow Expert-System Update R
 
 ## Delivery / Closure Rules
 
-**PR required:** yes | no | deferred by contract
+**Default terminal artifact:** PR/MR-ready change | local-only/no-PR by explicit contract | plan-only by explicit contract | blocked
+
+**PR required:** yes by default for implementation work | no by explicit contract | deferred by contract
 
 **Target branch:**
-[target]
+[project default/main/master/current branch convention; branch uncertainty blocks only PR creation when genuinely ambiguous or unsafe, not local execution]
+
+**Ship mechanics:**
+Commit logical units, push branch to origin, open/prepare PR/MR, wait for configured review systems, route fixes through the fixed execution chain, stop before merge.
 
 **Allowed PR language:**
-Closes/Fixes/Resolves permitted | non-closing refs only
+Closes/Fixes/Resolves permitted only when earned | non-closing refs by default
 
 **Required PR body disclosures:**
 - [summary/evidence/residual risk/criteria status]
 
-**Human approval required before closure if:**
+**Human approval required before closure/side effects if:**
 - [condition]
-- Ship is PR/MR delivery-to-review and stops before merge; merge is human-only.
-- Release is separate from ship and requires workspace-specific release law before release side effects.
+- Merge is human-only.
+- Release/tag/publish/destructive or non-reviewable external side effects are separate from ship and require workspace-specific release law plus human authorization.
 
 ## Expert-System Update Rules
 
@@ -265,10 +271,10 @@ Closes/Fixes/Resolves permitted | non-closing refs only
 - [change to durable workstream identity, canonical source interpretation, acceptance authority, invariants, verification standard, delivery/closure rules]
 - Superego Phase-Handoff Gate changes, required/skip conditions, or phase-handoff audit standards
 - Project-agent materialization, role-label validity, model taxonomy, model roster binding, or model rebinding
-- Ship/release semantics, human-only merge law, PR/MR closure readiness, or workspace-specific release agent/flow creation
+- Ship/release semantics, PR/MR-ready terminal artifact law, human-only merge law, PR/MR closure readiness, or workspace-specific release agent/flow creation
 
 **Requires user/maintainer decision:**
-- [material authority decision]
+- Model binding/rebinding, merge, release/tag/publish, destructive/non-reviewable external side effects, or unresolved material decisions the workstream cannot resolve; not routine commit/branch/push/open-PR delivery inside an invoked workstream/ship flow.
 
 **Archive / split conditions:**
 - [When this workstream expert system should be archived or split into separate conceptual workstreams]

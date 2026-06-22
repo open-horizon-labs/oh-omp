@@ -67,34 +67,16 @@ const MAX_LINKS = 10;
 const MAX_DEPTH = 1;
 const MAX_NEIGHBOR_DEPTH = 2;
 const MAX_NEIGHBOR_LINKS = 25;
-const PHRASE_MATCH_SCORE = 35;
-const TOKEN_MATCH_SCORE = 10;
-const GENERIC_TOKEN_MATCH_SCORE = 2;
+// Relevance is corpus-derived term informativeness (IDF), not a hand-coded
+// token taxonomy. A token's weight is how rare it is across the candidate
+// facts, so function words AND domain-ubiquitous words ("concept", "fact",
+// "session") self-downweight to ~0 with no maintained list. These are the
+// only tunables; RELEVANCE_FLOOR_FACTOR is the audit-calibrated precision dial.
+const RELEVANCE_SCALE = 10;
+const PHRASE_COHESION_BONUS = 0.5;
+const RELEVANCE_FLOOR_FACTOR = 1;
 const MAX_PHRASE_TOKENS = 5;
 const MIN_PHRASE_TOKENS = 2;
-
-const GENERIC_TOKENS = new Set([
-	"agent",
-	"agents",
-	"concept",
-	"concepts",
-	"context",
-	"contexts",
-	"fact",
-	"facts",
-	"graph",
-	"graphs",
-	"memory",
-	"project",
-	"session",
-	"sessions",
-	"task",
-	"tool",
-	"tools",
-	"user",
-	"users",
-	"work",
-]);
 
 interface QueryAnalysis {
 	text: string;
@@ -128,9 +110,10 @@ export function searchConceptFacts(store: ConceptGraphStore, input: ConceptGraph
 	const limit = clamp(input.limit ?? DEFAULT_MAX_FACTS, 1, MAX_FACTS);
 	if (query.tokens.length === 0) return [];
 	const includeCandidates = input.includeCandidates ?? false;
-	return store
-		.listFacts(500)
-		.map(fact => scoreFact(fact, query))
+	const candidates = store.listFacts(500);
+	const idf = buildIdfModel(candidates);
+	return candidates
+		.map(fact => scoreFact(fact, query, idf))
 		.filter(result => result.score > 0)
 		.filter(result => includeCandidates || result.fact.status === "active")
 		.sort(compareResolvedFacts)
@@ -152,9 +135,10 @@ export function resolveConceptContext(
 		return emptyContext("No task terms were available for concept graph resolution.");
 	}
 
-	const candidateFacts = store
-		.listFacts(500)
-		.map(fact => scoreFact(fact, query))
+	const candidates = store.listFacts(500);
+	const idf = buildIdfModel(candidates);
+	const candidateFacts = candidates
+		.map(fact => scoreFact(fact, query, idf))
 		.filter(result => result.score > 0)
 		.filter(result => shouldIncludeFact(result.fact, includeCandidates))
 		.sort(compareResolvedFacts);
@@ -342,29 +326,79 @@ function collectLinks(store: ConceptGraphStore, facts: ConceptFact[], selectedId
 	return results;
 }
 
-function scoreFact(fact: ConceptFact, query: QueryAnalysis): ResolvedConceptFact {
-	const surface = normalizeSearchText(`${fact.claim} ${fact.normalizedClaim} ${fact.kind} ${fact.authority}`);
-	const tokenSet = new Set(tokenize(surface));
-	const matchedPhrases = query.phrases.filter(phrase => surface.includes(phrase));
-	const matchedSpecificTokens: string[] = [];
-	const matchedGenericTokens: string[] = [];
+interface IdfModel {
+	idf: Map<string, number>;
+	/** Mean informativeness per token-occurrence; the relevance floor. */
+	floor: number;
+}
 
-	for (const token of query.tokens) {
+function factSurface(fact: ConceptFact): string {
+	return normalizeSearchText(`${fact.claim} ${fact.normalizedClaim} ${fact.kind} ${fact.authority}`);
+}
+
+/**
+ * Build corpus-derived term informativeness over the candidate fact set.
+ * IDF(t) = log((N+1)/(df(t)+1)): a token in every fact scores ~0, a rare token
+ * scores high — no word list, language-agnostic. The floor is the mean IDF per
+ * token-occurrence (frequency-weighted, so the rare-singleton tail does not
+ * inflate it): a match must share at least one token more distinctive than the
+ * average token actually encountered in the corpus, which is what drops
+ * stopword-only and domain-ubiquitous-only overlaps.
+ */
+function buildIdfModel(facts: ConceptFact[]): IdfModel {
+	const n = facts.length;
+	const df = new Map<string, number>();
+	for (const fact of facts) {
+		for (const token of new Set(tokenize(factSurface(fact)))) {
+			df.set(token, (df.get(token) ?? 0) + 1);
+		}
+	}
+	const idf = new Map<string, number>();
+	let weightedSum = 0;
+	let occurrences = 0;
+	for (const [token, count] of df) {
+		const weight = Math.log((n + 1) / (count + 1));
+		idf.set(token, weight);
+		weightedSum += weight * count;
+		occurrences += count;
+	}
+	const floor = (occurrences === 0 ? 0 : weightedSum / occurrences) * RELEVANCE_FLOOR_FACTOR;
+	return { idf, floor };
+}
+
+function scoreFact(fact: ConceptFact, query: QueryAnalysis, model: IdfModel): ResolvedConceptFact {
+	const surface = factSurface(fact);
+	const tokenSet = new Set(tokenize(surface));
+
+	// Shared tokens weighted by corpus informativeness. Common tokens contribute
+	// ~0 automatically; nothing is special-cased.
+	const matched: Array<{ token: string; idf: number }> = [];
+	let qualifies = false;
+	for (const token of new Set(query.tokens)) {
 		if (!tokenSet.has(token)) continue;
-		if (GENERIC_TOKENS.has(token)) matchedGenericTokens.push(token);
-		else matchedSpecificTokens.push(token);
+		const idf = model.idf.get(token) ?? 0;
+		matched.push({ token, idf });
+		if (idf >= model.floor) qualifies = true;
 	}
 
-	const matchScore =
-		matchedPhrases.length * PHRASE_MATCH_SCORE +
-		matchedSpecificTokens.length * TOKEN_MATCH_SCORE +
-		matchedGenericTokens.length * GENERIC_TOKEN_MATCH_SCORE;
-	if (matchScore === 0 || (matchedPhrases.length === 0 && matchedSpecificTokens.length === 0))
-		return { fact, score: 0, reason: "no specific query terms matched" };
+	// Relevance floor: a match must carry at least one at-or-above-typical-
+	// informativeness token. Stopword-only and ubiquitous-only overlaps fail here
+	// and inject nothing — the cure for confident noise.
+	if (!qualifies) return { fact, score: 0, reason: "no informative query terms matched" };
+
+	const matchedPhrases = query.phrases.filter(phrase => surface.includes(phrase));
+	const tokenScore = matched.reduce((sum, m) => sum + m.idf, 0);
+	const phraseScore = matchedPhrases.reduce(
+		(sum, phrase) =>
+			sum + tokenize(phrase).reduce((s, t) => s + (model.idf.get(t) ?? 0), 0) * PHRASE_COHESION_BONUS,
+		0,
+	);
+	const relevance = (tokenScore + phraseScore) * RELEVANCE_SCALE;
 
 	const score =
-		matchScore + AUTHORITY_RANK[fact.authority] + STATUS_RANK[fact.status] + confidenceBonus(fact.confidence);
-	return { fact, score, reason: formatFactMatchReason(matchedPhrases, matchedSpecificTokens, matchedGenericTokens) };
+		relevance + AUTHORITY_RANK[fact.authority] + STATUS_RANK[fact.status] + confidenceBonus(fact.confidence);
+	matched.sort((a, b) => b.idf - a.idf);
+	return { fact, score, reason: formatFactMatchReason(matched, matchedPhrases) };
 }
 
 function shouldIncludeFact(
@@ -494,12 +528,15 @@ function queryPhrases(tokens: string[]): string[] {
 	return phrases;
 }
 
-function formatFactMatchReason(phrases: string[], specificTokens: string[], genericTokens: string[]): string {
+function formatFactMatchReason(matched: Array<{ token: string; idf: number }>, phrases: string[]): string {
 	const parts: string[] = [];
 	if (phrases.length > 0) parts.push(`phrase ${formatMatches(phrases.slice(0, 3))} matched`);
-	if (specificTokens.length > 0) parts.push(`specific token ${formatMatches(specificTokens.slice(0, 5))} matched`);
-	if (genericTokens.length > 0) parts.push(`generic token ${formatMatches(genericTokens.slice(0, 4))} weakly matched`);
-	return parts.join("; ");
+	// Report the informative terms that actually drove the match (sorted by
+	// corpus rarity), so the reason reflects match quality — not the fact's own
+	// confidence label, which is surfaced separately.
+	const informative = matched.filter(m => m.idf > 0).slice(0, 4).map(m => m.token);
+	if (informative.length > 0) parts.push(`informative term ${formatMatches(informative)} matched`);
+	return parts.join("; ") || "matched";
 }
 
 function formatMatches(values: string[]): string {

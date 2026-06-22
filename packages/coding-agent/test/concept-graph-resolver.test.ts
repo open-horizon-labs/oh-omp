@@ -81,6 +81,33 @@ beforeEach(() => {
 		rationale: "Historical shadow-mode conflict was retired after dogfood-first decision.",
 		evidenceIds: [evidence.id],
 	});
+
+		// Generic-vocabulary filler: a realistic concept graph has many facts that
+		// share domain-ubiquitous words (concept, context, graph, fact, memory,
+		// session). Without this frequency signal a tiny corpus cannot exercise
+		// IDF — "context" and "dogfood" would have identical document frequency.
+		// These facts contain only generic terms, so the relevance floor excludes
+		// them from every query result; they exist solely to make generic words
+		// common, the way they are in a real graph.
+		const fillerClaims = [
+			"The concept graph stores each concept and context as a fact node in the system.",
+			"Every concept graph fact links memory, context, and project session metadata.",
+			"The system models concept context using graph facts and memory nodes.",
+			"Concept graph tooling reads fact context from the project memory store.",
+			"Agent context and concept facts share the same graph memory system.",
+			"The concept graph fact store keeps context, memory, and session vocabulary.",
+		];
+		for (const [i, claim] of fillerClaims.entries()) {
+			store.upsertFact({
+				id: `filler-${i}`,
+				kind: "definition",
+				claim,
+				status: "active",
+				authority: "llm_inferred",
+				confidence: "low",
+				evidenceIds: [evidence.id],
+			});
+		}
 });
 
 afterEach(() => {
@@ -201,5 +228,38 @@ describe("concept graph resolver", () => {
 		});
 
 		expect(injection).toBeNull();
+	});
+});
+
+
+describe("IDF relevance (no hardcoded stopwords)", () => {
+	function seedFact(id: string, claim: string): void {
+		store.upsertFact({
+			id,
+			kind: "definition",
+			claim,
+			status: "active",
+			authority: "llm_inferred",
+			confidence: "medium",
+			evidenceIds: ["evidence-1"],
+		});
+	}
+
+	// Adversarial: "pipeline" is common only by CORPUS frequency, not because it
+	// is a known stopword. A hand-maintained word list would never contain it,
+	// so this fails any "just expand GENERIC_TOKENS" patch.
+	test("a token ubiquitous in the corpus cannot surface a fact on its own", () => {
+		for (let i = 0; i < 6; i++) seedFact(`pipe-${i}`, `The data pipeline stage ${i} runs and then exits.`);
+		seedFact("pipe-kafka", "The data pipeline stage uses kafka for streaming.");
+		const results = searchConceptFacts(store, { query: "pipeline" });
+		expect(results.every(r => !r.fact.id.startsWith("pipe-"))).toBe(true);
+	});
+
+	test("a distinctive rare token surfaces its fact and is named as the reason", () => {
+		for (let i = 0; i < 6; i++) seedFact(`pipe-${i}`, `The data pipeline stage ${i} runs and then exits.`);
+		seedFact("pipe-kafka", "The data pipeline stage uses kafka for streaming.");
+		const results = searchConceptFacts(store, { query: "kafka streaming" });
+		expect(results[0]?.fact.id).toBe("pipe-kafka");
+		expect(results[0]?.reason).toContain("kafka");
 	});
 });

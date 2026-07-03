@@ -77,58 +77,65 @@ If completed (task 142-B4PreExecutionDissent, verdict PROCEED-WITH-CONDITIONS, c
 ## Execute
 
 Checklist:
-- [ ] owned files only
-- [ ] shared interfaces imported from `successor-protocol`; no local duplicate protocol DTOs
-- [ ] no forbidden shortcuts
-- [ ] tests/checks added inside owned scope
-- [ ] targeted validation passed (`cargo test -p successor-context-platform --test slice0_replay` or narrower package-local command chosen by executor)
-- [ ] orchestrator-owned `make check-rs` gate run after executor returns, before review dispatch
-- [ ] named risks retired or routed
-- [ ] model binding verified for execution agent (`slice0-executor`, `anthropic/claude-sonnet-5`, `thinking-level=high`; canary `agent://112-ExecutorRebindCanary`)
-- [ ] fixture sovereignty preserved; canonical fixtures not edited or weakened
-- [ ] no accepted-module edits without Interface Change Request/reopen protocol
-- [ ] all new JSON-boundary DTOs use `#[serde(deny_unknown_fields)]` unless an explicit contract extension map exists
-- [ ] workspace lint expectations preserved: `make check-rs` is the orchestrator gate and must be green before review
-- [ ] no dispatch over-constraint: implement B4-owned contract semantics directly; do not refuse assigned scope merely because a helper API is not pre-existing
+- [x] owned files only (projection.rs, replay.rs, trace_index.rs, tests/slice0_replay.rs) plus granted three-line lib.rs expansion; no migration, table, or dependency added
+- [x] shared interfaces imported from `successor-protocol`; accepted A4 `project_session` reused, no projection logic copied
+- [x] no forbidden shortcuts (unsupported-tool stream pinned as typed error; A4 reopen candidate routed, not worked around)
+- [x] tests/checks added inside owned scope (snapshot fixture equality, determinism, trace index, artifact integrity, typed errors, expected-projection fidelity through the store)
+- [x] targeted validation passed (52 unit + 9 integration platform tests)
+- [x] orchestrator-owned `make check-rs` gate green before review dispatch (`1af48f1e4`) and after the drift-evidence test (`d633342fa`)
+- [x] named risks retired or routed (no persisted projections; single event walk; no route pre-ownership)
+- [x] model binding verified (`slice0-executor`, `anthropic/claude-sonnet-5:high`; task 143)
+- [x] fixture sovereignty preserved; no fixture edits
+- [x] no accepted-module edits
+- [x] no new JSON-boundary DTOs (protocol `SessionSnapshotV0` reused)
+- [x] workspace lint gate green before review
+- [x] no dispatch over-constraint
 
 Changed files:
+- New: `crates/successor-context-platform/src/{projection.rs, replay.rs, trace_index.rs}`, `crates/successor-context-platform/tests/slice0_replay.rs`
+- Granted expansion: `lib.rs` — exactly three appended module declarations (`projection`, `replay`, `trace_index`)
 
 Validation evidence:
+- 52 unit + 9 integration tests green; snapshot semantically equal to canonical `session-snapshot.json`; projection through the persisted store equal to `expected-session-projection.json`; deterministic byte-identical replays
+- `make check-rs` exit 0 at `1af48f1e4` and `d633342fa`
 
 ## Code Review
 
-Reviewer:
-Reviewer model:
-Verdict: [PASS / REVISE / BLOCK]
+Reviewer: `slice0-reviewer` (task 146-B4CodeReview, checkout-proof at `1af48f1e4`)
+Reviewer model: `openai-codex/gpt-5.5:high`
+Verdict: PASS (`overall_correctness=correct`, zero findings)
 
 Findings:
-- ...
+- None. Reuse seam, snapshot mapping decisions, determinism, pagination, and artifact-integrity seam all confirmed.
 
 Fixes applied:
-- ...
+- None required.
 
 ## Drift Review
 
-Original aim:
-Current work:
-Gap:
-Verdict: [aligned / minor drift / significant drift / lost]
-Authority boundary: [clear / ambiguous / crossed]
+Original aim: platform replay adapter + snapshot projection over accepted A4, derivation-only.
+Current work: task 143 as committed at `1af48f1e4`.
+Gap: one evidence gap (no direct `replay_session_projection` assertion against `expected-session-projection.json` through the persisted store) — closed by the orchestrator fixture test at `d633342fa`.
+Verdict: minor drift, resolved (task 145-B4DriftReview)
+Authority boundary: clear
 
 ## Superego Review
 
-Reviewer:
-Reviewer model:
-Verdict: [ALLOW / REVISE / BLOCK]
+Reviewer: `slice0-superego-reviewer` (task 144-B4SuperegoReview, checkout-proof at `1af48f1e4`)
+Reviewer model: `openai-codex/gpt-5.5:high`
+Verdict: ALLOW
 
 Frame risks:
-- ...
+- None found: RawEvent canonical truth vs derived views preserved; no persistence; A4-reopen candidate routed rather than resolved; mapping decisions disclosed.
 
 Required corrections:
-- ...
+- None.
 
 ## Delivery
 
-Status: [accepted / needs revision / blocked]
+Status: accepted
 Residual risks:
+- Routed A4-reopen candidate: accepted `project_session` rejects the unsupported-tool stream; platform behavior pinned as a typed error until a narrow A4 reopen extends projection semantics.
+- Snapshot mapping decisions (created/updated from first/last `occurred_at`, unconditional `last_assistant_summary` presence, always-private sharing) are disclosed and review-accepted; B6 route contract must not silently change them.
 Human verification needed:
+- None outstanding.

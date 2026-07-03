@@ -365,10 +365,14 @@ impl AssembleRequestV0 {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct AssemblyTraceStageV0 {
-	pub name:   String,
-	#[serde(default)]
-	pub detail: serde_json::Value,
+	pub name:         String,
+	pub started_at:   String,
+	pub completed_at: String,
+	pub input_count:  u64,
+	pub output_count: u64,
+	pub notes:        Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

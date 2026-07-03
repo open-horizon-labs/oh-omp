@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 
 use successor_protocol::{
-	canonical_json::to_canonical_projection_json_bytes,
+	canonical_json::{to_canonical_json_bytes, to_canonical_projection_json_bytes},
 	error::ProtocolViolationCode,
 	fixtures,
 	ids::EventId,
@@ -148,6 +148,15 @@ fn assemble_response_pre_tool_parses_as_typed_assembly_response() {
 	assert_eq!(response.degradation[1].code, "no_context");
 	assert_eq!(response.degradation[1].severity, "info");
 
+	assert_eq!(response.trace.stages.len(), 1);
+	let stage = &response.trace.stages[0];
+	assert_eq!(stage.name, "retrieve_recent_sources");
+	assert_eq!(stage.started_at, "2026-06-23T12:00:02Z");
+	assert_eq!(stage.completed_at, "2026-06-23T12:00:02Z");
+	assert_eq!(stage.input_count, 1);
+	assert_eq!(stage.output_count, 0);
+	assert_eq!(stage.notes, vec!["No prior tool artifacts for this session.".to_owned()]);
+
 	// `DegradationV0` carries `message`/`severity`, not the old `reason` field.
 	let value = serde_json::to_value(&response).unwrap();
 	assert!(value["degradation"][0].get("reason").is_none());
@@ -169,6 +178,15 @@ fn assemble_response_post_read_parses_as_typed_assembly_response() {
 	assert_eq!(response.degradation.len(), 1);
 	assert_eq!(response.degradation[0].code, "embeddings_unavailable");
 
+	assert_eq!(response.trace.stages.len(), 1);
+	let stage = &response.trace.stages[0];
+	assert_eq!(stage.name, "required_sources");
+	assert_eq!(stage.started_at, "2026-06-23T12:00:19Z");
+	assert_eq!(stage.completed_at, "2026-06-23T12:00:19Z");
+	assert_eq!(stage.input_count, 1);
+	assert_eq!(stage.output_count, 1);
+	assert_eq!(stage.notes, vec!["Included required read artifact.".to_owned()]);
+
 	// `ContextItemV0` carries `source_kind`/`title`/`rendered_text`/`recovery`,
 	// not the old `kind`/`content` fields.
 	let value = serde_json::to_value(&response).unwrap();
@@ -176,6 +194,36 @@ fn assemble_response_post_read_parses_as_typed_assembly_response() {
 	assert!(value["context_items"][0].get("content").is_none());
 	assert!(value["context_items"][0].get("source_kind").is_some());
 	assert_eq!(serde_json::from_value::<AssemblyResponseV0>(value).unwrap(), response);
+}
+
+#[test]
+fn assembly_response_stages_round_trip_typed_parsing_byte_exactly() {
+	for response in [fixtures::assemble_response_pre_tool(), fixtures::assemble_response_post_read()]
+	{
+		let canonical = to_canonical_json_bytes(&response).expect("response must serialize");
+		let reparsed: AssemblyResponseV0 =
+			serde_json::from_slice(&canonical).expect("canonical bytes must reparse");
+		assert_eq!(
+			to_canonical_json_bytes(&reparsed).expect("reparsed response must serialize"),
+			canonical,
+			"a typed round trip must reproduce identical bytes, including trace.stages"
+		);
+		assert_eq!(reparsed.trace.stages, response.trace.stages);
+	}
+}
+
+#[test]
+fn assembly_trace_stage_rejects_unknown_fields() {
+	for response in [fixtures::assemble_response_pre_tool(), fixtures::assemble_response_post_read()]
+	{
+		let mut value = serde_json::to_value(&response).unwrap();
+		value["trace"]["stages"][0]["detail"] = serde_json::json!(null);
+		let result: Result<AssemblyResponseV0, _> = serde_json::from_value(value);
+		assert!(
+			result.is_err(),
+			"an unrecognized field on a trace stage must be rejected, not silently dropped"
+		);
+	}
 }
 
 #[test]

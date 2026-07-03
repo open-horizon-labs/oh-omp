@@ -1085,6 +1085,28 @@ mod tests {
 	}
 
 	#[test]
+	fn assembly_response_stage_note_credential_injection_is_rejected() {
+		let mut response = fixtures::assemble_response_post_read();
+		assert!(
+			!response.trace.stages.is_empty(),
+			"canonical post_read fixture must carry a trace stage to mutate"
+		);
+		response.trace.stages[0].notes =
+			vec!["leaked access_token=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY".to_owned()];
+
+		let result = validate_assembly_response(&response);
+		assert!(result.is_err(), "a credential-shaped stage note must be rejected");
+		assert!(
+			result
+				.unwrap_err()
+				.violations()
+				.iter()
+				.any(|v| v.code == ProtocolViolationCode::CredentialLeakage),
+			"rejection must be attributed to CredentialLeakage"
+		);
+	}
+
+	#[test]
 	fn canonical_successful_turn_stream_validates_clean() {
 		assert_eq!(validate_raw_event_stream(&fixtures::raw_events_successful_turn()), Ok(()));
 	}

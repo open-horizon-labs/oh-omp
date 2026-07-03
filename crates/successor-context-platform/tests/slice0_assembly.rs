@@ -28,7 +28,9 @@
 //! `SessionSnapshotV0`.
 
 use successor_context_platform::{
-	artifacts::SqliteArtifactStore, assembly::AssemblyServiceV0, sqlite::SqliteAppendStore,
+	artifacts::SqliteArtifactStore,
+	assembly::{AssemblyServiceV0, TRACE_CACHE_CAPACITY},
+	sqlite::SqliteAppendStore,
 	store::RawEventAppendStore,
 };
 use successor_protocol::{
@@ -242,7 +244,21 @@ fn assert_trace_matches_fixture(
 	);
 	assert_eq!(actual.query, expected.query);
 	assert_eq!(actual.projection_version, expected.projection_version);
-	assert_eq!(actual.stages, expected.stages);
+	assert_eq!(actual.stages.len(), expected.stages.len(), "stage count must match the fixture");
+	for (actual_stage, expected_stage) in actual.stages.iter().zip(&expected.stages) {
+		assert_eq!(actual_stage.name, expected_stage.name);
+		assert!(
+			actual_stage.started_at.contains('T') && actual_stage.started_at.ends_with('Z'),
+			"stage.started_at must be RFC3339 (platform-assigned per call, not fixture-pinned)"
+		);
+		assert_eq!(
+			actual_stage.completed_at, actual_stage.started_at,
+			"Slice 0 stages are synchronous: completed_at must equal started_at"
+		);
+		assert_eq!(actual_stage.input_count, expected_stage.input_count);
+		assert_eq!(actual_stage.output_count, expected_stage.output_count);
+		assert_eq!(actual_stage.notes, expected_stage.notes);
+	}
 	assert_eq!(actual.dropped, expected.dropped);
 }
 
@@ -494,4 +510,34 @@ async fn get_trace_returns_none_for_an_unknown_assemble_id() {
 	let never_produced = AssembleId::from_raw(format!("asm_{}", uuid::Uuid::new_v4()));
 
 	assert!(service.get_trace(&never_produced).is_none());
+}
+
+#[tokio::test]
+async fn get_trace_evicts_the_oldest_entry_once_the_cache_cap_is_exceeded() {
+	let (service, session_id) = seeded_service("cache-bound").await;
+	let fixture = fixtures::assemble_request_pre_tool();
+
+	let mut assemble_ids = Vec::with_capacity(TRACE_CACHE_CAPACITY + 1);
+	for _ in 0..=TRACE_CACHE_CAPACITY {
+		let request = request_for(fixture.clone(), &session_id);
+		let response = service
+			.assemble(&request)
+			.await
+			.expect("assemble must succeed");
+		assemble_ids.push(response.assemble_id);
+	}
+
+	let oldest = &assemble_ids[0];
+	assert!(
+		service.get_trace(oldest).is_none(),
+		"the oldest trace must be evicted once the cache exceeds its FIFO capacity"
+	);
+
+	let newest = assemble_ids
+		.last()
+		.expect("at least one assemble_id was recorded");
+	assert!(
+		service.get_trace(newest).is_some(),
+		"the most recently assembled trace must remain cached"
+	);
 }

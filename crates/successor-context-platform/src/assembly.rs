@@ -69,7 +69,7 @@
 //! notes rather than papered over with a new persistence layer.
 
 use std::{
-	collections::HashMap,
+	collections::{HashMap, VecDeque},
 	sync::{Mutex, PoisonError},
 	time::{SystemTime, UNIX_EPOCH},
 };
@@ -104,19 +104,83 @@ const SEVERITY_INFO: &str = "info";
 
 const RECOVERY_METHOD_PLATFORM_ARTIFACT: &str = "platform_artifact";
 
+/// [`AssemblyTraceStageV0::input_count`] for the `retrieve_recent_sources`
+/// stage. Slice 0 has no recent-source index (Dissent ruling 2), so this
+/// stage always evaluates exactly one candidate window -- the request's
+/// own query intent -- regardless of session content. Both canonical
+/// fixtures only exercise the always-zero-results shape of this stage, so
+/// this fixed value (rather than one derived from per-session state) is a
+/// disclosed, unpinned choice, not an invented special case.
+const RETRIEVE_RECENT_SOURCES_INPUT_COUNT: u64 = 1;
+
+const NOTE_NO_PRIOR_TOOL_ARTIFACTS: &str = "No prior tool artifacts for this session.";
+const NOTE_NO_REQUIRED_SOURCES_RESOLVED: &str = "No required source artifacts were resolved.";
+const NOTE_INCLUDED_REQUIRED_READ_ARTIFACT: &str = "Included required read artifact.";
+
+/// Builds the `required_sources` stage's `notes` from how many context
+/// items it resolved (`output_count`). Only the singular case
+/// (`output_count == 1`) is fixture-pinned (`assemble-response-post-
+/// read.json`); the zero and plural cases are disclosed, unpinned
+/// generalizations needed once a request names zero or multiple required
+/// sources, not invented special-casing.
+fn required_sources_stage_notes(output_count: u64) -> Vec<String> {
+	match output_count {
+		0 => vec![NOTE_NO_REQUIRED_SOURCES_RESOLVED.to_owned()],
+		1 => vec![NOTE_INCLUDED_REQUIRED_READ_ARTIFACT.to_owned()],
+		n => vec![format!("Included {n} required read artifacts.")],
+	}
+}
+
+/// FIFO cap on the in-process trace cache.
+///
+/// See the `get_trace` module documentation. Neither canonical fixture
+/// drives enough `assemble()` calls to pin a specific number, so this
+/// capacity is a disclosed, unpinned policy: generous enough not to matter
+/// for ordinary sessions, but bounded so a long-lived B6 process does not
+/// grow this map without limit. Eviction is FIFO by insertion order, not
+/// LRU: `get_trace` is a read-only lookup and must not itself extend a
+/// trace's retention.
+pub const TRACE_CACHE_CAPACITY: usize = 1024;
+
+/// Bounded FIFO cache of assembly traces, keyed by `assemble_id`. See
+/// [`TRACE_CACHE_CAPACITY`] for the eviction policy.
+#[derive(Default)]
+struct TraceCache {
+	entries: HashMap<AssembleId, AssemblyTraceV0>,
+	order:   VecDeque<AssembleId>,
+}
+
+impl TraceCache {
+	fn insert(&mut self, assemble_id: AssembleId, trace: AssemblyTraceV0) {
+		if self.entries.insert(assemble_id.clone(), trace).is_none() {
+			self.order.push_back(assemble_id);
+		}
+		while self.order.len() > TRACE_CACHE_CAPACITY {
+			let Some(oldest) = self.order.pop_front() else {
+				break;
+			};
+			self.entries.remove(&oldest);
+		}
+	}
+
+	fn get(&self, assemble_id: &AssembleId) -> Option<AssemblyTraceV0> {
+		self.entries.get(assemble_id).cloned()
+	}
+}
+
 /// Deterministic `/assemble` computation over the B2/B3/B4 platform
 /// substrate. See the module documentation for the selection rule and
 /// disclosed unpinned-behavior decisions.
 pub struct AssemblyServiceV0<E: RawEventAppendStore> {
 	events:    E,
 	artifacts: SqliteArtifactStore,
-	traces:    Mutex<HashMap<AssembleId, AssemblyTraceV0>>,
+	traces:    Mutex<TraceCache>,
 }
 
 impl<E: RawEventAppendStore> AssemblyServiceV0<E> {
 	#[must_use]
 	pub fn new(events: E, artifacts: SqliteArtifactStore) -> Self {
-		Self { events, artifacts, traces: Mutex::new(HashMap::new()) }
+		Self { events, artifacts, traces: Mutex::new(TraceCache::default()) }
 	}
 
 	/// Computes an `AssemblyResponseV0` for `request`. See the module
@@ -139,7 +203,7 @@ impl<E: RawEventAppendStore> AssemblyServiceV0<E> {
 		let mut degradation = Vec::new();
 		let mut dropped = Vec::new();
 
-		let stage_name = if request.required_source_envelope_ids.is_empty() {
+		let stage = if request.required_source_envelope_ids.is_empty() {
 			degradation.push(DegradationV0 {
 				code:     DEGRADATION_EMBEDDINGS_UNAVAILABLE.to_owned(),
 				message:  "Embedding backend unavailable in Slice 0; deterministic lexical retrieval \
@@ -152,7 +216,14 @@ impl<E: RawEventAppendStore> AssemblyServiceV0<E> {
 				message:  "No relevant prior context before local discovery tools run.".to_owned(),
 				severity: SEVERITY_INFO.to_owned(),
 			});
-			STAGE_RETRIEVE_RECENT_SOURCES
+			AssemblyTraceStageV0 {
+				name:         STAGE_RETRIEVE_RECENT_SOURCES.to_owned(),
+				started_at:   created_at.clone(),
+				completed_at: created_at.clone(),
+				input_count:  RETRIEVE_RECENT_SOURCES_INPUT_COUNT,
+				output_count: 0,
+				notes:        vec![NOTE_NO_PRIOR_TOOL_ARTIFACTS.to_owned()],
+			}
 		} else {
 			degradation.push(DegradationV0 {
 				code:     DEGRADATION_EMBEDDINGS_UNAVAILABLE.to_owned(),
@@ -244,7 +315,15 @@ impl<E: RawEventAppendStore> AssemblyServiceV0<E> {
 				});
 			}
 
-			STAGE_REQUIRED_SOURCES
+			let output_count = context_items.len() as u64;
+			AssemblyTraceStageV0 {
+				name: STAGE_REQUIRED_SOURCES.to_owned(),
+				started_at: created_at.clone(),
+				completed_at: created_at.clone(),
+				input_count: request.required_source_envelope_ids.len() as u64,
+				output_count,
+				notes: required_sources_stage_notes(output_count),
+			}
 		};
 
 		let trace = AssemblyTraceV0 {
@@ -252,7 +331,7 @@ impl<E: RawEventAppendStore> AssemblyServiceV0<E> {
 			assemble_id: assemble_id.clone(),
 			query: request.intent.query.clone(),
 			projection_version: PROJECTION_VERSION.to_owned(),
-			stages: vec![AssemblyTraceStageV0 { name: stage_name.to_owned(), detail: Value::Null }],
+			stages: vec![stage],
 			dropped,
 		};
 
@@ -298,7 +377,6 @@ impl<E: RawEventAppendStore> AssemblyServiceV0<E> {
 			.lock()
 			.unwrap_or_else(PoisonError::into_inner)
 			.get(assemble_id)
-			.cloned()
 	}
 }
 

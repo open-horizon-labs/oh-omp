@@ -39,11 +39,13 @@ use successor_protocol::{
 	artifact::{ArtifactV0, validate_artifact_content},
 	error::ProtocolResult,
 	ids::{ArtifactId, EventId, SessionId},
+	raw_event::RawEventV0,
+	validation::scan_artifact_content,
 };
 
 use crate::{
 	error::{PlatformError, PlatformResult},
-	store::violation_to_platform_error,
+	store::{violation_set_to_platform_error, violation_to_platform_error},
 };
 
 fn sqlx_error(err: sqlx::Error) -> PlatformError {
@@ -147,10 +149,23 @@ impl SqliteArtifactStore {
 	///
 	/// Rejects, without persisting anything, if `artifact`'s declared
 	/// hash/length do not match its actual content bytes (typed error from
-	/// the accepted `validate_artifact_content` check). Rejects with
-	/// `ProtocolViolationCode::Conflict` if `artifact.artifact_id` is
-	/// already stored: store attempts never silently overwrite existing
-	/// content.
+	/// the accepted `validate_artifact_content` check), or if `artifact`'s
+	/// inline content looks credential-shaped (typed error from the accepted
+	/// `scan_artifact_content` check; the flagged content is never echoed in
+	/// the error). Rejects with `ProtocolViolationCode::Conflict` if
+	/// `artifact.artifact_id` is already stored: store attempts never
+	/// silently overwrite existing content.
+	///
+	/// Also enforces provenance coherence before persisting anything:
+	/// `source_event_id` must name a raw event that exists, that actually
+	/// belongs to `session_id`, and that actually produced this artifact --
+	/// either via its `entity_ids.artifact_id`, or, when the event carries
+	/// its own inline artifact reference, via a matching `sha256`. Any
+	/// mismatch is rejected as `ProtocolViolationCode::ValidationFailed`
+	/// before the insert runs. The coherence read and the insert share one
+	/// acquired pool connection, so no other write through this store
+	/// (`max_connections(1)`, see `connect_with`) can interleave between
+	/// them.
 	pub async fn put_inline_artifact(
 		&self,
 		source_event_id: &EventId,
@@ -158,9 +173,52 @@ impl SqliteArtifactStore {
 		artifact: ArtifactV0,
 	) -> PlatformResult<ArtifactV0> {
 		verify_content(&artifact).map_err(violation_to_platform_error)?;
+		scan_artifact_content(&artifact).map_err(violation_set_to_platform_error)?;
 
 		let artifact_json = serde_json::to_string(&artifact).map_err(json_error)?;
 		let mut conn = self.pool.acquire().await.map_err(sqlx_error)?;
+
+		let event_row = sqlx::query("SELECT event_json FROM raw_events WHERE event_id = ?")
+			.bind(source_event_id.as_str())
+			.fetch_optional(&mut *conn)
+			.await
+			.map_err(sqlx_error)?;
+		let Some(event_row) = event_row else {
+			return Err(PlatformError::new(
+				successor_protocol::error::ProtocolViolationCode::ValidationFailed,
+				format!("source event {source_event_id} not found"),
+			));
+		};
+		let event_json: String = event_row.try_get("event_json").map_err(sqlx_error)?;
+		let source_event: RawEventV0 = serde_json::from_str(&event_json).map_err(json_error)?;
+
+		if &source_event.session_id != session_id {
+			return Err(PlatformError::new(
+				successor_protocol::error::ProtocolViolationCode::ValidationFailed,
+				format!("source event {source_event_id} does not belong to session {session_id}"),
+			));
+		}
+		if source_event.entity_ids.artifact_id.as_ref() != Some(&artifact.artifact_id) {
+			return Err(PlatformError::new(
+				successor_protocol::error::ProtocolViolationCode::ValidationFailed,
+				format!(
+					"source event {source_event_id} does not reference artifact {}",
+					artifact.artifact_id
+				),
+			));
+		}
+		if let Some(event_artifact) = &source_event.artifact
+			&& event_artifact.sha256 != artifact.sha256
+		{
+			return Err(PlatformError::new(
+				successor_protocol::error::ProtocolViolationCode::ValidationFailed,
+				format!(
+					"source event {source_event_id} inline artifact hash does not match artifact {}",
+					artifact.artifact_id
+				),
+			));
+		}
+
 		let byte_length = i64::try_from(artifact.byte_length).map_err(|_| {
 			PlatformError::new(
 				successor_protocol::error::ProtocolViolationCode::ValidationFailed,
@@ -461,11 +519,15 @@ mod tests {
 		let db = TempDbPath::new("corruption");
 		let append_store = SqliteAppendStore::connect(db.as_str()).await.unwrap();
 		let store = SqliteArtifactStore::connect(db.as_str()).await.unwrap();
-		let (session_id, event_id) = seed_session_with_an_event(&append_store).await;
-		let artifact = make_artifact("art_corrupt", "pristine content");
+		let session_id = seed_successful_turn(&append_store).await;
+		let (source_event_id, artifact) = fixture_artifacts(&append_store, &session_id)
+			.await
+			.into_iter()
+			.next()
+			.expect("fixture must carry at least one inline artifact");
 
 		store
-			.put_inline_artifact(&event_id, &session_id, artifact.clone())
+			.put_inline_artifact(&source_event_id, &session_id, artifact.clone())
 			.await
 			.unwrap();
 
@@ -522,24 +584,22 @@ mod tests {
 		let append_store = SqliteAppendStore::connect(db.as_str()).await.unwrap();
 		let store = SqliteArtifactStore::connect(db.as_str()).await.unwrap();
 		let session_id = seed_successful_turn(&append_store).await;
-		let page = append_store
-			.read_session_events(&session_id, 0, 2)
+		let (source_event_id, original) = fixture_artifacts(&append_store, &session_id)
 			.await
-			.expect("read_session_events must succeed");
-		let event_id = page.events[0].event_id.clone();
-		let other_event_id = page.events[1].event_id.clone();
-		let original = make_artifact("art_dup", "original content");
+			.into_iter()
+			.next()
+			.expect("fixture must carry at least one inline artifact");
 
 		store
-			.put_inline_artifact(&event_id, &session_id, original.clone())
+			.put_inline_artifact(&source_event_id, &session_id, original.clone())
 			.await
 			.unwrap();
 
-		// A second store attempt under the same artifact_id, with different
-		// content, must be rejected -- never silently overwritten.
-		let colliding = make_artifact("art_dup", "different content entirely");
+		// A second store attempt under the same artifact_id -- even with fully
+		// coherent provenance identical to the first -- must be rejected,
+		// never silently re-persisted or overwritten.
 		let err = store
-			.put_inline_artifact(&other_event_id, &session_id, colliding)
+			.put_inline_artifact(&source_event_id, &session_id, original.clone())
 			.await
 			.unwrap_err();
 		assert_eq!(err.envelope().code, ProtocolViolationCode::Conflict.as_str());
@@ -554,27 +614,121 @@ mod tests {
 	}
 
 	#[tokio::test]
-	async fn put_inline_artifact_does_not_scan_for_credentials() {
-		// Binding ruling: reject credential-looking artifact content "if and
-		// only if accepted validators say so"; this lane must not invent new
-		// scanning. `successor_protocol::validation::check_raw_event_credentials`
-		// (the accepted A5 credential scanner) is a private, `RawEventV0`-scoped
-		// helper with no public entry point for standalone artifact content, so
-		// this store performs no credential scanning of its own. This test
-		// documents that: credential-shaped content is accepted, not rejected.
+	async fn put_inline_artifact_rejects_credential_looking_content() {
+		// Regression test for the B3 code-review P1 credential-bypass finding:
+		// put_inline_artifact must invoke the accepted credential scanner
+		// (`successor_protocol::validation::scan_artifact_content`) before
+		// persisting, not accept credential-shaped content unconditionally.
 		let db = TempDbPath::new("credential");
 		let append_store = SqliteAppendStore::connect(db.as_str()).await.unwrap();
 		let store = SqliteArtifactStore::connect(db.as_str()).await.unwrap();
 		let (session_id, event_id) = seed_session_with_an_event(&append_store).await;
 		let artifact = make_artifact("art_cred", "AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG");
 
-		let result = store
+		let err = store
 			.put_inline_artifact(&event_id, &session_id, artifact)
-			.await;
+			.await
+			.unwrap_err();
+		assert_eq!(err.envelope().code, ProtocolViolationCode::CredentialLeakage.as_str());
 		assert!(
-			result.is_ok(),
-			"artifact store has no accepted credential validator to invoke, so it must not reject on \
-			 its own invented scan: {result:?}"
+			!err.envelope().message.contains("AWS_SECRET_ACCESS_KEY"),
+			"credential violation message must not echo the flagged content: {}",
+			err.envelope().message
 		);
+	}
+
+	#[tokio::test]
+	async fn put_inline_artifact_rejects_cross_session_event() {
+		// Regression test for the B3 code-review P1 provenance-incoherence
+		// finding: source_event_id and session_id were previously accepted
+		// independently, with no check that the named event actually belongs
+		// to the named session.
+		let db = TempDbPath::new("cross-session");
+		let append_store = SqliteAppendStore::connect(db.as_str()).await.unwrap();
+		let store = SqliteArtifactStore::connect(db.as_str()).await.unwrap();
+		let (_session_a, event_a) = seed_session_with_an_event(&append_store).await;
+		// A second, genuinely distinct session -- created directly rather than
+		// via `seed_successful_turn`, since that would re-append the fixture's
+		// literal event_ids a second time and collide on the append store's
+		// event_id uniqueness constraint.
+		let session_b = append_store
+			.create_session(CreateSessionRequestV0 {
+				workspace:  WorkspaceV0 {
+					id:        "workspace_b3".to_owned(),
+					label:     "b3-tests".to_owned(),
+					root_hint: "/tmp/b3-tests".to_owned(),
+				},
+				title:      "B3 artifact store cross-session test".to_owned(),
+				created_by: CreatedByV0 {
+					client_kind: "test".to_owned(),
+					client_id:   "b3".to_owned(),
+				},
+			})
+			.await
+			.expect("create_session must succeed")
+			.session_id;
+		let artifact = make_artifact("art_cross_session", "content");
+
+		let err = store
+			.put_inline_artifact(&event_a, &session_b, artifact)
+			.await
+			.unwrap_err();
+		assert_eq!(err.envelope().code, ProtocolViolationCode::ValidationFailed.as_str());
+	}
+
+	#[tokio::test]
+	async fn put_inline_artifact_rejects_event_that_did_not_produce_this_artifact() {
+		// Regression test: source_event_id must actually have produced this
+		// artifact (via entity_ids.artifact_id), not merely belong to the
+		// right session.
+		let db = TempDbPath::new("no-artifact-ref");
+		let append_store = SqliteAppendStore::connect(db.as_str()).await.unwrap();
+		let store = SqliteArtifactStore::connect(db.as_str()).await.unwrap();
+		let (session_id, event_id) = seed_session_with_an_event(&append_store).await;
+		let artifact = make_artifact("art_unreferenced", "content");
+
+		let err = store
+			.put_inline_artifact(&event_id, &session_id, artifact)
+			.await
+			.unwrap_err();
+		assert_eq!(err.envelope().code, ProtocolViolationCode::ValidationFailed.as_str());
+	}
+
+	#[tokio::test]
+	async fn put_inline_artifact_rejects_hash_mismatch_against_event_inline_artifact() {
+		// Regression test: even when source_event_id correctly names the
+		// event that introduced this artifact_id, if that event carries its
+		// own inline artifact reference, the stored artifact's hash must
+		// match it -- an artifact_id match alone is not sufficient provenance.
+		let db = TempDbPath::new("inline-hash-mismatch");
+		let append_store = SqliteAppendStore::connect(db.as_str()).await.unwrap();
+		let store = SqliteArtifactStore::connect(db.as_str()).await.unwrap();
+		let session_id = seed_successful_turn(&append_store).await;
+		let (source_event_id, real_artifact) = fixture_artifacts(&append_store, &session_id)
+			.await
+			.into_iter()
+			.next()
+			.expect("fixture must carry at least one inline artifact");
+
+		// Same artifact_id as the event's real inline artifact, but different
+		// (internally self-consistent) content -- a hash that does not match
+		// what the producing event actually recorded.
+		let different_content = "not the content this event actually produced";
+		let different_hash = ArtifactHash::compute(different_content.as_bytes());
+		let artifact = ArtifactV0::new(
+			real_artifact.artifact_id.clone(),
+			real_artifact.media_type.clone(),
+			real_artifact.encoding.clone(),
+			different_hash.as_str(),
+			different_content.len() as u64,
+		)
+		.unwrap()
+		.with_content(serde_json::Value::String(different_content.to_owned()));
+
+		let err = store
+			.put_inline_artifact(&source_event_id, &session_id, artifact)
+			.await
+			.unwrap_err();
+		assert_eq!(err.envelope().code, ProtocolViolationCode::ValidationFailed.as_str());
 	}
 }

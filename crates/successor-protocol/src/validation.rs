@@ -65,7 +65,7 @@
 use std::collections::HashMap;
 
 use crate::{
-	artifact::{ArtifactHash, validate_artifact_content},
+	artifact::{ArtifactHash, ArtifactV0, validate_artifact_content},
 	canonical_json::to_canonical_projection_json_bytes,
 	error::{ProtocolViolation, ProtocolViolationCode, ProtocolViolationSet},
 	fixtures,
@@ -561,6 +561,53 @@ fn check_raw_event_credentials(violations: &mut Vec<ProtocolViolation>, event: &
 			));
 		}
 	}
+}
+
+/// Scans a standalone [`ArtifactV0`]'s inline `content` for credential-shaped
+/// substrings.
+///
+/// This is the public, content-scoped entry point onto the same credential
+/// pattern vocabulary ([`CREDENTIAL_KEY_PATTERNS`],
+/// [`CREDENTIAL_VALUE_PATTERNS`]) [`check_raw_event_credentials`] uses for
+/// raw-event `payload`/inline-artifact scanning, for callers (the Context
+/// Platform's artifact store) that persist a standalone artifact rather than a
+/// full raw event, and so have no `RawEventV0` to hand to the private
+/// raw-event-scoped scanner.
+///
+/// Slice 0 inline artifact content is unstructured text (e.g. a log excerpt, an
+/// env dump), not a JSON object with named keys, so unlike
+/// [`scan_value_for_credentials`]'s object-key handling this also matches
+/// [`CREDENTIAL_KEY_PATTERNS`] as case-insensitive substrings of the whole
+/// content string -- the same vocabulary [`check_raw_event_credentials`]
+/// already applies to JSON object keys, just applied to free text that carries
+/// no JSON key structure of its own. This does not alter
+/// [`check_raw_event_credentials`] or any other existing scanning path: one
+/// scanning implementation and vocabulary, two entry points.
+pub fn scan_artifact_content(artifact: &ArtifactV0) -> FixtureValidationResult {
+	let mut violations = Vec::new();
+	if let Some(content) = &artifact.content {
+		scan_value_for_credentials(
+			&mut violations,
+			content,
+			&format!("{}.content", artifact.artifact_id),
+		);
+		if let serde_json::Value::String(text) = content {
+			let text_lower = text.to_lowercase();
+			if CREDENTIAL_KEY_PATTERNS
+				.iter()
+				.any(|pattern| text_lower.contains(pattern))
+			{
+				violations.push(ProtocolViolation::new(
+					ProtocolViolationCode::CredentialLeakage,
+					format!(
+						"credential-looking key pattern found in artifact {} content",
+						artifact.artifact_id
+					),
+				));
+			}
+		}
+	}
+	collect(violations)
 }
 
 /// Validates one raw-event stream.

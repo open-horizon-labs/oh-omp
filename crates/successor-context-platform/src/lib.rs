@@ -8,6 +8,7 @@
 //! handlers are added by later platform lanes (B2-B6).
 
 pub mod artifacts;
+pub mod assembly;
 pub mod auth;
 pub mod error;
 pub mod http;

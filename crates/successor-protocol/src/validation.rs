@@ -40,6 +40,11 @@
 //! - **Credential leakage.** Raw-event `payload` bodies and inline artifact
 //!   `content` are scanned for credential-shaped keys and high-confidence
 //!   credential value patterns ([`ProtocolViolationCode::CredentialLeakage`]).
+//!   The same scan, plus a defense-in-depth reassertion of every typed ID
+//!   field's prefix (mirroring [`check_raw_event_id_prefixes`]), also covers
+//!   the two `assemble-response-*.json` fixtures' typed [`AssemblyResponseV0`]
+//!   accessors ([`crate::fixtures::assemble_response_pre_tool`],
+//!   [`crate::fixtures::assemble_response_post_read`]).
 //! - **Unsupported-tool lifecycle.** The `raw-events-unsupported-tool.json`
 //!   stream's `provider_tool_call.observed` -> `tool_call.requested` ->
 //!   `tool_call.rejected` -> `error.recorded` chain is checked for exactly-once
@@ -51,10 +56,6 @@
 //!
 //! # Out of scope
 //!
-//! - **The two `assemble-response-*.json` raw fixtures.** These remain pending
-//!   A2 adjudication (see [`crate::fixtures::assemble_response_pre_tool_raw`]
-//!   and [`crate::fixtures::assemble_response_post_read_raw`]) and are
-//!   intentionally not fed into this validator.
 //! - **Unsupported-tool lifecycle *projection* semantics.** Distinct from the
 //!   raw-event chain checked by [`validate_unsupported_tool_lifecycle`]:
 //!   whether the unsupported-tool stream can be projected into a
@@ -73,6 +74,7 @@ use crate::{
 		ArtifactId, AssembleId, ContextItemId, ErrorId, EventId, MessageId, ProviderEventId,
 		RequestId, SessionId, SourceEnvelopeId, ToolCallId, TraceId, TurnId,
 	},
+	platform_api::AssemblyResponseV0,
 	projection::SessionProjectionV0,
 	provider_shape_fixture::ProviderShapeNormalizationFixtureV0,
 	raw_event::{RawEventArtifactRef, RawEventType, RawEventV0},
@@ -950,6 +952,49 @@ fn payload_tool_name(payload: &serde_json::Value) -> Option<&str> {
 	payload.get("details")?.get("tool_name")?.as_str()
 }
 
+/// Reasserts ID prefix validity and scans for credential leakage.
+///
+/// Reasserts ID prefix validity for every typed ID field an
+/// [`AssemblyResponseV0`] carries (mirroring `check_raw_event_id_prefixes`'s
+/// defense-in-depth pattern via [`recheck_id_prefix`]) and scans the fully
+/// serialized response for credential-shaped keys/values via
+/// [`scan_value_for_credentials`]. Covers both canonical
+/// `assemble-response-{pre-tool,post-read}.json` fixtures through their
+/// typed [`crate::fixtures::assemble_response_pre_tool`] /
+/// [`crate::fixtures::assemble_response_post_read`] accessors.
+pub fn validate_assembly_response(response: &AssemblyResponseV0) -> FixtureValidationResult {
+	let mut violations = Vec::new();
+	{
+		let mut push = |result: Result<(), ProtocolViolation>| {
+			if let Err(violation) = result {
+				violations.push(violation);
+			}
+		};
+		push(recheck_id_prefix::<AssembleId>(response.assemble_id.as_str()));
+		push(recheck_id_prefix::<SessionId>(response.session_id.as_str()));
+		push(recheck_id_prefix::<TurnId>(response.turn_id.as_str()));
+		push(recheck_id_prefix::<RequestId>(response.request_id.as_str()));
+		push(recheck_id_prefix::<AssembleId>(response.trace.assemble_id.as_str()));
+		push(recheck_id_prefix::<TraceId>(response.trace.trace_id.as_str()));
+		for item in &response.context_items {
+			push(recheck_id_prefix::<ContextItemId>(item.context_item_id.as_str()));
+			push(recheck_id_prefix::<SourceEnvelopeId>(item.source_envelope_id.as_str()));
+			push(recheck_id_prefix::<ArtifactId>(item.artifact_id.as_str()));
+		}
+	}
+
+	let response_json = serde_json::to_value(response).expect(
+		"AssemblyResponseV0 always serializes: no non-string map keys, no NaN/Infinity floats",
+	);
+	scan_value_for_credentials(
+		&mut violations,
+		&response_json,
+		&format!("assembly_response.{}", response.assemble_id.as_str()),
+	);
+
+	collect(violations)
+}
+
 /// Validates the entire Slice 0 canonical fixture bundle.
 ///
 /// Sourced from [`crate::fixtures`]. Pure and deterministic. Collects every
@@ -980,6 +1025,9 @@ pub fn validate_fixture_bundle() -> FixtureValidationResult {
 
 	extend(&mut violations, validate_tool_catalog(&catalog));
 
+	extend(&mut violations, validate_assembly_response(&fixtures::assemble_response_pre_tool()));
+	extend(&mut violations, validate_assembly_response(&fixtures::assemble_response_post_read()));
+
 	collect(violations)
 }
 
@@ -1006,6 +1054,34 @@ mod tests {
 	#[test]
 	fn canonical_fixture_bundle_validates_clean() {
 		assert_eq!(validate_fixture_bundle(), Ok(()));
+	}
+
+	#[test]
+	fn canonical_assembly_responses_validate_clean() {
+		assert_eq!(validate_assembly_response(&fixtures::assemble_response_pre_tool()), Ok(()));
+		assert_eq!(validate_assembly_response(&fixtures::assemble_response_post_read()), Ok(()));
+	}
+
+	#[test]
+	fn assembly_response_credential_injection_is_rejected() {
+		let mut response = fixtures::assemble_response_post_read();
+		assert!(
+			!response.context_items.is_empty(),
+			"canonical post_read fixture must carry a context item to mutate"
+		);
+		response.context_items[0].rendered_text =
+			"leaked access_token=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY".to_owned();
+
+		let result = validate_assembly_response(&response);
+		assert!(result.is_err(), "a credential-shaped rendered_text must be rejected");
+		assert!(
+			result
+				.unwrap_err()
+				.violations()
+				.iter()
+				.any(|v| v.code == ProtocolViolationCode::CredentialLeakage),
+			"rejection must be attributed to CredentialLeakage"
+		);
 	}
 
 	#[test]

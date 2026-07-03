@@ -71,10 +71,10 @@ Verdict: required-before-execute
 
 If skipped, rationale: not applicable; Wave B runbook requires dissent when touching `/assemble`.
 
-If completed:
-- Dissent concern:
-- Response:
-- Outcome:
+If completed (task 147-B5PreExecutionDissent, verdict PROCEED-WITH-CONDITIONS, checkout-proof `0f8a60517`):
+- Dissent concern: `/assemble` is the single semantic-context path; risks are invented ranking heuristics beyond what fixtures pin, a persisted assembly truth plane, re-walking raw events instead of consuming the B4 substrate, and route pre-ownership of B6.
+- Response: contract §2.1/§2.2 keep RawEvents canonical and projections rebuildable; §2.3 allows deterministic lexical/recency retrieval with explicit degradation, not persisted assembly state. The canonical response fixtures pin: pre-tool → zero context items, stage `retrieve_recent_sources`, degradation `embeddings_unavailable` (warning) + `no_context` (info), policy sources exactly user_turn/assistant_turn/tool_result; post-read → `required_source_envelope_ids` dominate, exactly one included item (score `1.0`, token_estimate `32`, `platform_artifact` recovery), stage `required_sources`, only the `embeddings_unavailable` warning. Dispatch §4.2 defines the internal service seam `AssemblyServiceV0 { assemble(request) -> AssemblyResponseV0; get_trace(assemble_id) -> Option<AssemblyTraceV0> }`.
+- Outcome: PROCEED with orchestrator rulings: (1) `lib.rs` expansion granted for exactly `pub mod assembly;` — any retrieval helper stays B5-internal, never a second public context path; (2) no migration, table, or new dependency; assembly is derived on demand — if durable assembly state ever seems needed, STOP and route; (3) deterministic fixture-derived selection only: required readable artifacts first, honor excludes, obey max_items/max_context_tokens deterministically, explicit degradation for missing embedding capability; any behavior beyond fixture-pinned rules must be visible in trace/policy/degradation and tested, never an unstated heuristic; (4) consume the B4 replay/projection/trace substrate rather than independently re-walking raw events; expose the dispatch-map `AssemblyServiceV0` service seam; routes belong to B6; (5) the A5 residual is executed by B5 as an authorized narrow A5 reopen: wire typed `assemble_response_pre_tool()`/`assemble_response_post_read()` into `validate_fixture_bundle` with typed-parse and credential-scan coverage; no alternate DTOs, no fixture edits, no weakened validation.
 
 ## Execute
 

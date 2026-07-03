@@ -69,10 +69,10 @@ Verdict: required-before-execute
 
 If skipped, rationale: not applicable; Wave B runbook requires dissent when touching auth.
 
-If completed:
-- Dissent concern:
-- Response:
-- Outcome:
+If completed (task 125-B1PreExecutionDissent, verdict PROCEED-WITH-CONDITIONS, checkout-proof at `bf5f7db0e`):
+- Dissent concern: B1 touches the auth plane before real route/storage internals exist; risks durable accidental decisions — framework/runtime commitment, route semantics pre-owned ahead of B6, overly broad provider-key inspection, raw auth leakage through errors/logs, unauthorized `MEMEX_LICENCE` alias support.
+- Response: contract §2.4 separates `MEMEX_LICENSE` platform entitlement from provider auth; §6 requires `Authorization: Bearer <MEMEX_LICENSE>` on all Context Platform API requests; dispatch §4.2 requires 401 `ErrorEnvelopeV0` for missing/invalid auth and rejection of provider-key-shaped credentials. The implementation stack names tokio/axum/reqwest as recommended substrate, not contract; error envelope/status mapping IS contract.
+- Outcome: PROCEED with binding conditions: (1) framework/runtime choice is executor discretion disclosed as a bootstrap decision; (2) bearer inspection is in-memory-only, syntactic, redacted 401/403 `ErrorEnvelopeV0`, raw value discarded, never echoed into errors/logs/traces; no broad false positives (the word `token` alone is insufficient); (3) route surface is a single authenticated `/v0` router/fallback or minimal auth-only placeholders — no per-endpoint business handlers, no B2–B6 behavior stubs; (4) `MEMEX_LICENCE` alias neither implemented nor tested; (5) no broad public platform helper API beyond what B6 needs for auth/error reuse.
 
 ## Execute
 

@@ -28,11 +28,11 @@ jobs:
         with:
           version: 0.15.2
       - name: Check formatting
-        run: cargo fmt --all -- --check
+        run: make fmt-rs-check
       - name: Clippy
-        run: cargo clippy --workspace -- -D warnings
+        run: make lint-rs
       - name: Check
-        run: cargo check --workspace
+        run: make cargo-check-rs
 
   # ── Native addon build matrix ────────────────────────────────────────
   # Owns: compiling Rust → .node for each platform/arch/variant.
@@ -79,9 +79,7 @@ jobs:
           sudo apt-get install -y gcc-aarch64-linux-gnu
       - name: Rust checks
         if: matrix.rust_checks
-        run: |
-          cargo fmt --all -- --check
-          cargo clippy --workspace -- -D warnings
+        run: make check-rs
       - name: Build native addon(s)
         env:
           TARGET_PLATFORM: ${{ matrix.platform }}

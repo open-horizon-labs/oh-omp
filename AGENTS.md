@@ -504,16 +504,16 @@ For the bash tool specifically:
 | -------------- | -------------------------------- |
 | `bun check`    | Check all (TypeScript + Rust)    |
 | `bun check:ts` | Biome check + tsgo type checking |
-| `bun check:rs` | Cargo fmt --check + clippy       |
+| `bun check:rs` | Delegates to `make check-rs` (fmt --check + clippy -D warnings + cargo check) |
 | `bun lint`     | Lint all                         |
 | `bun lint:ts`  | Biome lint                       |
-| `bun lint:rs`  | Cargo clippy                     |
+| `bun lint:rs`  | Delegates to `make lint-rs` (cargo clippy -D warnings) |
 | `bun fmt`      | Format all                       |
 | `bun fmt:ts`   | Biome format                     |
-| `bun fmt:rs`   | Cargo fmt                        |
+| `bun fmt:rs`   | Delegates to `make fmt-rs` (cargo fmt) |
 | `bun fix`      | Fix all (unsafe fixes + format)  |
 | `bun fix:ts`   | Biome --unsafe + format-prompts  |
-| `bun fix:rs`   | Clippy --fix + cargo fmt         |
+| `bun fix:rs`   | Delegates to `make fix-rs` (clippy --fix + cargo fmt) |
 
 - NEVER run: `bun run dev`, `bun test` unless user instructs
 - Only run specific tests if user instructs: `bun test test/specific.test.ts`

@@ -67,10 +67,10 @@ Verdict: required-before-execute
 
 If skipped, rationale: not applicable if route wiring touches auth, storage/sequence, `/assemble`, artifact retention, or replay/snapshot behavior through endpoint semantics. If B6 is purely thin wiring after accepted B1–B5 APIs, executor may record a narrowly scoped dissent-skipped rationale, but orchestrator should prefer dissent because the lane integrates multiple Wave B authority boundaries.
 
-If completed:
-- Dissent concern:
-- Response:
-- Outcome:
+If completed (task 153-B6PreExecutionDissent, verdict PROCEED-WITH-CONDITIONS, checkout-proof `2753b953f`):
+- Dissent concern: B6 integrates every Wave B authority boundary; risks are ungoverned edits to B1-owned router files, split live SQLite state across independent pools, route-local JSON shapes papering over protocol DTO gaps, and missing unknown-field rejection at route boundaries.
+- Response: contract §6 defines the exact Slice 0 endpoint set (all `Authorization: Bearer <MEMEX_LICENSE>`): `POST /v0/sessions`, `POST /v0/events`, `GET /v0/sessions/{session_id}/events?after_seq&limit`, `GET /v0/events/{event_id}`, `GET /v0/artifacts/{artifact_id}`, `GET /v0/sessions/{session_id}/snapshot`, `POST /v0/assemble`, `GET /v0/traces/{assemble_id}`; protocol DTOs cover every advertised body (CreateSession/Append/EventPage/RawEvent/Artifact/Snapshot/Assemble/Trace/ErrorEnvelope); B1 deliberately left an auth-gated shell with `no_route_implemented` fallback; B3's store construction opens its own pool; `AssemblyServiceV0::new` consumes its stores.
+- Outcome: PROCEED with orchestrator rulings: (1) narrow B1 reopen granted — B6 may add exactly `pub mod routes;` to `lib.rs` and mount the routes router in `http.rs` replacing the fallback wiring; no auth/error internal edits — consume accepted public helpers only; (2) full contract §6 endpoint set, none deferred; sharing/inspection, provider APIs, SSE, and tool execution stay out; (3) one database identity — all stores/services built from the same SQLite URL/path; separate `:memory:` pools prohibited; a route test must prove append → artifact → snapshot/replay → assemble observe the same data; if accepted service APIs cannot share stores without consuming them, route a narrow B2/B3/B5 DI reopen (additive constructors), never duplicate store logic or add route-local caches; (4) request/response bodies are protocol DTOs only with contract §4.2 status mapping; the observed missing top-level `deny_unknown_fields` on `CreateSessionRequestV0`/`AssembleRequestV0` is closed via an authorized narrow A2 reopen with rejection tests — never via route-local clone DTOs; (5) route tests use the existing tower `ServiceExt`/`http-body-util` dev-deps; no `axum-test` dependency.
 
 ## Execute
 

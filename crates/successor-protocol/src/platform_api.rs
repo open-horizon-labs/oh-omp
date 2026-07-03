@@ -41,6 +41,7 @@ pub struct CreatedByV0 {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct CreateSessionRequestV0 {
 	pub workspace:  WorkspaceV0,
 	pub title:      String,
@@ -326,6 +327,7 @@ pub struct AssemblyBudgetV0 {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct AssembleRequestV0 {
 	pub schema_version: String,
 	pub session_id: SessionId,
@@ -438,5 +440,63 @@ impl AssemblyResponseV0 {
 			degradation: Vec::new(),
 			policy,
 		}
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	fn create_session_request_value() -> serde_json::Value {
+		serde_json::to_value(CreateSessionRequestV0 {
+			workspace:  WorkspaceV0 {
+				id:        "ws_test".to_owned(),
+				label:     "test workspace".to_owned(),
+				root_hint: "/tmp/ws".to_owned(),
+			},
+			title:      "Test session".to_owned(),
+			created_by: CreatedByV0 {
+				client_kind: "cli".to_owned(),
+				client_id:   "test-client".to_owned(),
+			},
+		})
+		.expect("CreateSessionRequestV0 serializes")
+	}
+
+	#[test]
+	fn create_session_request_rejects_unknown_top_level_field() {
+		let mut value = create_session_request_value();
+		value
+			.as_object_mut()
+			.expect("object")
+			.insert("unexpected_field".to_owned(), serde_json::json!(true));
+		serde_json::from_value::<CreateSessionRequestV0>(value)
+			.expect_err("unknown top-level field must be rejected");
+	}
+
+	#[test]
+	fn create_session_request_still_round_trips_known_fields() {
+		let value = create_session_request_value();
+		serde_json::from_value::<CreateSessionRequestV0>(value)
+			.expect("known fields still deserialize");
+	}
+
+	#[test]
+	fn assemble_request_rejects_unknown_top_level_field() {
+		let mut value = serde_json::to_value(crate::fixtures::assemble_request_pre_tool())
+			.expect("AssembleRequestV0 serializes");
+		value
+			.as_object_mut()
+			.expect("object")
+			.insert("unexpected_field".to_owned(), serde_json::json!(true));
+		serde_json::from_value::<AssembleRequestV0>(value)
+			.expect_err("unknown top-level field must be rejected");
+	}
+
+	#[test]
+	fn assemble_request_still_round_trips_known_fields() {
+		let value = serde_json::to_value(crate::fixtures::assemble_request_pre_tool())
+			.expect("AssembleRequestV0 serializes");
+		serde_json::from_value::<AssembleRequestV0>(value).expect("known fields still deserialize");
 	}
 }

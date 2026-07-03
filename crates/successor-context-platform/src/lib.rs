@@ -15,6 +15,7 @@ pub mod http;
 pub mod idempotency;
 pub mod projection;
 pub mod replay;
+pub mod routes;
 pub mod session;
 pub mod source_index;
 pub mod sqlite;

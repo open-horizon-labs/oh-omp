@@ -7,10 +7,12 @@
 //! Storage, artifacts, projection/replay, assembly, and the real route
 //! handlers are added by later platform lanes (B2-B6).
 
+pub mod artifacts;
 pub mod auth;
 pub mod error;
 pub mod http;
 pub mod idempotency;
 pub mod session;
+pub mod source_index;
 pub mod sqlite;
 pub mod store;

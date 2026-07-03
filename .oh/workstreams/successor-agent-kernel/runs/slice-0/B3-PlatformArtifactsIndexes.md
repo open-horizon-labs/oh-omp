@@ -69,9 +69,9 @@ Verdict: required-before-execute
 If skipped, rationale: not applicable; Wave B runbook requires dissent when touching artifact retention.
 
 If completed:
-- Dissent concern:
-- Response:
-- Outcome:
+- Dissent concern (task 135-B3PreExecutionDissent, PROCEED-WITH-CONDITIONS, checkout-proof `5daa6f802`): no B3 modules declared in `lib.rs`; `0001_slice0.sql` is B2-owned; durable artifact persistence is not implementable from B3's listed files alone; sha256-dedup storage is a dangerous one-way door not demanded by fixtures.
+- Response: contract/fixtures require exact inline artifact bytes returned with matching `sha256:<64 hex>`/`byte_length`; accepted protocol already provides `ArtifactV0`/`ArtifactHash`/`validate_artifact_content`; B2's `RawEventAppendStore` owns raw-event truth and read/page.
+- Outcome: PROCEED with orchestrator rulings: (1) `lib.rs` expansion granted for exactly `pub mod artifacts;` and `pub mod source_index;`; (2) new B3-owned migration `migrations/0002_slice0_artifacts.sql` granted; `0001` untouchable; (3) B3 may define its own artifact store trait/impl over the existing SQLite pool type consumed via B2's exported constructors — no B2 file edits; raw-event truth stays behind `RawEventAppendStore`; source indexes are projections derived from `read_session_events`/`read_event`; (4) storage model is artifact-ID/provenance-first with exact inline bytes; sha256-dedup prohibited as canonical identity; hash/length verified via accepted `validate_artifact_content` on write and readback; (5) no new Cargo dependency.
 
 ## Execute
 

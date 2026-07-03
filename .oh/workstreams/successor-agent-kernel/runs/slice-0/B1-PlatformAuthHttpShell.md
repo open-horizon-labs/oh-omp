@@ -77,58 +77,68 @@ If completed (task 125-B1PreExecutionDissent, verdict PROCEED-WITH-CONDITIONS, c
 ## Execute
 
 Checklist:
-- [ ] owned files only
-- [ ] shared interfaces imported from `successor-protocol`; no local duplicate protocol DTOs
-- [ ] no forbidden shortcuts
-- [ ] tests/checks added inside owned scope or explicitly routed to B6 if route-contract-level
-- [ ] targeted validation passed (`cargo test -p successor-context-platform` or narrower package-local command chosen by executor)
-- [ ] orchestrator-owned `make check-rs` gate run after executor returns, before review dispatch
-- [ ] named risks retired or routed
-- [ ] model binding verified for execution agent (`slice0-executor`, `anthropic/claude-sonnet-5`, `thinking-level=high`; canary `agent://112-ExecutorRebindCanary`)
-- [ ] fixture sovereignty preserved; canonical fixtures not edited or weakened
-- [ ] no accepted-module edits without Interface Change Request/reopen protocol
-- [ ] all new JSON-boundary DTOs use `#[serde(deny_unknown_fields)]` unless an explicit contract extension map exists
-- [ ] workspace lint expectations preserved: `make check-rs` is the orchestrator gate and must be green before review
-- [ ] no dispatch over-constraint: implement B1-owned contract semantics directly; do not refuse assigned scope merely because a helper API is not pre-existing
+- [x] owned files only (plus disclosed bootstrap artifacts)
+- [x] shared interfaces imported from `successor-protocol`; no local duplicate protocol DTOs
+- [x] no forbidden shortcuts
+- [x] tests/checks added inside owned scope (22 platform tests; route-contract-level checks routed to B6)
+- [x] targeted validation passed (`cargo test -p successor-context-platform` 22/22)
+- [x] orchestrator-owned `make check-rs` gate run after executor returned and again after review fixes; exit 0 both times
+- [x] named risks retired or routed (auth-plane separation upheld; MEMEX_LICENCE alias kept out of scope)
+- [x] model binding verified (`slice0-executor`, `anthropic/claude-sonnet-5:high`; task 126)
+- [x] fixture sovereignty preserved; no fixture edits
+- [x] no accepted-module edits
+- [x] no new JSON-boundary DTOs introduced (protocol `ErrorEnvelopeV0` reused)
+- [x] workspace lint gate green before review dispatch
+- [x] no dispatch over-constraint; B1-owned semantics implemented directly
 
 Changed files:
+- `crates/successor-context-platform/src/{lib.rs, main.rs, http.rs, auth.rs, error.rs}`
+- Bootstrap artifacts (disclosed): `crates/successor-context-platform/Cargo.toml` (axum 0.8, tokio 1, sha2 0.10, `[[bin]]`, workspace lints), `Cargo.lock` (transitive additions only)
 
 Validation evidence:
+- `cargo test -p successor-context-platform`: 22/22 green (auth guard, provider-shape rejection, redaction, error mapping, router fallback)
+- `make check-rs` exit 0 at implementation (`d35cf362c`) and after review fixes (`096e0c986`)
+- Protocol crate untouched; its suites unaffected
 
 ## Code Review
 
-Reviewer:
-Reviewer model:
-Verdict: [PASS / REVISE / BLOCK]
+Reviewer: `slice0-reviewer` (task 127-B1CodeReview, checkout-proof at `d35cf362c`)
+Reviewer model: `openai-codex/gpt-5.5:high`
+Verdict: REVISE (two P2 findings)
 
 Findings:
-- ...
+- P2: license compare early-returned on length mismatch — entitlement length observable via timing.
+- P2: generic JWT three-segment syntax treated as provider credential — a JWT-shaped valid `MEMEX_LICENSE` could never authenticate.
 
-Fixes applied:
-- ...
+Fixes applied (commit `096e0c986`):
+- `PlatformLicense::matches` now compares fixed-size SHA-256 digests (sha2 disclosed as bootstrap artifact); no secret-length-dependent branching.
+- JWT-shape rule removed; only high-confidence provider key prefixes rejected; test flipped to prove a JWT-shaped license authenticates.
 
 ## Drift Review
 
-Original aim:
-Current work:
-Gap:
-Verdict: [aligned / minor drift / significant drift / lost]
-Authority boundary: [clear / ambiguous / crossed]
+Original aim: platform crate shell + entitlement auth + protocol error mapping, no later-lane pre-ownership.
+Current work: task 126 implementation as committed at `d35cf362c`.
+Gap: none material (task 129-B1DriftReview).
+Verdict: aligned
+Authority boundary: clear
 
 ## Superego Review
 
-Reviewer:
-Reviewer model:
-Verdict: [ALLOW / REVISE / BLOCK]
+Reviewer: `slice0-superego-reviewer` (task 128-B1SuperegoReview, checkout-proof at `d35cf362c`)
+Reviewer model: `openai-codex/gpt-5.5:high`
+Verdict: REVISE (governance evidence hygiene only; no code changes required)
 
 Frame risks:
-- ...
+- Auth-plane separation preserved; dissent conditions honored substantively; disclosed framework choice is the only durable decision.
 
 Required corrections:
-- ...
+- Fill this packet's Execute/Changed files/Validation evidence/Delivery sections — applied in this update.
 
 ## Delivery
 
-Status: [accepted / needs revision / blocked]
+Status: accepted
 Residual risks:
+- The two P2 closures are reviewer-prescribed mechanical fixes verified by gates and tests but not separately re-reviewed.
+- Server entrypoint is exercised by tests via router construction, not a live bind; a live smoke lands with B6 route-contract checks.
 Human verification needed:
+- None outstanding.

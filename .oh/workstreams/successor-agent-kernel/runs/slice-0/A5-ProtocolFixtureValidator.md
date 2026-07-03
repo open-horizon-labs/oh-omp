@@ -103,16 +103,19 @@ Adjudication required before or during A5: `assemble-response-pre-tool.json` and
 
 ## Delivery
 
-Status: **implemented and verified; pending focused re-review of the final future-reference fix**
+Status: **implemented, verified, re-reviewed; all named findings closed**
 
-Evidence trail: fixture slice `agent://111` (experiment gate 3); validator `agent://113`; review gates `agent://114` (drift: minor, boundary clear), `agent://115` (code: incorrect, two P1s), `agent://116` (superego: REVISE); revision `agent://117`; re-review found the future-reference validator circular (P1) and the lifecycle order test mislabeled (P2). Orchestrator closed both: producer-filtered introduction maps with fixture-derived producer semantics (turn/tool-result/provider-response events introduce source envelopes; inline-artifact events introduce artifacts; `assembly.requested` introduces assemble IDs and traces; `assembly.completed` introduces context items; provider events introduce traces), renamed the wrong-type test, added a true order-swap test and a forward-artifact-reference test proving `FutureReference` fires.
+Evidence trail: fixture slice `agent://111` (experiment gate 3); validator `agent://113`; review gates `agent://114` (drift: minor, boundary clear), `agent://115` (code: incorrect, two P1s), `agent://116` (superego: REVISE); revision `agent://117`; revision re-review `agent://118` (future-reference validator circular, order test mislabeled) closed by orchestrator with producer-filtered introduction maps derived from canonical fixture flows plus order-swap and forward-reference tests; combined focused re-review `agent://120` (checkout-proof verified at `dbc6eff42`) accepted the future-reference fix and found one P1 on the A2 reopen — assemble-response DTOs deserialized without `deny_unknown_fields` — closed by adding the attribute to `AssemblyResponseV0`/`ContextItemV0`/`DegradationV0`/`ContextItemRecoveryV0` plus three input-rejection tests (stale `reason`, stale `kind`, credential-like root key).
 
-Verified after all fixes: `cargo test -p successor-protocol` — 74 unit + 19 A2 + 33 A3 + 8 A4 + 30 fixture-contract, all green; `make check-rs` exit 0.
+A2 adjudication: resolved by user decision (fixtures sovereign); reopen executed as `agent://119`, DTOs aligned to both canonical assemble-response fixtures, raw accessors fully cut over to typed.
+
+Commits on `successor-main`: `b1f037dbc` (A0–A5 + Makefile-owned Rust verification + workstream machinery), `dbc6eff42` (A2 reopen), `25f1306fc` (deny-unknown-fields P1 fix).
+
+Verified at final state: `cargo test -p successor-protocol` — six suites, all green (unit incl. validation, A2, A3, A4, fixture-contract incl. adversarial mutations and unknown-field rejection, doc-tests); `make check-rs` exit 0.
 
 Residual risks:
-- The producer semantics in `check_causation_and_future_references` are derived from canonical fixture flows, not from an explicit contract producer table; the pending focused re-review must confirm or correct them.
-- Two assemble-response fixtures remain raw-only pending A2 adjudication (extend `AssemblyResponseV0` per fixture sovereignty, or correct the fixtures; no wrappers).
+- The deny-unknown-fields closure is a mechanical application of the reviewer's named finding with rejection-test evidence; it was not separately re-reviewed.
+- The typed assemble-response accessors are not yet wired into `validate_fixture_bundle()`; reviewer judged this acceptable as a recorded follow-up for A5 closure or Wave B.
 
 Human verification needed:
-- A2 adjudication decision on the assemble-response fixture mismatch.
-- Acceptance of the orchestrator-applied future-reference fix after its focused re-review.
+- None outstanding; both prior items (A2 adjudication, future-reference fix acceptance) resolved this session.

@@ -1,0 +1,116 @@
+# Lane B6 — PlatformRoutesContract
+
+## Model Binding
+
+- Intended execution agent: `slice0-executor` (amended 2026-07-02; active Wave B execution label)
+- Intended execution model: `anthropic/claude-sonnet-5`, `thinking-level=high` (user-accepted 2026-07-02 roster amendment; runbook §2.5)
+- Coder roster note: `slice0-coder` remains `anthropic/claude-sonnet-4-6`, `thinking-level=high`; do not use it as evidence for the active execution lane unless explicitly dispatched as coder support.
+- Resolved execution model evidence: Sonnet 5 three-gate experiment and promotion recorded in `SLICE-0-MODEL-CANARY.md` §14; durable rebind canary `agent://112-ExecutorRebindCanary` passed with exact `anthropic-claude-sonnet-5-high` echo; pre-lane fixture slice evidence `agent://111-Sonnet5Gate3FixtureBundle`.
+- Reviewer model: `slice0-reviewer` / `openai-codex/gpt-5.5`, `thinking-level=high`; canary passed (`agent://15-PermanentReviewerCanary`).
+- Drift reviewer model: `slice0-drift-reviewer` / `openai-codex/gpt-5.5`, `thinking-level=high`; canary passed (`agent://18-PermanentDriftReviewerCanary`).
+- Superego model: `slice0-superego-reviewer` / `openai-codex/gpt-5.5`, `thinking-level=high`; canary passed (`agent://16-PermanentSuperegoReviewerCanary`).
+- Binding verdict: verified.
+
+## Aim
+
+- Outcome: wire the context-platform HTTP routes to B1–B5 services and prove every endpoint returns accepted protocol DTOs or `ErrorEnvelopeV0` while hiding SQLite/internal implementation details.
+- Contract clause(s) served: contract §6 Context Platform API v0 endpoints (`POST /sessions`, `POST /events`, event reads, artifact reads, session snapshot, `/assemble`, trace reads); §2.4 auth-plane separation; §13 platform acceptance criteria; dispatch map §4.2 endpoint catalog and B6 gate.
+- Fixture(s) served: full canonical Slice 0 fixture bundle through route-level contract tests, especially raw-event successful/unsupported flows, artifact reads, session snapshot, assemble pre-tool/post-read, and error/credential-leak adversarial cases.
+- Files owned:
+  - `crates/successor-context-platform/src/routes.rs`
+  - `crates/successor-context-platform/tests/slice0_platform_contract.rs`
+- Explicit non-goals: implementing B1 auth internals, B2 storage/idempotency internals, B3 artifact/index internals, B4 projection/replay internals, B5 assembly/retrieval internals, kernel/CLI code, protocol/fixture/contract edits, and model-binding changes.
+
+## Problem Space
+
+- Current state: A0–A5 are accepted/closed on branch `successor-main` (`b1f037dbc`, `dbc6eff42`, `25f1306fc`); `cargo test -p successor-protocol` is green and `make check-rs` exits 0. Dispatch graph places `ContextPlatformHttpApi` after platform foundation lanes, so B6 should execute after B1–B5 service contracts are available.
+- Constraints: all routes require bearer `MEMEX_LICENSE`; provider-looking credentials are not platform auth; endpoints must use protocol DTOs and `ErrorEnvelopeV0`; route layer must not expose SQLite row structs/table names; platform assigns sequence; `/assemble` returns context items/traces/degradation only; no platform record/trace/artifact/error leaks provider credentials or raw entitlement tokens.
+- Named risks: route layer reimplements service logic and crosses ownership; missing auth on one endpoint; route-specific DTO copies drift from `successor-protocol`; SQLite/internal errors leak; `/assemble` route returns provider-shaped data; tests pass happy path but miss adversarial auth/error/unknown-field cases.
+- Edge cases: all endpoints with missing/invalid auth; provider-key-shaped bearer; malformed JSON; unknown fields at request boundary; not found event/artifact/trace; duplicate idempotency response; append semantic rejection; snapshot with empty projection store; assemble degradation; stable status mapping 400/401/403/404/409/422/500/503.
+- Interface dependencies: consume B1 auth/error/http shell, B2 raw-event/session/idempotency store, B3 artifact/source index, B4 projection/replay/trace index, and B5 assembly service once accepted; import all public request/response/error DTOs from accepted `successor-protocol`.
+- Authority boundaries: B6 owns route wiring and route-level contract tests only. It may not implement service internals inline, duplicate DTOs, modify accepted A-lane protocol modules, alter canonical fixtures, or weaken route tests to hide upstream gaps.
+- Ambiguities to record, not resolve: the dispatch map's dependency graph only explicitly shows `ContextPlatformAssembly -> ContextPlatformHttpApi`; it does not spell out whether B6 waits for every B1–B5 lane. Conservative orchestration should run B6 after B1–B5 because its route tests exercise all platform services.
+
+## Solution Space
+
+| Option | Pros | Cons | Rejected because |
+|---|---|---|---|
+| Thin route layer over B1–B5 services with contract tests | Preserves ownership and catches integration drift | Requires B1–B5 readiness | selected |
+| Implement missing service logic in routes | Unblocks tests locally | Creates duplicate semantics and hidden coupling | violates authority boundaries |
+| Test only status codes | Lightweight | Misses DTO/error/body contract drift | insufficient for B6 gate |
+
+Selected approach: wire protocol DTO endpoints to accepted platform services, centralize auth/error mapping from B1, and write route-level tests that verify response DTO shape, error envelopes, auth rejection, and absence of SQLite/internal/credential leakage.
+
+Invalidated if: B1–B5 service interfaces cannot satisfy the endpoint contract without route-layer duplicate DTOs or service logic, or accepted protocol DTOs cannot represent required route request/response bodies.
+
+Stop/pivot if: implementation needs to edit accepted protocol/fixture/contract files, B1–B5 service internals outside their accepted APIs, kernel/CLI code, or model roster/materialization.
+
+## Dissent
+
+Verdict: required-before-execute
+
+If skipped, rationale: not applicable if route wiring touches auth, storage/sequence, `/assemble`, artifact retention, or replay/snapshot behavior through endpoint semantics. If B6 is purely thin wiring after accepted B1–B5 APIs, executor may record a narrowly scoped dissent-skipped rationale, but orchestrator should prefer dissent because the lane integrates multiple Wave B authority boundaries.
+
+If completed:
+- Dissent concern:
+- Response:
+- Outcome:
+
+## Execute
+
+Checklist:
+- [ ] owned files only
+- [ ] shared interfaces imported from `successor-protocol`; no local duplicate protocol DTOs
+- [ ] no forbidden shortcuts
+- [ ] tests/checks added inside owned scope
+- [ ] targeted validation passed (`cargo test -p successor-context-platform --test slice0_platform_contract` or narrower package-local command chosen by executor)
+- [ ] orchestrator-owned `make check-rs` gate run after executor returns, before review dispatch
+- [ ] named risks retired or routed
+- [ ] model binding verified for execution agent (`slice0-executor`, `anthropic/claude-sonnet-5`, `thinking-level=high`; canary `agent://112-ExecutorRebindCanary`)
+- [ ] fixture sovereignty preserved; canonical fixtures not edited or weakened
+- [ ] no accepted-module edits without Interface Change Request/reopen protocol
+- [ ] all new JSON-boundary DTOs use `#[serde(deny_unknown_fields)]` unless an explicit contract extension map exists
+- [ ] workspace lint expectations preserved: `make check-rs` is the orchestrator gate and must be green before review
+- [ ] no dispatch over-constraint: implement B6-owned route contract semantics directly; do not refuse assigned scope merely because a helper API is not pre-existing
+
+Changed files:
+
+Validation evidence:
+
+## Code Review
+
+Reviewer:
+Reviewer model:
+Verdict: [PASS / REVISE / BLOCK]
+
+Findings:
+- ...
+
+Fixes applied:
+- ...
+
+## Drift Review
+
+Original aim:
+Current work:
+Gap:
+Verdict: [aligned / minor drift / significant drift / lost]
+Authority boundary: [clear / ambiguous / crossed]
+
+## Superego Review
+
+Reviewer:
+Reviewer model:
+Verdict: [ALLOW / REVISE / BLOCK]
+
+Frame risks:
+- ...
+
+Required corrections:
+- ...
+
+## Delivery
+
+Status: [accepted / needs revision / blocked]
+Residual risks:
+Human verification needed:

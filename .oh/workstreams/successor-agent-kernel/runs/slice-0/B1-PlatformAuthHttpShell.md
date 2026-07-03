@@ -1,0 +1,119 @@
+# Lane B1 — PlatformAuthHttpShell
+
+## Model Binding
+
+- Intended execution agent: `slice0-executor` (amended 2026-07-02; active Wave B execution label)
+- Intended execution model: `anthropic/claude-sonnet-5`, `thinking-level=high` (user-accepted 2026-07-02 roster amendment; runbook §2.5)
+- Coder roster note: `slice0-coder` remains `anthropic/claude-sonnet-4-6`, `thinking-level=high`; do not use it as evidence for the active execution lane unless explicitly dispatched as coder support.
+- Resolved execution model evidence: Sonnet 5 three-gate experiment and promotion recorded in `SLICE-0-MODEL-CANARY.md` §14; durable rebind canary `agent://112-ExecutorRebindCanary` passed with exact `anthropic-claude-sonnet-5-high` echo; pre-lane fixture slice evidence `agent://111-Sonnet5Gate3FixtureBundle`.
+- Reviewer model: `slice0-reviewer` / `openai-codex/gpt-5.5`, `thinking-level=high`; canary passed (`agent://15-PermanentReviewerCanary`).
+- Drift reviewer model: `slice0-drift-reviewer` / `openai-codex/gpt-5.5`, `thinking-level=high`; canary passed (`agent://18-PermanentDriftReviewerCanary`).
+- Superego model: `slice0-superego-reviewer` / `openai-codex/gpt-5.5`, `thinking-level=high`; canary passed (`agent://16-PermanentSuperegoReviewerCanary`).
+- Binding verdict: verified.
+
+## Aim
+
+- Outcome: establish the context-platform crate shell, HTTP surface skeleton, platform entitlement authentication, and platform error mapping without implementing storage, artifact, replay, assembly, or route contract internals.
+- Contract clause(s) served: contract §2.4 auth-plane separation; §6 Context Platform API bearer `MEMEX_LICENSE` requirement; dispatch map §4.2 platform validation gates for missing/invalid auth and provider-key-shaped credential rejection; Wave B gate 3 auth prerequisites.
+- Fixture(s) served: canonical fixture set indirectly through future platform route tests; credential-leak/adversarial auth cases derived from fixture validator rules. No B1-owned canonical fixture file exists in the dispatch map.
+- Files owned:
+  - `crates/successor-context-platform/src/lib.rs`
+  - `crates/successor-context-platform/src/main.rs`
+  - `crates/successor-context-platform/src/http.rs`
+  - `crates/successor-context-platform/src/auth.rs`
+  - `crates/successor-context-platform/src/error.rs`
+- Explicit non-goals: raw-event storage, SQLite schema/migrations, idempotency, artifact persistence, source indexes, projection/replay, `/assemble` retrieval semantics, route contract tests, provider auth, kernel/CLI code, protocol/fixture/contract edits, and model-binding changes.
+
+## Problem Space
+
+- Current state: A0–A5 are accepted/closed on branch `successor-main` (`b1f037dbc`, `dbc6eff42`, `25f1306fc`); `cargo test -p successor-protocol` is green and `make check-rs` exits 0. Wave B platform crates are still stubs, so B1 must consume accepted protocol APIs without reopening them.
+- Constraints: platform auth is `MEMEX_LICENSE`-shaped entitlement auth only; provider API keys/OAuth/subscription credentials must not authorize platform APIs and must never enter platform records/traces/errors; HTTP errors must surface protocol `ErrorEnvelopeV0`; all new JSON-boundary DTOs must use `#[serde(deny_unknown_fields)]` unless an explicit contract extension map exists.
+- Named risks: collapsing provider auth and platform auth; accepting provider-looking tokens as platform entitlement; leaking raw `MEMEX_LICENSE` or provider-looking secrets in errors/logs; making HTTP shell decisions that force route/storage implementations outside their lanes; adding a second context path or local semantic assembler.
+- Edge cases: missing bearer header, malformed bearer header, empty token, `MEMEX_LICENCE` alias ambiguity if considered, provider-key-shaped token strings, auth failures on every route before route-specific work, debug/log/error redaction of auth material.
+- Interface dependencies: import accepted A1/A2 protocol IDs, `ErrorEnvelopeV0`, platform DTOs, and tool catalog types from `successor-protocol`; B1 may expose platform-local auth/error helpers for B6 routes but must not redefine protocol DTOs.
+- Authority boundaries: B1 owns platform crate shell/auth/error/http bootstrap only. Any need to change `successor-protocol`, canonical fixtures, `SLICE-0-CONTRACT.md`, or accepted A-lane modules requires the Interface Change Request/reopen protocol.
+- Ambiguities to record, not resolve: the contract says `MEMEX_LICENCE` alias may be accepted only if ever introduced; dispatch map only names `MEMEX_LICENSE`. Treat alias support as out of scope unless orchestrator explicitly authorizes it.
+
+## Solution Space
+
+| Option | Pros | Cons | Rejected because |
+|---|---|---|---|
+| Minimal auth-first HTTP shell using protocol error envelopes | Retires auth-plane risk early; lets B6 wire routes later | Requires careful stubbing so shell does not over-own routes | selected |
+| Implement full platform routes in B1 | Fast visible HTTP progress | Crosses B2–B6 ownership boundaries | violates dispatch ownership |
+| Reuse provider/local auth machinery | Less code | Collapses auth planes and risks secret leakage | violates contract §2.4 |
+
+Selected approach: implement a platform-local auth extractor/guard and error mapping in the platform shell, with route placeholders only as needed to enforce auth rejection consistently; keep storage/artifact/projection/assembly implementations behind later lane modules.
+
+Invalidated if: rejecting provider-looking tokens cannot be done without inspecting or storing provider credential material, or accepted protocol error/platform DTOs cannot express the required 401/403/validation failures.
+
+Stop/pivot if: the lane needs to edit accepted A-lane protocol modules, canonical fixtures, contract text, model roster/materialization, or non-owned B2–B6 files to pass.
+
+## Dissent
+
+Verdict: required-before-execute
+
+If skipped, rationale: not applicable; Wave B runbook requires dissent when touching auth.
+
+If completed:
+- Dissent concern:
+- Response:
+- Outcome:
+
+## Execute
+
+Checklist:
+- [ ] owned files only
+- [ ] shared interfaces imported from `successor-protocol`; no local duplicate protocol DTOs
+- [ ] no forbidden shortcuts
+- [ ] tests/checks added inside owned scope or explicitly routed to B6 if route-contract-level
+- [ ] targeted validation passed (`cargo test -p successor-context-platform` or narrower package-local command chosen by executor)
+- [ ] orchestrator-owned `make check-rs` gate run after executor returns, before review dispatch
+- [ ] named risks retired or routed
+- [ ] model binding verified for execution agent (`slice0-executor`, `anthropic/claude-sonnet-5`, `thinking-level=high`; canary `agent://112-ExecutorRebindCanary`)
+- [ ] fixture sovereignty preserved; canonical fixtures not edited or weakened
+- [ ] no accepted-module edits without Interface Change Request/reopen protocol
+- [ ] all new JSON-boundary DTOs use `#[serde(deny_unknown_fields)]` unless an explicit contract extension map exists
+- [ ] workspace lint expectations preserved: `make check-rs` is the orchestrator gate and must be green before review
+- [ ] no dispatch over-constraint: implement B1-owned contract semantics directly; do not refuse assigned scope merely because a helper API is not pre-existing
+
+Changed files:
+
+Validation evidence:
+
+## Code Review
+
+Reviewer:
+Reviewer model:
+Verdict: [PASS / REVISE / BLOCK]
+
+Findings:
+- ...
+
+Fixes applied:
+- ...
+
+## Drift Review
+
+Original aim:
+Current work:
+Gap:
+Verdict: [aligned / minor drift / significant drift / lost]
+Authority boundary: [clear / ambiguous / crossed]
+
+## Superego Review
+
+Reviewer:
+Reviewer model:
+Verdict: [ALLOW / REVISE / BLOCK]
+
+Frame risks:
+- ...
+
+Required corrections:
+- ...
+
+## Delivery
+
+Status: [accepted / needs revision / blocked]
+Residual risks:
+Human verification needed:

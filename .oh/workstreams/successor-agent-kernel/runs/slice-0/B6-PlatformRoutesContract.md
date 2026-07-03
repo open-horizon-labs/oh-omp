@@ -75,58 +75,71 @@ If completed (task 153-B6PreExecutionDissent, verdict PROCEED-WITH-CONDITIONS, c
 ## Execute
 
 Checklist:
-- [ ] owned files only
-- [ ] shared interfaces imported from `successor-protocol`; no local duplicate protocol DTOs
-- [ ] no forbidden shortcuts
-- [ ] tests/checks added inside owned scope
-- [ ] targeted validation passed (`cargo test -p successor-context-platform --test slice0_platform_contract` or narrower package-local command chosen by executor)
-- [ ] orchestrator-owned `make check-rs` gate run after executor returns, before review dispatch
-- [ ] named risks retired or routed
-- [ ] model binding verified for execution agent (`slice0-executor`, `anthropic/claude-sonnet-5`, `thinking-level=high`; canary `agent://112-ExecutorRebindCanary`)
-- [ ] fixture sovereignty preserved; canonical fixtures not edited or weakened
-- [ ] no accepted-module edits without Interface Change Request/reopen protocol
-- [ ] all new JSON-boundary DTOs use `#[serde(deny_unknown_fields)]` unless an explicit contract extension map exists
-- [ ] workspace lint expectations preserved: `make check-rs` is the orchestrator gate and must be green before review
-- [ ] no dispatch over-constraint: implement B6-owned route contract semantics directly; do not refuse assigned scope merely because a helper API is not pre-existing
+- [x] owned files only (`routes.rs`, `tests/slice0_platform_contract.rs`) plus granted/authorized reopens; one disclosed grant cascade: `main.rs` state wiring forced by the `build_router` signature change — recorded here as ACCEPTED boundary expansion (`SUCCESSOR_CONTEXT_PLATFORM_DB` env var + default `successor-context-platform.sqlite3` path are deliberate runtime configuration, not accidental drift)
+- [x] shared interfaces imported from `successor-protocol`; no route-local clone DTOs
+- [x] no forbidden shortcuts
+- [x] tests/checks added inside owned scope (9 route-contract tests incl. one-database coherence, no-echo, nested-rejection)
+- [x] targeted validation passed (platform 86 tests; protocol 76 tests)
+- [x] orchestrator-owned `make check-rs` gate green before review dispatch (`f6ff2b6c5`) and after review fixes (`b93ce45da`)
+- [x] named risks retired or routed (split-state prohibited; same-path WAL pattern per dissent ruling 3 without DI reopens; redacted error envelopes)
+- [x] model binding verified (`slice0-executor`, `anthropic/claude-sonnet-5:high`; tasks 154, 158)
+- [x] fixture sovereignty preserved; no fixture edits (nested DTO tightening verified against both canonical assemble-request fixtures)
+- [x] accepted-module edits only under grants/reopens: B1 (`lib.rs` +1, `http.rs` mount, disclosed `main.rs` cascade); A2 (`platform_api.rs` deny_unknown_fields on `CreateSessionRequestV0`, `AssembleRequestV0`, then five nested DTOs)
+- [x] all route JSON boundaries reject unknown fields, top-level and nested
+- [x] workspace lint gate green before review
+- [x] no dispatch over-constraint
 
 Changed files:
+- New: `crates/successor-context-platform/src/routes.rs`, `crates/successor-context-platform/tests/slice0_platform_contract.rs`
+- Granted B1 reopen: `lib.rs` (+1 `pub mod routes;`), `http.rs` (router mount replacing fallback wiring), `main.rs` (state wiring cascade, accepted above)
+- Authorized A2 reopen: `crates/successor-protocol/src/platform_api.rs` — `deny_unknown_fields` on both request roots and five nested DTOs, with rejection tests
+- Bootstrap disclosure: platform `Cargo.toml` names `serde` directly
 
 Validation evidence:
+- Platform: 86 tests green (56 unit + 12 assembly + 9 route-contract + 9 replay); full pipeline against canonical fixtures: create → append → pages → event → artifact byte-exact → snapshot fixture-equal → both assembles fixture-equal → trace; per-endpoint auth 401s; one-database coherence; no-echo assertions (nested credential-shaped fields, provider-shaped bearer, malformed JSON)
+- Protocol: 76 tests green incl. 4 nested-rejection tests; canonical fixtures still parse
+- `make check-rs` exit 0 at `f6ff2b6c5` and `b93ce45da`
 
 ## Code Review
 
-Reviewer:
-Reviewer model:
-Verdict: [PASS / REVISE / BLOCK]
+Reviewer: `slice0-reviewer` (task 155-B6CodeReview, checkout-proof at `f6ff2b6c5`)
+Reviewer model: `openai-codex/gpt-5.5:high`
+Verdict: REVISE, closed
 
 Findings:
-- ...
+- P1: five nested request DTOs accepted unknown fields — nested credential-shaped keys silently dropped.
+- P1: `decode_body` echoed serde's raw error text (incl. unknown field names) into public `ErrorEnvelopeV0`.
 
-Fixes applied:
-- ...
+Fixes applied (task 158, commit `b93ce45da`):
+- `deny_unknown_fields` on all five nested DTOs, nested-rejection tests, no fixture conflicts.
+- Category-level redaction in `decode_body` (not-valid-JSON / schema-mismatch / io) never echoing caller bytes; no-echo tests for nested fields, provider-shaped bearer, and malformed JSON.
 
 ## Drift Review
 
-Original aim:
-Current work:
-Gap:
-Verdict: [aligned / minor drift / significant drift / lost]
-Authority boundary: [clear / ambiguous / crossed]
+Original aim: thin route wiring of the full contract §6 endpoint set over accepted B1–B5 services.
+Current work: tasks 154+158 as committed through `b93ce45da`.
+Gap: none material (task 157-B6DriftReview: minor drift — the `main.rs` grant cascade, now recorded as accepted boundary expansion; evidence hardening requested and delivered in task 158).
+Verdict: minor drift, resolved
+Authority boundary: ambiguous → resolved by explicit orchestrator acceptance of the `main.rs` cascade above
 
 ## Superego Review
 
-Reviewer:
-Reviewer model:
-Verdict: [ALLOW / REVISE / BLOCK]
+Reviewer: `slice0-superego-reviewer` (task 156-B6SuperegoReview, checkout-proof at `f6ff2b6c5`)
+Reviewer model: `openai-codex/gpt-5.5:high`
+Verdict: REVISE, closed
 
 Frame risks:
-- ...
+- Unknown-field sovereignty incomplete at nested route boundaries; packet evidence unfilled.
 
 Required corrections:
-- ...
+- Nested deny_unknown_fields with route/protocol tests — applied in task 158; validation evidence recorded — this update.
 
 ## Delivery
 
-Status: [accepted / needs revision / blocked]
+Status: accepted
 Residual risks:
+- The four-independent-pools-one-path WAL design is safe for Slice 0 (append serialization lives in B2's single-connection store; cross-store writes touch disjoint tables with FK checks) but is a documented pattern, not a constraint; revisit before any multi-writer scaling.
+- `SUCCESSOR_CONTEXT_PLATFORM_DB` env var + default DB path are now the platform's runtime configuration surface; future config work must treat them as public.
+- Route-visible stage/trace semantics inherit B5's disclosed generalizations; external consumers beyond Slice 0 need contract text before relying on them.
 Human verification needed:
+- None outstanding. Wave B (B1–B6) is complete: all lanes accepted with evidence trails.

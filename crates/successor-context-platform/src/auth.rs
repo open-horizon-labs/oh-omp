@@ -23,6 +23,7 @@ use axum::{
 	middleware::Next,
 	response::Response,
 };
+use sha2::{Digest, Sha256};
 
 use crate::error::PlatformError;
 
@@ -80,12 +81,13 @@ impl PlatformLicense {
 	}
 
 	/// Constant-time equality check against a presented bearer token.
+	///
+	/// Compares fixed-size SHA-256 digests of both values, so neither the
+	/// entitlement length nor its content is observable through timing
+	/// (reviewer P2, task 127: no secret-length-dependent branching).
 	fn matches(&self, candidate: &str) -> bool {
-		let expected = self.value.as_bytes();
-		let actual = candidate.as_bytes();
-		if expected.len() != actual.len() {
-			return false;
-		}
+		let expected = Sha256::digest(self.value.as_bytes());
+		let actual = Sha256::digest(candidate.as_bytes());
 		let mut diff = 0u8;
 		for (a, b) in expected.iter().zip(actual.iter()) {
 			diff |= a ^ b;
@@ -102,8 +104,12 @@ impl std::fmt::Debug for PlatformLicense {
 	}
 }
 
-/// Returns true if `token` has the shape of a known provider API key or
-/// OAuth-style access token rather than a `MEMEX_LICENSE` entitlement value.
+/// Returns true if `token` has the shape of a known provider API key.
+///
+/// Generic JWT/OAuth three-segment syntax is deliberately NOT treated as a
+/// provider credential: a platform entitlement may legitimately be
+/// JWT-shaped (reviewer P2, task 127); only high-confidence provider key
+/// prefixes are rejected.
 fn looks_like_provider_credential(token: &str) -> bool {
 	if PROVIDER_KEY_PREFIXES
 		.iter()
@@ -111,27 +117,7 @@ fn looks_like_provider_credential(token: &str) -> bool {
 	{
 		return true;
 	}
-	if token.starts_with("sk-") && token.len() >= OPENAI_LEGACY_KEY_MIN_LEN {
-		return true;
-	}
-	is_jwt_shaped(token)
-}
-
-/// JWT-shaped OAuth bearer token: exactly three non-empty base64url segments
-/// separated by `.`.
-fn is_jwt_shaped(token: &str) -> bool {
-	let mut parts = token.split('.');
-	let (Some(header), Some(payload), Some(signature), None) =
-		(parts.next(), parts.next(), parts.next(), parts.next())
-	else {
-		return false;
-	};
-	[header, payload, signature].into_iter().all(|part| {
-		!part.is_empty()
-			&& part
-				.chars()
-				.all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-	})
+	token.starts_with("sk-") && token.len() >= OPENAI_LEGACY_KEY_MIN_LEN
 }
 
 /// Extracts and syntactically validates the bearer token from the
@@ -251,12 +237,11 @@ mod tests {
 	}
 
 	#[test]
-	fn jwt_shaped_oauth_token_is_rejected() {
-		let license = PlatformLicense::new("dev-license-abc123");
-		let headers = headers_with_auth(
-			"Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJmYWtlIn0.dGhpc19pc19hX2Zha2Vfc2ln",
-		);
-		assert!(authorize(&license, &headers).is_err());
+	fn jwt_shaped_platform_license_is_accepted() {
+		let jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJmYWtlIn0.dGhpc19pc19hX2Zha2Vfc2ln";
+		let license = PlatformLicense::new(jwt);
+		let headers = headers_with_auth(&format!("Bearer {jwt}"));
+		assert!(authorize(&license, &headers).is_ok());
 	}
 
 	#[test]

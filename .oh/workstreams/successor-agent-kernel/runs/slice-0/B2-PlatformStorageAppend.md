@@ -70,10 +70,10 @@ Verdict: required-before-execute
 
 If skipped, rationale: not applicable; Wave B runbook requires dissent when touching storage semantics, sequence assignment, and irreversible storage/migration choices.
 
-If completed:
-- Dissent concern:
-- Response:
-- Outcome:
+If completed (task 130-B2PreExecutionDissent, verdict PROCEED-WITH-CONDITIONS, checkout-proof at `fbca17a09`):
+- Dissent concern: migration schema is the real one-way door; seq/idempotency races hide outside a single writer transaction; two packet boundary assumptions were false in the current checkout — B1's `lib.rs` declares no B2 modules, and the owned-file list excludes the Cargo manifest a SQLite driver requires.
+- Response: contract §1 recommends `SQLite + sqlx`; B1 already landed tokio/axum, so an async sqlx store aligns runtime and contract. Contract §2.1/§3/§4/§6.2 and dispatch §4.2 decide duplicate semantics; protocol error text says `DuplicateIdempotencyKey` is for key reuse with a DIFFERENT payload, so byte-identical replays return the stored result.
+- Outcome: PROCEED with orchestrator rulings: (1) controlled `lib.rs` expansion granted per the A2/A3 Wave A precedent — B2 may append module declarations/exports for its four modules ONLY, never editing existing B1 lines; (2) `crates/successor-context-platform/Cargo.toml` + `Cargo.lock` authorized as disclosed bootstrap artifacts for the sqlx dependency; (3) driver ruling: sqlx (async surface); a sync/rusqlite pivot requires explicit rationale plus concurrent-append tests; (4) one writer transaction covers idempotency check, seq allocation, validation, and persistence, backed by durable unique constraints on `(session_id, session_seq)`, `(session_id, idempotency_key)`, and `event_id`; (5) idempotency fingerprint is canonical bytes excluding platform-assigned fields — same key + same fingerprint returns the stored response with `duplicate=true`; same key + different fingerprint returns `DuplicateIdempotencyKey` without allocating a sequence; (6) append-time credential/structure validation reuses accepted A1/A5 protocol validators; no scanner re-implementation.
 
 ## Execute
 

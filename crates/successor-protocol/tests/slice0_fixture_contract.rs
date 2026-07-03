@@ -557,3 +557,42 @@ fn forward_artifact_reference_is_rejected_by_raw_event_stream_validator() {
 		"expected a future_reference violation for a forward artifact reference, got: {violations}"
 	);
 }
+
+#[test]
+fn stale_degradation_reason_field_is_rejected_by_assembly_response_deserializer() {
+	let mut value = serde_json::to_value(fixtures::assemble_response_pre_tool()).expect("serialize");
+	let degradation = value["degradation"]
+		.as_array_mut()
+		.expect("degradation array");
+	assert!(!degradation.is_empty(), "pre-tool fixture must carry degradation entries");
+	degradation[0]["reason"] = serde_json::Value::String("stale".into());
+	assert!(
+		serde_json::from_value::<AssemblyResponseV0>(value).is_err(),
+		"stale degradation reason field must be rejected"
+	);
+}
+
+#[test]
+fn stale_context_item_kind_field_is_rejected_by_assembly_response_deserializer() {
+	let mut value =
+		serde_json::to_value(fixtures::assemble_response_post_read()).expect("serialize");
+	let items = value["context_items"]
+		.as_array_mut()
+		.expect("context_items array");
+	assert!(!items.is_empty(), "post-read fixture must carry context items");
+	items[0]["kind"] = serde_json::Value::String("stale".into());
+	assert!(
+		serde_json::from_value::<AssemblyResponseV0>(value).is_err(),
+		"stale context item kind field must be rejected"
+	);
+}
+
+#[test]
+fn credential_like_field_on_assembly_response_root_is_rejected() {
+	let mut value = serde_json::to_value(fixtures::assemble_response_pre_tool()).expect("serialize");
+	value["api_key"] = serde_json::Value::String("sk-test-not-a-real-key".into());
+	assert!(
+		serde_json::from_value::<AssemblyResponseV0>(value).is_err(),
+		"unknown credential-like root field must be rejected"
+	);
+}

@@ -248,12 +248,14 @@ impl SharingV0 {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ContextItemRecoveryV0 {
 	pub method: String,
 	pub id:     String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ContextItemV0 {
 	pub context_item_id:    ContextItemId,
 	pub source_envelope_id: SourceEnvelopeId,
@@ -268,6 +270,7 @@ pub struct ContextItemV0 {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct DegradationV0 {
 	pub code:     String,
 	pub message:  String,
@@ -387,6 +390,7 @@ pub struct PolicyV0 {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct AssemblyResponseV0 {
 	pub schema_version: String,
 	pub assemble_id:    AssembleId,

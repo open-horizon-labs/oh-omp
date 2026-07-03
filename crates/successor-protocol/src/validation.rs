@@ -613,7 +613,6 @@ pub fn scan_artifact_content(artifact: &ArtifactV0) -> FixtureValidationResult {
 /// `:` and a secret-like literal value.
 fn contains_assignment_shaped_credential(text_lower: &str) -> bool {
 	for pattern in CREDENTIAL_KEY_PATTERNS {
-		let pattern: &str = pattern.as_ref();
 		let mut search_from = 0;
 		while let Some(relative) = text_lower[search_from..].find(pattern) {
 			let after = search_from + relative + pattern.len();

@@ -574,15 +574,16 @@ fn check_raw_event_credentials(violations: &mut Vec<ProtocolViolation>, event: &
 /// full raw event, and so have no `RawEventV0` to hand to the private
 /// raw-event-scoped scanner.
 ///
-/// Slice 0 inline artifact content is unstructured text (e.g. a log excerpt, an
-/// env dump), not a JSON object with named keys, so unlike
-/// [`scan_value_for_credentials`]'s object-key handling this also matches
-/// [`CREDENTIAL_KEY_PATTERNS`] as case-insensitive substrings of the whole
-/// content string -- the same vocabulary [`check_raw_event_credentials`]
-/// already applies to JSON object keys, just applied to free text that carries
-/// no JSON key structure of its own. This does not alter
-/// [`check_raw_event_credentials`] or any other existing scanning path: one
-/// scanning implementation and vocabulary, two entry points.
+/// Slice 0 inline artifact content is unstructured text (e.g. a log excerpt,
+/// an env dump) with no JSON key structure, so in addition to
+/// [`scan_value_for_credentials`]'s value-pattern scanning this rejects
+/// assignment-shaped leaks: a [`CREDENTIAL_KEY_PATTERNS`] token immediately
+/// followed by `=`/`:` and a secret-like literal value. Bare mentions of
+/// credential key words (documentation, or source code such as
+/// `api_key = read_config()`) are legitimate tool output and are NOT
+/// flagged. This does not alter [`check_raw_event_credentials`] or any other
+/// existing scanning path: one scanning implementation and vocabulary, two
+/// entry points.
 pub fn scan_artifact_content(artifact: &ArtifactV0) -> FixtureValidationResult {
 	let mut violations = Vec::new();
 	if let Some(content) = &artifact.content {
@@ -593,14 +594,11 @@ pub fn scan_artifact_content(artifact: &ArtifactV0) -> FixtureValidationResult {
 		);
 		if let serde_json::Value::String(text) = content {
 			let text_lower = text.to_lowercase();
-			if CREDENTIAL_KEY_PATTERNS
-				.iter()
-				.any(|pattern| text_lower.contains(pattern))
-			{
+			if contains_assignment_shaped_credential(&text_lower) {
 				violations.push(ProtocolViolation::new(
 					ProtocolViolationCode::CredentialLeakage,
 					format!(
-						"credential-looking key pattern found in artifact {} content",
+						"assignment-shaped credential leak found in artifact {} content",
 						artifact.artifact_id
 					),
 				));
@@ -608,6 +606,45 @@ pub fn scan_artifact_content(artifact: &ArtifactV0) -> FixtureValidationResult {
 		}
 	}
 	collect(violations)
+}
+
+/// Returns true when lowercased free text contains an assignment-shaped
+/// credential leak: a credential key pattern immediately followed by `=` or
+/// `:` and a secret-like literal value.
+fn contains_assignment_shaped_credential(text_lower: &str) -> bool {
+	for pattern in CREDENTIAL_KEY_PATTERNS {
+		let pattern: &str = pattern.as_ref();
+		let mut search_from = 0;
+		while let Some(relative) = text_lower[search_from..].find(pattern) {
+			let after = search_from + relative + pattern.len();
+			let tail = text_lower[after..]
+				.trim_start_matches(|c: char| c.is_ascii_alphanumeric() || c == '_')
+				.trim_start();
+			if let Some(value) = tail.strip_prefix(['=', ':']) {
+				let token: String = value
+					.trim_start()
+					.trim_start_matches(['"', '\''])
+					.chars()
+					.take_while(|c| !c.is_whitespace() && *c != '"' && *c != '\'')
+					.collect();
+				if is_secret_like_token(&token) {
+					return true;
+				}
+			}
+			search_from = after;
+		}
+	}
+	false
+}
+
+/// A literal token is secret-like when it is long, opaque, and not code or
+/// placeholder shaped.
+fn is_secret_like_token(token: &str) -> bool {
+	token.len() >= 16
+		&& !token.contains('(')
+		&& !token.starts_with('<')
+		&& !token.starts_with('$')
+		&& !token.starts_with('{')
 }
 
 /// Validates one raw-event stream.
@@ -950,6 +987,22 @@ pub fn validate_fixture_bundle() -> FixtureValidationResult {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn assignment_shaped_credential_detection_flags_real_leaks_only() {
+		assert!(contains_assignment_shaped_credential(
+			"aws_secret_access_key=wjalrxutnfemik7mdengbpxrficyexamplekey"
+		));
+		assert!(contains_assignment_shaped_credential("api_key: wjalrxutnfemik7mdengbpxrficy"));
+		assert!(!contains_assignment_shaped_credential(
+			"the api_key parameter controls request auth"
+		));
+		assert!(!contains_assignment_shaped_credential("let api_key = read_config();"));
+		assert!(!contains_assignment_shaped_credential("password: <your-password-here>"));
+		assert!(!contains_assignment_shaped_credential(
+			"client_secret documentation and secret handling notes"
+		));
+	}
 
 	#[test]
 	fn canonical_fixture_bundle_validates_clean() {

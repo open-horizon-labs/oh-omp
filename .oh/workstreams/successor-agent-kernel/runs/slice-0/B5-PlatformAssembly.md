@@ -79,59 +79,73 @@ If completed (task 147-B5PreExecutionDissent, verdict PROCEED-WITH-CONDITIONS, c
 ## Execute
 
 Checklist:
-- [ ] owned files only
-- [ ] shared interfaces imported from `successor-protocol`; no local duplicate protocol DTOs
-- [ ] no forbidden shortcuts
-- [ ] tests/checks added inside owned scope
-- [ ] targeted validation passed (`cargo test -p successor-context-platform --test slice0_assemble` or narrower package-local command chosen by executor)
-- [ ] orchestrator-owned `make check-rs` gate run after executor returns, before review dispatch
-- [ ] named risks retired or routed
-- [ ] model binding verified for execution agent (`slice0-executor`, `anthropic/claude-sonnet-5`, `thinking-level=high`; canary `agent://112-ExecutorRebindCanary`)
-- [ ] fixture sovereignty preserved; canonical fixtures not edited or weakened
-- [ ] no accepted-module edits without Interface Change Request/reopen protocol
-- [ ] all new JSON-boundary DTOs use `#[serde(deny_unknown_fields)]` unless an explicit contract extension map exists
-- [ ] workspace lint expectations preserved: `make check-rs` is the orchestrator gate and must be green before review
-- [ ] no dispatch over-constraint: implement B5-owned contract semantics directly; do not refuse assigned scope merely because a helper API is not pre-existing
-- [ ] assemble-response accessor residual either verified through owned B5 tests or routed back to A5 before claiming bundle-level coverage
+- [x] owned files only — with one disclosed naming divergence: the packet's provisional names (`assemble.rs`, `retrieval.rs`, `tests/slice0_assemble.rs`) resolved to `assembly.rs` and `tests/slice0_assembly.rs` per the dispatch-map `AssemblyServiceV0` seam; retrieval stayed internal per dissent ruling 1 (Superego-accepted, task 151)
+- [x] shared interfaces imported from `successor-protocol`; no local duplicate protocol DTOs
+- [x] no forbidden shortcuts
+- [x] tests/checks added inside owned scope (11 assembly integration tests + protocol stage round-trip/credential tests)
+- [x] targeted validation passed (platform + protocol suites)
+- [x] orchestrator-owned `make check-rs` gate green before review dispatch and after review fixes
+- [x] named risks retired or routed (no invented ranking heuristics; unpinned decisions disclosed and trace-visible; no persisted assembly state)
+- [x] model binding verified (`slice0-executor`, `anthropic/claude-sonnet-5:high`; tasks 148, 152)
+- [x] fixture sovereignty preserved; no fixture edits
+- [x] accepted-module edits only under authorized reopens (ruling-5 A5 `validation.rs`; review-fix A2 `platform_api.rs` `AssemblyTraceStageV0`)
+- [x] no new JSON-boundary DTOs; `AssemblyTraceStageV0` reopened with `deny_unknown_fields` and the six fixture-pinned fields
+- [x] workspace lint gate green before review
+- [x] no dispatch over-constraint
+- [x] assemble-response accessor residual executed: `validate_assembly_response` wired into `validate_fixture_bundle` for both typed responses with credential-injection rejection
 
 Changed files:
+- New: `crates/successor-context-platform/src/assembly.rs`, `crates/successor-context-platform/tests/slice0_assembly.rs`
+- Granted expansion: `lib.rs` — exactly one appended module declaration (`assembly`)
+- Authorized reopens: `crates/successor-protocol/src/validation.rs` (ruling 5 + stage-aware scanning), `crates/successor-protocol/src/platform_api.rs` (`AssemblyTraceStageV0` six fixture-pinned fields + `deny_unknown_fields`), `crates/successor-protocol/tests/slice0_fixture_contract.rs` (stage round-trip proof)
 
 Validation evidence:
+- Platform: 56 unit + 12 assembly + 9 replay tests green; both canonical assemble request fixtures produce responses per-field equal to the canonical response fixtures (minted ids asserted well-formed + self-consistent); determinism, excludes, budget caps, typed errors covered
+- Protocol: all suites green; stage round-trip byte fidelity and credential-injection-in-notes rejection proven; bundle validator covers both typed assemble responses
+- `make check-rs` exit 0 at `97c2dd5a3` (implementation) and `c94999178` (review fixes)
 
 ## Code Review
 
-Reviewer:
-Reviewer model:
-Verdict: [PASS / REVISE / BLOCK]
+Reviewer: `slice0-reviewer` (task 150-B5CodeReview, checkout-proof at `97c2dd5a3`)
+Reviewer model: `openai-codex/gpt-5.5:high`
+Verdict: REVISE, closed
 
 Findings:
-- ...
+- P1: fixture-pinned trace-stage fields (`started_at`, `completed_at`, `input_count`, `output_count`, `notes`) silently dropped by the tolerant `AssemblyTraceStageV0`; B6 would return non-fixture-compatible responses and stage credential drift escaped validation.
+- P2: unbounded in-memory trace cache for a long-lived B6 process.
+- P2: stale packet ownership/evidence — closed by this update.
 
-Fixes applied:
-- ...
+Fixes applied (task 152, commit `c94999178`):
+- Authorized narrow A2 reopen: `AssemblyTraceStageV0` carries the six fields (union of both canonical response fixtures, all required, `deny_unknown_fields`); full construction-site cutover; stage round-trip byte fidelity proven; credential injection into stage `notes` rejected.
+- Trace cache bounded with a disclosed eviction policy; regression test added.
+- Stage emission semantics for unpinned values disclosed (synchronous stages share the response `created_at`; input/output counts defined per stage semantics; note strings generalized from the fixture-pinned n=1 case).
 
 ## Drift Review
 
-Original aim:
-Current work:
-Gap:
-Verdict: [aligned / minor drift / significant drift / lost]
-Authority boundary: [clear / ambiguous / crossed]
+Original aim: deterministic `/assemble` service seam over B2/B3/B4, fixture-faithful, derivation-only.
+Current work: tasks 148+152 as committed through `c94999178`.
+Gap: none material (task 149-B5DriftReview: no route/auth/storage-write/dependency drift; no hidden durable decision; reopen within ruling 5).
+Verdict: aligned
+Authority boundary: clear
 
 ## Superego Review
 
-Reviewer:
-Reviewer model:
-Verdict: [ALLOW / REVISE / BLOCK]
+Reviewer: `slice0-superego-reviewer` (task 151-B5SuperegoReview, checkout-proof at `97c2dd5a3`)
+Reviewer model: `openai-codex/gpt-5.5:high`
+Verdict: REVISE (governance evidence only; no implementation changes required), closed
 
 Frame risks:
-- ...
+- None in code: single `/assemble` context path, in-memory-only trace cache, disclosed unpinned decisions, A5 reopen within grant.
 
 Required corrections:
-- ...
+- Record actual changed files with the stale-name divergence, validation/gate evidence, and Delivery disposition — applied in this update.
 
 ## Delivery
 
-Status: [accepted / needs revision / blocked]
+Status: accepted
 Residual risks:
+- Stage `input_count`/`output_count`/`notes` semantics beyond the fixture-pinned single-source case are disclosed generalizations; B6 route-contract tests must pin them before external exposure.
+- The trace cache bound is a service-level retention policy, not a contract; if `/assemble` trace retrieval becomes contractual beyond Slice 0, retention needs explicit contract text.
+- Token estimator (`whitespace_words * 4`) reproduces the fixture's pinned 32 but is a Slice 0 placeholder; replacing it later changes `token_estimate` values and must be treated as a contract-visible change.
 Human verification needed:
+- None outstanding.

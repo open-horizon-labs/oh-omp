@@ -11,6 +11,22 @@
 - Superego model: `slice0-superego-reviewer` / `openai-codex/gpt-5.5`, `thinking-level=high`; canary passed (`agent://16-PermanentSuperegoReviewerCanary`).
 - Binding verdict: verified.
 
+## Durable Law / Review Learnings preflight
+
+Before acting, the executor, code reviewer, drift reviewer, Superego reviewer, and verifier must read and apply the FULL `.oh/workstreams/successor-agent-kernel/SLICE-0-REVIEW-LEARNINGS.md` §1–13, not selected excerpts or memory summaries.
+
+Lane-relevant consequences:
+- RawEvent remains canonical persisted truth; KernelFrame and session/trace projections are live or rebuildable views and must not become peer persisted truth.
+- Projection assertions must be derived from canonical fixtures and exact replay expectations, including byte-identical session projection/snapshot behavior, not from invented DTO shapes or remembered field names.
+- ID-prefix checks must guard every consumed family (`evt_`, `frame_`, `msg_`, `tool_`, `src_`, `art_`, `asm_`, `ctx_`, `trace_`, `err_`, `pevt_`) against descriptive-prefix drift.
+- If accepted A-lane protocol/projection types are too narrow for canonical fixtures, B4 must stop and reopen the owning accepted lane with targeted review; it must not add a downstream wrapper or local relaxed DTO.
+- Replay must not re-run providers, tools, filesystem reads, network calls, embeddings, clocks, or random ID generation; only stored raw events/artifacts feed projection rebuilds.
+- Credential-looking values must not leak through snapshots, projection stores, trace indexes, or replay errors.
+
+## Fan-out / Dependency Order
+
+Required execution order: B1 shell/auth first, then B2 storage append. B4 executes after B2 and after B3 wherever replay needs artifact/source lookup. The only B1/B2 safe-parallel exception is that B1 must first land the minimal shell/module declarations and B2 must never edit B1-owned files. Final Wave B fan-out: B1; B2; B3 before B4 artifact-backed replay; B5 after B2/B3 and preferably B4 trace/projection substrate; B6 last after B1–B5 are accepted.
+
 ## Aim
 
 - Outcome: implement platform projection/replay support so an empty projection store can rebuild session snapshots, projections, and trace indexes from persisted raw events and artifacts only.

@@ -11,6 +11,23 @@
 - Superego model: `slice0-superego-reviewer` / `openai-codex/gpt-5.5`, `thinking-level=high`; canary passed (`agent://16-PermanentSuperegoReviewerCanary`).
 - Binding verdict: verified.
 
+## Durable Law / Review Learnings preflight
+
+Before acting, the executor, code reviewer, drift reviewer, Superego reviewer, and verifier must read and apply the FULL `.oh/workstreams/successor-agent-kernel/SLICE-0-REVIEW-LEARNINGS.md` §1–13, not selected excerpts or memory summaries.
+
+Lane-relevant consequences:
+- Provider wire objects and provider-shaped messages are non-canonical; `/assemble` responses must contain platform context items, trace/degradation/policy data, and source/artifact references, never provider messages or provider-specific IDs as successor identity.
+- `/assemble` is the only semantic context path. B5 must not introduce a local semantic assembler fallback, transcript-only path, or kernel/provider shortcut.
+- If canonical assemble fixtures reveal accepted-lane overfit, B5 must stop and reopen the owning accepted lane with targeted review instead of adding local wrappers or fixture-specific bypasses.
+- The A5 residual stays routed-not-patched: typed `assemble_response_pre_tool()` and `assemble_response_post_read()` accessors may be consumed in B5-owned tests, but missing bundle-validator wiring remains A5-owned unless orchestrator reopens A5.
+- Credential scanning must cover context items, trace previews, dropped-candidate reasons, and artifact/source text for high-confidence credential-looking values before anything is returned or persisted.
+- ID prefixes and protocol field names in assembly requests/responses/traces must be fixture/contract-derived, including `asm_`, `ctx_`, `src_`, `art_`, and `trace_`.
+- Explicit degradation is required for missing embeddings/vector search/no context; silent empty success is blocked.
+
+## Fan-out / Dependency Order
+
+Required execution order: B1 shell/auth first, then B2 storage append. B5 executes after B2/B3 and preferably after B4 trace/projection substrate is accepted, because `/assemble` consumes stored raw events/artifacts and emits traceable context projections. The only B1/B2 safe-parallel exception is that B1 must first land the minimal shell/module declarations and B2 must never edit B1-owned files. B6 remains last after B1–B5 are accepted.
+
 ## Aim
 
 - Outcome: implement platform `/assemble` service and deterministic lexical/recency retrieval so pre-tool and post-read assembly responses match fixtures, degraded retrieval is explicit, and platform assembly never returns provider messages.

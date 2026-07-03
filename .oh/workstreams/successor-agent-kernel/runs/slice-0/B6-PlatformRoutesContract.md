@@ -11,6 +11,22 @@
 - Superego model: `slice0-superego-reviewer` / `openai-codex/gpt-5.5`, `thinking-level=high`; canary passed (`agent://16-PermanentSuperegoReviewerCanary`).
 - Binding verdict: verified.
 
+## Durable Law / Review Learnings preflight
+
+Before acting, the executor, code reviewer, drift reviewer, Superego reviewer, and verifier must read and apply the FULL `.oh/workstreams/successor-agent-kernel/SLICE-0-REVIEW-LEARNINGS.md` §1–13, not selected excerpts or memory summaries.
+
+Lane-relevant consequences:
+- Route request/response DTO shapes, enum strings, schema versions, and error bodies must be copied from `SLICE-0-CONTRACT.md` or canonical fixtures; no plausible route-local DTO names or fields may be invented.
+- Every route JSON boundary must reject unknown fields unless an explicit contract extension map exists, including adversarial credential-looking fields at top level and nested levels.
+- Auth and credential planes remain separate on every endpoint: missing/invalid `MEMEX_LICENSE` is rejected; provider-looking credentials are never accepted as platform auth and never leak into route errors, traces, artifacts, logs, or response bodies.
+- `ErrorEnvelopeV0` and stable HTTP status mapping must be used consistently for malformed JSON, auth failures, conflicts, validation errors, not found, service unavailable, and internal failures.
+- SQLite row structs, table names, SQL errors, and implementation details must not leak through route responses; routes expose protocol DTOs/errors only.
+- Route-level tests must include regression assertions for prior review defects: unknown-field rejection, credential value scanning, platform-assigned-field rejection, ID-prefix drift, and accepted-lane overfit handling by reopening rather than wrapping.
+
+## Fan-out / Dependency Order
+
+Required execution order: B6 runs last, after B1–B5 are accepted. It integrates accepted service surfaces only and must not inline missing service logic to unblock route tests. Final Wave B fan-out: B1 shell/auth first; B2 storage append after the B1 shell (or only after B1 lands the minimal declarations needed for safe parallel compilation, with B2 never editing B1-owned files); B3/B4/B5 after the B2 storage surface they consume; B6 last after B1–B5 are accepted.
+
 ## Aim
 
 - Outcome: wire the context-platform HTTP routes to B1–B5 services and prove every endpoint returns accepted protocol DTOs or `ErrorEnvelopeV0` while hiding SQLite/internal implementation details.

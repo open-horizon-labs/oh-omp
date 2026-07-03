@@ -11,6 +11,21 @@
 - Superego model: `slice0-superego-reviewer` / `openai-codex/gpt-5.5`, `thinking-level=high`; canary passed (`agent://16-PermanentSuperegoReviewerCanary`).
 - Binding verdict: verified.
 
+## Durable Law / Review Learnings preflight
+
+Before acting, the executor, code reviewer, drift reviewer, Superego reviewer, and verifier must read and apply the FULL `.oh/workstreams/successor-agent-kernel/SLICE-0-REVIEW-LEARNINGS.md` §1–13, not selected excerpts or memory summaries.
+
+Lane-relevant consequences:
+- Auth and fixture/security boundaries must scan both credential-looking keys and high-confidence credential-looking string values (`MEMEX_LICENSE`, `Authorization: Bearer`, `refresh_token`, `access_token`, `client_secret`, provider API-key shapes) without broad false positives such as the word `token` alone.
+- Every new request/security-boundary DTO must reject unknown fields unless the contract explicitly defines an extension map; unknown credential-looking fields must not be silently dropped before scanning.
+- Platform entitlement auth and provider auth are separate planes: `MEMEX_LICENSE`/optional authorized alias protects only context-platform APIs; provider API keys, OAuth/subscription state, model spend credentials, and local provider auth must not authorize platform routes or enter platform records, traces, fixtures, logs, or errors.
+- If B1 crate-shell work requires Cargo target stubs, module declarations, workspace metadata, or `Cargo.lock` changes, executor evidence must disclose them as explicit bootstrap artifacts rather than accidental drift.
+- Regression tests or fixture assertions are required for any correction to a prior review-loop defect; passing happy paths alone is insufficient.
+
+## Fan-out / Dependency Order
+
+Required execution order: B1 runs first. B1 must land the minimal `lib.rs`/`http.rs`/`auth.rs`/`error.rs` shell and module declarations needed for later platform lanes to compile and test. B2 may only run in safe parallel after that minimal shell has landed, and B2 must never edit B1-owned files. Final Wave B fan-out: B1 shell/auth first; B2 storage append after the B1 shell; B3/B4/B5 after the B2 storage surface they consume (B4 also after B3 where artifact reads are required; B5 preferably after B4 trace/projection substrate); B6 last after B1–B5 are accepted.
+
 ## Aim
 
 - Outcome: establish the context-platform crate shell, HTTP surface skeleton, platform entitlement authentication, and platform error mapping without implementing storage, artifact, replay, assembly, or route contract internals.

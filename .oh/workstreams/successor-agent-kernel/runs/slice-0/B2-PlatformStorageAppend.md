@@ -11,6 +11,22 @@
 - Superego model: `slice0-superego-reviewer` / `openai-codex/gpt-5.5`, `thinking-level=high`; canary passed (`agent://16-PermanentSuperegoReviewerCanary`).
 - Binding verdict: verified.
 
+## Durable Law / Review Learnings preflight
+
+Before acting, the executor, code reviewer, drift reviewer, Superego reviewer, and verifier must read and apply the FULL `.oh/workstreams/successor-agent-kernel/SLICE-0-REVIEW-LEARNINGS.md` §1–13, not selected excerpts or memory summaries.
+
+Lane-relevant consequences:
+- Append request boundaries must reject or omit platform-assigned fields such as `session_seq`; only the platform store may assign dense per-session sequence numbers, while append responses/persisted records report assigned sequence, duplicate status, stored timestamp, and source/artifact IDs as applicable.
+- Constrained values at storage/append JSON boundaries must use typed validating serde boundaries, not helper-only validation that invalid JSON can bypass.
+- Credential scanning must inspect high-confidence credential-looking string values as well as keys before raw events, artifacts, traces, or storage rows are accepted.
+- Any fix for a prior review defect needs a targeted regression test or fixture assertion that would have failed before the correction, especially unknown fields, platform-assigned fields, typed validation, and credential leakage.
+- B2 depends on the B1 crate shell/module surface; B2 must not declare/export B2 modules by editing B1-owned `lib.rs`, `http.rs`, `auth.rs`, or `error.rs`.
+- Regression evidence must name the review-learning class corrected and the validation command/result.
+
+## Fan-out / Dependency Order
+
+Required execution order: B1 runs before B2 for execution purposes. The only safe parallelization condition is explicit orchestration where B1 first lands the minimal `lib.rs`/`http.rs`/`auth.rs`/`error.rs` shell and module declarations B2 needs to compile and test, after which B2 may work only in B2-owned files. Final Wave B fan-out: B1 shell/auth first; B2 storage append after the B1 shell; B3/B4/B5 after the B2 storage surface they consume (B4 also after B3 where artifact reads are required; B5 preferably after B4 trace/projection substrate); B6 last after B1–B5 are accepted.
+
 ## Aim
 
 - Outcome: implement the platform append/session/idempotency storage foundation that assigns dense per-session sequence numbers transactionally and persists canonical raw events without trusting client-assigned platform fields.

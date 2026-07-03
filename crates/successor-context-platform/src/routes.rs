@@ -108,12 +108,23 @@ pub fn router(state: Arc<PlatformState>) -> Router {
 /// `deny_unknown_fields` rejection — onto the same typed `PlatformError` /
 /// `ErrorEnvelopeV0` shape every other failure in this module uses, instead
 /// of axum's untyped default body-extractor rejection.
+/// Decodes a JSON request body into `T`, mapping any `serde_json` failure to
+/// a category-level `ValidationFailed` error. The error message is
+/// deliberately generic: `serde_json`'s native error text can embed raw
+/// field names (notably the unknown-field name on a `deny_unknown_fields`
+/// rejection) or other body-derived content, and this is a public-facing
+/// `ErrorEnvelopeV0` that must never echo caller-supplied bytes, including
+/// credential-shaped strings pasted as JSON keys or values.
 fn decode_body<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> PlatformResult<T> {
 	serde_json::from_slice(bytes).map_err(|err| {
-		PlatformError::new(
-			ProtocolViolationCode::ValidationFailed,
-			format!("malformed request body: {err}"),
-		)
+		let message = match err.classify() {
+			serde_json::error::Category::Syntax | serde_json::error::Category::Eof => {
+				"request body is not valid JSON"
+			},
+			serde_json::error::Category::Data => "request body does not match the expected schema",
+			serde_json::error::Category::Io => "request body could not be read",
+		};
+		PlatformError::new(ProtocolViolationCode::ValidationFailed, message)
 	})
 }
 

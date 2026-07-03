@@ -145,6 +145,29 @@ async fn error_envelope(response: axum::response::Response) -> ErrorEnvelopeV0 {
 	json_body(response).await
 }
 
+async fn body_bytes(response: axum::response::Response) -> Vec<u8> {
+	to_bytes(response.into_body(), usize::MAX)
+		.await
+		.expect("buffer body")
+		.to_vec()
+}
+
+/// B6 drift-hardening (task 157): the reusable assertion that an error
+/// response's raw body — not just the parsed `ErrorEnvelopeV0`'s `message`
+/// field — never echoes a caller-supplied secret. `serde_json`'s native
+/// error text (before `routes.rs::decode_body` redacts it) can embed raw
+/// field names and values, so this checks the full byte stream the caller
+/// receives, not just one struct field.
+fn assert_body_never_contains(body: &[u8], secrets: &[&str]) {
+	let text = String::from_utf8_lossy(body);
+	for secret in secrets {
+		assert!(
+			!text.contains(secret),
+			"error envelope body leaked a caller-supplied secret {secret:?}: {text}"
+		);
+	}
+}
+
 fn create_session_request(label: &str) -> CreateSessionRequestV0 {
 	CreateSessionRequestV0 {
 		workspace:  WorkspaceV0 {
@@ -569,11 +592,25 @@ async fn malformed_json_body_returns_a_typed_error_envelope_not_a_hang_or_defaul
 
 	let response = send_raw(&router, "POST", "/v0/sessions", "{ this is not valid json").await;
 	assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-	assert_eq!(error_envelope(response).await.code, "validation_failed");
+	let body = body_bytes(response).await;
+	assert_body_never_contains(&body, &["this is not valid json"]);
+	assert_eq!(
+		serde_json::from_slice::<ErrorEnvelopeV0>(&body)
+			.expect("typed error envelope")
+			.code,
+		"validation_failed"
+	);
 
 	let response = send_raw(&router, "POST", "/v0/events", "not even a json value").await;
 	assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-	assert_eq!(error_envelope(response).await.code, "validation_failed");
+	let body = body_bytes(response).await;
+	assert_body_never_contains(&body, &["not even a json value"]);
+	assert_eq!(
+		serde_json::from_slice::<ErrorEnvelopeV0>(&body)
+			.expect("typed error envelope")
+			.code,
+		"validation_failed"
+	);
 
 	let response = send_raw(&router, "POST", "/v0/assemble", "[1, 2, 3]").await;
 	assert_eq!(response.status(), StatusCode::BAD_REQUEST);
@@ -599,4 +636,72 @@ async fn unknown_v0_path_401s_unauthenticated_and_404s_authenticated() {
 	let response = router.clone().oneshot(request).await.unwrap();
 	assert_eq!(response.status(), StatusCode::NOT_FOUND);
 	assert_eq!(error_envelope(response).await.code, "not_found");
+}
+
+/// B6 drift-hardening (task 157): an unknown field nested under a request's
+/// `workspace` or `budget` object — not just a top-level field — must be
+/// rejected (the A2 reopen extends `#[serde(deny_unknown_fields)]` onto
+/// `WorkspaceV0`, `CreatedByV0`, `AssembleIntentV0`, `AssembleWorkspaceV0`,
+/// and `AssemblyBudgetV0`). Because a credential pasted as a JSON key or
+/// value nested that deeply is exactly the shape a leaked provider token
+/// would take, the rejection's `ErrorEnvelopeV0` body must never echo the
+/// field name or its value (task 155 P1/P2: `decode_body` must not embed
+/// `serde_json`'s raw error text).
+#[tokio::test]
+async fn nested_unknown_credential_shaped_field_is_rejected_without_echoing_the_secret() {
+	let (router, _db) = test_router("nested-unknown-fields").await;
+	let session_id = create_session(&router, "nested-unknown-fields-seed").await;
+
+	let secret_key = "api_key";
+	let secret_value = "sk-test-nested-secret-should-never-echo";
+
+	let mut session_value =
+		serde_json::to_value(create_session_request("nested-unknown-fields-2")).unwrap();
+	session_value["workspace"]
+		.as_object_mut()
+		.expect("workspace object")
+		.insert(secret_key.to_owned(), serde_json::json!(secret_value));
+	let response = send_json(&router, "POST", "/v0/sessions", &session_value).await;
+	assert_eq!(response.status(), StatusCode::BAD_REQUEST, "unknown field nested under workspace");
+	let body = body_bytes(response).await;
+	assert_body_never_contains(&body, &[secret_key, secret_value]);
+	serde_json::from_slice::<ErrorEnvelopeV0>(&body).expect("typed error envelope");
+
+	let mut assemble_value = serde_json::to_value(assemble_request_for(
+		fixtures::assemble_request_pre_tool(),
+		&session_id,
+	))
+	.unwrap();
+	assemble_value["budget"]
+		.as_object_mut()
+		.expect("budget object")
+		.insert(secret_key.to_owned(), serde_json::json!(secret_value));
+	let response = send_json(&router, "POST", "/v0/assemble", &assemble_value).await;
+	assert_eq!(response.status(), StatusCode::BAD_REQUEST, "unknown field nested under budget");
+	let body = body_bytes(response).await;
+	assert_body_never_contains(&body, &[secret_key, secret_value]);
+	serde_json::from_slice::<ErrorEnvelopeV0>(&body).expect("typed error envelope");
+}
+
+/// B6 drift-hardening (task 157): a provider-key-shaped bearer token — the
+/// shape `auth.rs::looks_like_provider_credential` rejects on the platform
+/// auth boundary — must 401 without ever echoing the presented token into
+/// the error body.
+#[tokio::test]
+async fn provider_key_shaped_bearer_is_rejected_401_without_echoing_the_token() {
+	let (router, _db) = test_router("provider-key-bearer").await;
+	let token = "sk-ant-api03-nested-secret-should-never-echo-0000000000000000";
+
+	let request = Request::builder()
+		.method("POST")
+		.uri("/v0/sessions")
+		.header(header::AUTHORIZATION, format!("Bearer {token}"))
+		.header(header::CONTENT_TYPE, "application/json")
+		.body(Body::from(serde_json::to_vec(&create_session_request("provider-key-bearer")).unwrap()))
+		.unwrap();
+	let response = router.clone().oneshot(request).await.unwrap();
+	assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "provider-key-shaped bearer");
+	let body = body_bytes(response).await;
+	assert_body_never_contains(&body, &[token]);
+	serde_json::from_slice::<ErrorEnvelopeV0>(&body).expect("typed error envelope");
 }

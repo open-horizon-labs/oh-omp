@@ -28,6 +28,7 @@ pub const ASSEMBLE_REQUEST_SCHEMA_VERSION: &str = "platform.assemble_request.v0"
 pub const ASSEMBLY_RESPONSE_SCHEMA_VERSION: &str = "platform.assembly_response.v0";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct WorkspaceV0 {
 	pub id:        String,
 	pub label:     String,
@@ -35,6 +36,7 @@ pub struct WorkspaceV0 {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct CreatedByV0 {
 	pub client_kind: String,
 	pub client_id:   String,
@@ -308,6 +310,7 @@ impl std::fmt::Display for AssemblePhaseV0 {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct AssembleIntentV0 {
 	pub query:         String,
 	pub raw_user_text: String,
@@ -315,12 +318,14 @@ pub struct AssembleIntentV0 {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct AssembleWorkspaceV0 {
 	pub root_hint: String,
 	pub repo_id:   String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct AssemblyBudgetV0 {
 	pub max_context_tokens: u64,
 	pub max_items:          u64,
@@ -498,5 +503,51 @@ mod tests {
 		let value = serde_json::to_value(crate::fixtures::assemble_request_pre_tool())
 			.expect("AssembleRequestV0 serializes");
 		serde_json::from_value::<AssembleRequestV0>(value).expect("known fields still deserialize");
+	}
+
+	#[test]
+	fn create_session_request_rejects_unknown_field_nested_in_workspace() {
+		let mut value = create_session_request_value();
+		value["workspace"]
+			.as_object_mut()
+			.expect("workspace object")
+			.insert("api_key".to_owned(), serde_json::json!("sk-test-should-be-rejected"));
+		serde_json::from_value::<CreateSessionRequestV0>(value)
+			.expect_err("unknown field nested under workspace must be rejected");
+	}
+
+	#[test]
+	fn create_session_request_rejects_unknown_field_nested_in_created_by() {
+		let mut value = create_session_request_value();
+		value["created_by"]
+			.as_object_mut()
+			.expect("created_by object")
+			.insert("api_key".to_owned(), serde_json::json!("sk-test-should-be-rejected"));
+		serde_json::from_value::<CreateSessionRequestV0>(value)
+			.expect_err("unknown field nested under created_by must be rejected");
+	}
+
+	#[test]
+	fn assemble_request_rejects_unknown_field_nested_in_workspace() {
+		let mut value = serde_json::to_value(crate::fixtures::assemble_request_pre_tool())
+			.expect("AssembleRequestV0 serializes");
+		value["workspace"]
+			.as_object_mut()
+			.expect("workspace object")
+			.insert("api_key".to_owned(), serde_json::json!("sk-test-should-be-rejected"));
+		serde_json::from_value::<AssembleRequestV0>(value)
+			.expect_err("unknown field nested under workspace must be rejected");
+	}
+
+	#[test]
+	fn assemble_request_rejects_unknown_field_nested_in_budget() {
+		let mut value = serde_json::to_value(crate::fixtures::assemble_request_pre_tool())
+			.expect("AssembleRequestV0 serializes");
+		value["budget"]
+			.as_object_mut()
+			.expect("budget object")
+			.insert("api_key".to_owned(), serde_json::json!("sk-test-should-be-rejected"));
+		serde_json::from_value::<AssembleRequestV0>(value)
+			.expect_err("unknown field nested under budget must be rejected");
 	}
 }

@@ -428,3 +428,57 @@ async fn typed_errors_are_distinguishable_platform_errors() {
 		.unwrap_err();
 	assert_eq!(err.envelope().code, ProtocolViolationCode::ReplayMismatch.as_str());
 }
+
+/// The canonical `expected-session-projection.json` fixture, for direct
+/// comparison against `replay_session_projection` output through the
+/// persisted store (closes the B4 drift-review evidence gap, task 145).
+const EXPECTED_SESSION_PROJECTION: &str = include_str!(
+	"../../../.oh/workstreams/successor-agent-kernel/fixtures/slice-0/expected-session-projection.\
+	 json"
+);
+
+/// Rewrites every `session_id` field in `value` to the test session (the
+/// fixture uses a fixed placeholder session; `seed_fixture_stream` rewrites
+/// the raw events the same way).
+fn rewrite_session_ids(value: &mut serde_json::Value, session_id: &SessionId) {
+	match value {
+		serde_json::Value::Object(map) => {
+			if let Some(existing) = map.get_mut("session_id") {
+				*existing = serde_json::Value::String(session_id.as_str().to_owned());
+			}
+			for (_, nested) in map.iter_mut() {
+				rewrite_session_ids(nested, session_id);
+			}
+		},
+		serde_json::Value::Array(items) => {
+			for nested in items {
+				rewrite_session_ids(nested, session_id);
+			}
+		},
+		_ => {},
+	}
+}
+
+#[tokio::test]
+async fn replay_projection_through_store_matches_expected_projection_fixture() {
+	let db = TempDbPath::new("expected-projection");
+	let append_store = SqliteAppendStore::connect(db.as_str()).await.unwrap();
+
+	let session_id =
+		seed_fixture_stream(&append_store, "expected-projection", SUCCESSFUL_TURN_FIXTURE).await;
+
+	let projection = replay_session_projection(&append_store, &session_id)
+		.await
+		.expect("replay of the canonical successful-turn fixture must succeed");
+
+	let mut expected: serde_json::Value =
+		serde_json::from_str(EXPECTED_SESSION_PROJECTION).expect("fixture must parse");
+	rewrite_session_ids(&mut expected, &session_id);
+
+	let actual = serde_json::to_value(&projection).expect("projection must serialize");
+	assert_eq!(
+		actual, expected,
+		"projection through the persisted store must match the canonical \
+		 expected-session-projection fixture"
+	);
+}

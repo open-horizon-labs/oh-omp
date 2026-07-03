@@ -137,47 +137,45 @@ fn tool_catalog_parses_with_full_slice0_tool_roster() {
 }
 
 #[test]
-fn assemble_response_pre_tool_raw_is_exposed_as_a5_pending_text() {
-	let raw = fixtures::assemble_response_pre_tool_raw();
-	let value: serde_json::Value =
-		serde_json::from_str(raw).expect("fixture must still be valid JSON");
-	assert_eq!(value["schema_version"], "platform.assembly_response.v0");
+fn assemble_response_pre_tool_parses_as_typed_assembly_response() {
+	let response = fixtures::assemble_response_pre_tool();
+	assert_eq!(response.schema_version, "platform.assembly_response.v0");
+	assert_eq!(response.phase, AssemblePhaseV0::PreTool);
+	assert!(response.context_items.is_empty());
+	assert_eq!(response.degradation.len(), 2);
+	assert_eq!(response.degradation[0].code, "embeddings_unavailable");
+	assert_eq!(response.degradation[0].severity, "warning");
+	assert_eq!(response.degradation[1].code, "no_context");
+	assert_eq!(response.degradation[1].severity, "info");
 
-	// Confirms the precise A5-pending mismatch: `DegradationV0` requires a
-	// `reason` field, but this fixture's degradation entries carry `message`
-	// instead, which is why this fixture is not exposed as a typed
-	// `AssemblyResponseV0` accessor.
+	// `DegradationV0` carries `message`/`severity`, not the old `reason` field.
+	let value = serde_json::to_value(&response).unwrap();
 	assert!(value["degradation"][0].get("reason").is_none());
 	assert!(value["degradation"][0].get("message").is_some());
-
-	let parsed: Result<AssemblyResponseV0, _> = serde_json::from_str(raw);
-	let err = parsed.expect_err("AssemblyResponseV0 must reject this fixture's degradation shape");
-	assert!(
-		err.to_string().contains("reason"),
-		"expected a missing-field error mentioning `reason`, got: {err}"
-	);
+	assert_eq!(serde_json::from_value::<AssemblyResponseV0>(value).unwrap(), response);
 }
 
 #[test]
-fn assemble_response_post_read_raw_is_exposed_as_a5_pending_text() {
-	let raw = fixtures::assemble_response_post_read_raw();
-	let value: serde_json::Value =
-		serde_json::from_str(raw).expect("fixture must still be valid JSON");
-	assert_eq!(value["schema_version"], "platform.assembly_response.v0");
+fn assemble_response_post_read_parses_as_typed_assembly_response() {
+	let response = fixtures::assemble_response_post_read();
+	assert_eq!(response.schema_version, "platform.assembly_response.v0");
+	assert_eq!(response.phase, AssemblePhaseV0::PostRead);
+	assert_eq!(response.context_items.len(), 1);
+	let item = &response.context_items[0];
+	assert_eq!(item.source_kind, "tool_result");
+	assert!(item.included);
+	assert_eq!(item.token_estimate, 32);
+	assert_eq!(item.recovery.method, "platform_artifact");
+	assert_eq!(response.degradation.len(), 1);
+	assert_eq!(response.degradation[0].code, "embeddings_unavailable");
 
-	// Confirms the precise A5-pending mismatch: `ContextItemV0` requires
-	// `kind`/`content` fields that this fixture's context_items do not
-	// carry (it uses `source_kind`/`rendered_text` instead).
+	// `ContextItemV0` carries `source_kind`/`title`/`rendered_text`/`recovery`,
+	// not the old `kind`/`content` fields.
+	let value = serde_json::to_value(&response).unwrap();
 	assert!(value["context_items"][0].get("kind").is_none());
 	assert!(value["context_items"][0].get("content").is_none());
 	assert!(value["context_items"][0].get("source_kind").is_some());
-
-	let parsed: Result<AssemblyResponseV0, _> = serde_json::from_str(raw);
-	let err = parsed.expect_err("AssemblyResponseV0 must reject this fixture's context_item shape");
-	assert!(
-		err.to_string().contains("kind") || err.to_string().contains("reason"),
-		"expected a missing-field error mentioning `kind` or `reason`, got: {err}"
-	);
+	assert_eq!(serde_json::from_value::<AssemblyResponseV0>(value).unwrap(), response);
 }
 
 #[test]

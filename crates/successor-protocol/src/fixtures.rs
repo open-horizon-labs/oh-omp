@@ -5,13 +5,6 @@
 //! compile time via `include_str!` and exposed through one typed accessor
 //! per fixture, deserializing through the accepted A1-A4 protocol DTOs.
 //!
-//! Fixtures that do not deserialize cleanly through an accepted DTO are
-//! exposed only as raw-str accessors, doc-annotated `A5-pending` with the
-//! exact field mismatch discovered. Per the Slice 0 review-learning law,
-//! fixtures are sovereign: DTOs are never loosened, and no local wrapper
-//! type is introduced to make a mismatched fixture parse. Reconciling those
-//! wire shapes is A5 main-lane scope (`validation.rs`), not this slice.
-//!
 //! Fixture inventory:
 //! - `raw-events-successful-turn.json` -> [`raw_events_successful_turn`]: typed
 //!   `Vec<RawEventV0>`.
@@ -30,19 +23,14 @@
 //! - `raw-events-unsupported-tool.json` -> [`raw_events_unsupported_tool`]:
 //!   typed `Vec<RawEventV0>`, but not replay-eligible (see accessor doc).
 //! - `tool-catalog.json` -> [`tool_catalog`]: typed `ToolCatalogV0`.
-//! - `assemble-response-pre-tool.json` -> [`assemble_response_pre_tool_raw`]:
-//!   A5-pending. `DegradationV0` requires a `reason` field; the fixture's
-//!   `degradation` entries carry `message`/`severity` instead.
-//! - `assemble-response-post-read.json` -> [`assemble_response_post_read_raw`]:
-//!   A5-pending. Same `DegradationV0` mismatch as above, plus `ContextItemV0`
-//!   requires `kind` and `content` fields that the fixture's `context_items`
-//!   entries do not carry (they use
-//!   `source_kind`/`title`/`rendered_text`/`score`/`token_estimate`/
-//!   `included`/`recovery` instead).
+//! - `assemble-response-pre-tool.json` -> [`assemble_response_pre_tool`]: typed
+//!   `AssemblyResponseV0`.
+//! - `assemble-response-post-read.json` -> [`assemble_response_post_read`]:
+//!   typed `AssemblyResponseV0`.
 
 use crate::{
 	kernel_frame::KernelFrameV0,
-	platform_api::{AssembleRequestV0, SessionSnapshotV0},
+	platform_api::{AssembleRequestV0, AssemblyResponseV0, SessionSnapshotV0},
 	projection::SessionProjectionV0,
 	provider_shape_fixture::ProviderShapeNormalizationFixtureV0,
 	raw_event::RawEventV0,
@@ -91,23 +79,15 @@ const TOOL_CATALOG_JSON: &str = include_str!(
 	"../../../.oh/workstreams/successor-agent-kernel/fixtures/slice-0/tool-catalog.json"
 );
 
-/// A5-pending backing bytes: fails to deserialize as `AssemblyResponseV0`.
-/// `DegradationV0` requires a `reason: String` field; this fixture's
-/// `degradation` entries carry `message`/`severity` instead. Do not loosen
-/// `DegradationV0` to accept this shape here -- reconciling the wire shape
-/// is A5 main-lane scope.
+/// Canonical backing bytes for the `pre_tool`-phase assembly response
+/// (`assemble-response-pre-tool.json`).
 const ASSEMBLE_RESPONSE_PRE_TOOL_JSON: &str = include_str!(
 	"../../../.oh/workstreams/successor-agent-kernel/fixtures/slice-0/assemble-response-pre-tool.\
 	 json"
 );
 
-/// A5-pending backing bytes: fails to deserialize as `AssemblyResponseV0`
-/// for two reasons. `DegradationV0` requires `reason: String` (fixture has
-/// `message`/`severity`), and `ContextItemV0` requires `kind: String` and
-/// `content: serde_json::Value` (fixture has `source_kind`/`title`/
-/// `rendered_text`/`score`/`token_estimate`/`included`/`recovery` instead).
-/// Do not loosen `ContextItemV0`/`DegradationV0` to accept this shape here
-/// -- reconciling the wire shape is A5 main-lane scope.
+/// Canonical backing bytes for the `post_read`-phase assembly response
+/// (`assemble-response-post-read.json`).
 const ASSEMBLE_RESPONSE_POST_READ_JSON: &str = include_str!(
 	"../../../.oh/workstreams/successor-agent-kernel/fixtures/slice-0/assemble-response-post-read.\
 	 json"
@@ -187,22 +167,16 @@ pub fn tool_catalog() -> ToolCatalogV0 {
 		.expect("tool-catalog.json must deserialize as ToolCatalogV0")
 }
 
-/// A5-pending: `assemble-response-pre-tool.json` does not deserialize as
-/// `AssemblyResponseV0`.
-///
-/// See the module-level fixture inventory and the doc comment on the backing
-/// constant for the exact mismatch. Exposed as raw JSON text only; do not
-/// force-type through a loosened or local DTO.
-pub const fn assemble_response_pre_tool_raw() -> &'static str {
-	ASSEMBLE_RESPONSE_PRE_TOOL_JSON
+/// Canonical `pre_tool`-phase assembly response
+/// (`assemble-response-pre-tool.json`).
+pub fn assemble_response_pre_tool() -> AssemblyResponseV0 {
+	serde_json::from_str(ASSEMBLE_RESPONSE_PRE_TOOL_JSON)
+		.expect("assemble-response-pre-tool.json must deserialize as AssemblyResponseV0")
 }
 
-/// A5-pending: `assemble-response-post-read.json` does not deserialize as
-/// `AssemblyResponseV0`.
-///
-/// See the module-level fixture inventory and the doc comment on the backing
-/// constant for the exact mismatch. Exposed as raw JSON text only; do not
-/// force-type through a loosened or local DTO.
-pub const fn assemble_response_post_read_raw() -> &'static str {
-	ASSEMBLE_RESPONSE_POST_READ_JSON
+/// Canonical `post_read`-phase assembly response
+/// (`assemble-response-post-read.json`).
+pub fn assemble_response_post_read() -> AssemblyResponseV0 {
+	serde_json::from_str(ASSEMBLE_RESPONSE_POST_READ_JSON)
+		.expect("assemble-response-post-read.json must deserialize as AssemblyResponseV0")
 }

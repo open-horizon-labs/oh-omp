@@ -248,24 +248,30 @@ impl SharingV0 {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ContextItemRecoveryV0 {
+	pub method: String,
+	pub id:     String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct ContextItemV0 {
 	pub context_item_id:    ContextItemId,
-	pub kind:               String,
-	pub content:            serde_json::Value,
-	#[serde(skip_serializing_if = "Option::is_none")]
-	pub source_envelope_id: Option<SourceEnvelopeId>,
-	#[serde(skip_serializing_if = "Option::is_none")]
-	pub artifact_id:        Option<ArtifactId>,
-	#[serde(default)]
-	pub metadata:           serde_json::Value,
+	pub source_envelope_id: SourceEnvelopeId,
+	pub artifact_id:        ArtifactId,
+	pub source_kind:        String,
+	pub title:              String,
+	pub rendered_text:      String,
+	pub score:              f64,
+	pub token_estimate:     u64,
+	pub included:           bool,
+	pub recovery:           ContextItemRecoveryV0,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct DegradationV0 {
-	pub code:            String,
-	pub reason:          String,
-	#[serde(skip_serializing_if = "Option::is_none")]
-	pub context_item_id: Option<ContextItemId>,
+	pub code:     String,
+	pub message:  String,
+	pub severity: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
@@ -380,7 +386,7 @@ pub struct PolicyV0 {
 	pub weights:          serde_json::Value,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct AssemblyResponseV0 {
 	pub schema_version: String,
 	pub assemble_id:    AssembleId,

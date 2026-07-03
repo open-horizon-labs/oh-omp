@@ -69,10 +69,10 @@ Verdict: required-before-execute
 
 If skipped, rationale: not applicable; Wave B runbook requires dissent when touching replay/snapshot semantics.
 
-If completed:
-- Dissent concern:
-- Response:
-- Outcome:
+If completed (task 142-B4PreExecutionDissent, verdict PROCEED-WITH-CONDITIONS, checkout-proof `65b7482dc`):
+- Dissent concern: platform-side projection risks duplicating A4's accepted pure replay, creating a second truth plane via persisted projections/snapshots, and pre-owning B6 routes; no B4 modules are declared in `lib.rs`.
+- Response: contract §2.1/§2.2 make persisted RawEvents canonical and projections rebuildable-on-demand views; dispatch §4.2 requires replay/snapshot from raw events + artifacts matching canonical fixtures; A4's `project_session` is the accepted projection; B2/B3 already expose reads and on-demand source indexes.
+- Outcome: PROCEED with orchestrator rulings: (1) `lib.rs` expansion granted for exactly `pub mod projection;`, `pub mod replay;`, `pub mod trace_index;` — no other edits; (2) no new migration, projection/snapshot/trace table, or Cargo dependency — always-replay on-demand derivation only; if durable projection state ever seems needed, STOP and route the design decision; (3) reuse seam is binding: load ordered `Vec<RawEventV0>` via B2's `RawEventAppendStore`, call accepted A4 `project_session`, map into platform `SessionSnapshotV0`/derived indexes — never copy A4 match logic; if A4 is too narrow (e.g. unsupported-tool/error projection), that is an authorized narrow A4 reopen, not a platform-local implementation; (4) no route ownership — B4 exposes service-level functions B6 wires later; no duplicate event-page reads; `trace_index` stays minimal/derived as substrate for B5/B6; (5) surface limited to replay adapter + snapshot projection + fixture-derived proof.
 
 ## Execute
 

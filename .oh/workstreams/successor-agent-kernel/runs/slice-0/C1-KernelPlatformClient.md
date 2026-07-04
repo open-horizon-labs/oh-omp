@@ -79,59 +79,62 @@ If completed (task 163-C1PreExecutionDissent, verdict ALLOW / PROCEED-WITH-CONDI
 ## Execute
 
 Checklist:
-- [ ] owned files only, plus explicit C8 `lib.rs` module grant and disclosed Cargo bootstrap artifacts if authorized
-- [ ] shared interfaces imported from `successor-protocol`; no local duplicate platform DTOs
-- [ ] no forbidden shortcuts: no direct platform crate imports, SQLite access, curl/shell, or local semantic assembly fallback
-- [ ] tests/checks added or explicitly routed for the dispatch-map test-file ambiguity
-- [ ] targeted validation passed (`cargo test -p successor-kernel` minimum, then orchestrator `make check-rs` before review)
-- [ ] named risks retired or routed, especially credential no-echo and platform-assigned `session_seq` trust
-- [ ] model binding verified for execution agent
-- [ ] fixture sovereignty preserved; no fixture/contract edits
-- [ ] residual A4 unsupported-tool projection issue is not worked around in the client
+- [x] owned files only (platform_client.rs, platform_http.rs, platform_error.rs replacing their C8-shell stubs) plus dev-dependency staging: `successor-context-platform` (dissent ruling 1) and `axum` (test-server bind; disclosed by executor, RATIFIED by orchestrator after Superego task 165 — recorded in commit `5bee8a46b`); production dep tree proven free of both via `cargo tree -e normal`
+- [x] shared interfaces imported from `successor-protocol`; no local duplicate platform DTOs
+- [x] no forbidden shortcuts: no platform crate imports in production code, no SQLite access, no mock platform servers, no oneshot
+- [x] tests routed: C1-owned `tests/slice0_platform_client.rs` resolves the dispatch-map test-file ambiguity (real router, real TCP, temp SQLite)
+- [x] targeted validation passed (4 unit + 7 integration kernel tests); orchestrator `make check-rs` exit 0 at `72d28cbc7` and `5bee8a46b`
+- [x] named risks retired: bearer redaction proven by dedicated tests (Debug/Display/transport paths); `session_seq` consumed only from platform responses, never client-supplied
+- [x] model binding verified (`slice0-executor`, `anthropic/claude-sonnet-5:high`; tasks 164, 168)
+- [x] fixture sovereignty preserved; no fixture/contract edits
+- [x] A4 unsupported-tool residual untouched — the client transports DTOs and takes no projection-semantics position
 
 Changed files:
-- Pending execution.
+- `crates/successor-kernel/src/{platform_client.rs, platform_http.rs, platform_error.rs}`, new `crates/successor-kernel/tests/slice0_platform_client.rs`
+- `crates/successor-kernel/Cargo.toml` dev-dependencies (successor-context-platform, axum), `Cargo.lock` transitive
 
 Validation evidence:
-- Pending execution.
+- 4 unit + 7 integration tests green: full §6 happy path over real TCP with canonical fixtures, duplicate=true replay, typed 401/404/400 envelopes, malformed-body redaction, URL-join pinning for `/v0` bases with and without trailing slash
+- `cargo tree -p successor-kernel -e normal`: no successor-context-platform, no axum
+- `make check-rs` exit 0 at both commits
 
 ## Code Review
 
-Reviewer: `slice0-reviewer`
+Reviewer: `slice0-reviewer` (task 167-C1CodeReview, checkout-proof at `72d28cbc7`)
 Reviewer model: `openai-codex/gpt-5.5:high`
-Verdict: pending
+Verdict: REVISE, closed
 
 Findings:
-- Pending execution.
+- P1: client hardcoded `/v0/...` onto the caller base URL while contract §6 defines the base URL as the `/v0` API base — contract-faithful callers would request `/v0/v0/...`; tests masked it by using the router root as base.
 
-Fixes applied:
-- Pending execution.
+Fixes applied (task 168, commit `5bee8a46b`):
+- All eight endpoint paths contract-relative; base URL semantics documented; harness binds `http://{addr}/v0`; two URL-join pinning tests prevent silent regression.
 
 ## Drift Review
 
 Original aim: kernel-side HTTP platform client over `/v0` with auth-plane separation.
-Current work: pending execution.
-Gap: pending.
-Verdict: pending
-Authority boundary: pending
+Current work: tasks 164+168 as committed through `5bee8a46b`.
+Gap: none material (task 166-C1DriftReview: client-only lane held; no config/provider/frame/retry-policy ownership taken; is_retryable classification-only noted as within dissent allowance).
+Verdict: aligned
+Authority boundary: clear
 
 ## Superego Review
 
-Reviewer: `slice0-superego-reviewer`
+Reviewer: `slice0-superego-reviewer` (task 165-C1SuperegoReview, checkout-proof at `72d28cbc7`)
 Reviewer model: `openai-codex/gpt-5.5:high`
-Verdict: pending
+Verdict: REVISE, closed
 
 Frame risks:
-- Pending execution.
+- None in code (HTTP-only boundary, DTO/envelope sovereignty, redacted custody all confirmed). Two governance items: the axum dev-dependency exceeded the literal ruling-1 grant and needed explicit ratification; packet evidence was stale.
 
 Required corrections:
-- Pending execution.
+- Axum dev-dependency RATIFIED by orchestrator (commit `5bee8a46b` message) as a necessary companion of the granted real-TCP test ruling; this evidence fill closes the staleness item.
 
 ## Delivery
 
-Status: pending execution
+Status: accepted
 Residual risks:
-- C1 has no dispatch-owned test file; orchestration must grant/reroute tests before acceptance.
-- Exact HTTP retry/backoff policy is unspecified; dissent must either defer or bound it.
+- Retry POLICY is deliberately unowned: `is_retryable()` classifies, consumers decide; C7 turn runner must own any retry loop explicitly.
+- Subprocess black-box smoke of the platform binary is deferred to Wave D e2e; in-lane coverage binds the accepted router in-process over real TCP.
 Human verification needed:
-- None before execution; pre-execution dissent ruling required.
+- None outstanding.

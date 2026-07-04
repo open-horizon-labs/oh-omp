@@ -79,58 +79,58 @@ If completed (task 174-C3PreExecutionDissent, verdict ALLOW / PROCEED-WITH-CONDI
 ## Execute
 
 Checklist:
-- [ ] owned files only, plus explicit C8 top-level module grant and C4 provider-namespace shell/grant if authorized
-- [ ] shared protocol/provider shape metadata imported from owner crate; no credential DTOs in protocol/platform shapes
-- [ ] no forbidden shortcuts: no credential logging, serialization, platform storage, or local RPC exposure
-- [ ] tests/checks added or explicitly routed for the dispatch-map test-file ambiguity
-- [ ] targeted validation passed (`cargo test -p successor-kernel` minimum, then orchestrator `make check-rs` before review)
-- [ ] named risks retired or routed, especially provider credential no-echo and auth-plane separation
-- [ ] model binding verified for execution agent
-- [ ] fixture sovereignty preserved; no fixture/contract edits
+- [x] owned files only (config.rs, provider/auth.rs, provider/credentials.rs replacing their shell stubs); provider/mod.rs untouched; no Cargo changes
+- [x] no forbidden shortcuts: non-Serialize-by-construction credential type (compile_fail doc-test), pub(in crate::provider) header materialization, no logging/persistence paths
+- [x] tests routed via granted `tests/slice0_provider_auth.rs` (dissent ruling 2) — closes the packet's test-file residual
+- [x] targeted validation + orchestrator `make check-rs` exit 0 at final `b75f38389` (55 kernel tests)
+- [x] named risks retired: redaction sentinels, plane separation type-enforced (no From/Into), stateless re-resolution, injectable env seam (no process-env mutation)
+- [x] model binding verified (`slice0-executor`, `anthropic/claude-sonnet-5:high`; tasks 175, 179, 180)
+- [x] fixture sovereignty preserved; env names recorded: ANTHROPIC_API_KEY, MEMEX_LICENSE, SUCCESSOR_CONTEXT_PLATFORM_URL (contract §6 default)
 
 Changed files:
-- Pending execution.
+- `crates/successor-kernel/src/{config.rs, provider/auth.rs, provider/credentials.rs}`, new `tests/slice0_provider_auth.rs`
 
 Validation evidence:
-- Pending execution.
+- 55 kernel tests green incl. 13 provider-auth + compile_fail doc-test; `make check-rs` exit 0 at `b75f38389` after two gate repairs (unused-import move `2d4b2e82a`, fmt `b75f38389`)
 
 ## Code Review
 
-Reviewer: `slice0-reviewer`
+Reviewer: `slice0-reviewer` (task 178-C3CodeReview, checkout-proof at `fce2c3f22`)
 Reviewer model: `openai-codex/gpt-5.5:high`
-Verdict: pending
+Verdict: REVISE, closed
 
 Findings:
-- Pending execution.
+- P2: config.rs alias layer (`ProviderAuthConfigOutcome`, `resolve_provider_auth_entry_point`) created a second public spelling of the provider-auth seam with a plane-confusing name.
 
 Fixes applied:
-- Pending execution.
+- Task 179 (`9fc7f42b9`): alias + wrapper deleted, single owning interface `provider::auth`; grep-proof of removal. Gate repairs: task 180 import relocation (`2d4b2e82a`), fmt (`b75f38389`).
 
 ## Drift Review
 
 Original aim: local-only provider credential resolver and redaction boundary.
-Current work: pending execution.
-Gap: pending.
-Verdict: pending
-Authority boundary: pending
+Current work: tasks 175+179+180 through `b75f38389`.
+Gap: none material (task 177-C3DriftReview; the alias duplication flagged there was removed).
+Verdict: aligned
+Authority boundary: clear
 
 ## Superego Review
 
 Reviewer: `slice0-superego-reviewer`
 Reviewer model: `openai-codex/gpt-5.5:high`
-Verdict: pending
+Verdict: ALLOW (task 176-C3SuperegoReview, checkout-proof at `fce2c3f22`)
 
 Frame risks:
-- Pending execution.
+- None: auth planes type-separated; custody one-way doors within rulings; zeroization recorded deferred; env-name decisions disclosed.
 
 Required corrections:
-- Pending execution.
+- None.
 
 ## Delivery
 
-Status: pending execution
+Status: accepted
 Residual risks:
-- Provider credential env names are unspecified; dissent must bind or explicitly leave them as config inputs without inventing public contract.
-- C3 has no dispatch-owned security test file; orchestration must grant/reroute tests before acceptance.
+- Zeroization deferred (no new deps ruling); revisit if kernel memory-dump threat model hardens.
+- Anthropic-only registry seam: adding providers is an internal extension, not a public contract change.
+- Executor targeted validation missed clippy --all-targets and fmt twice; orchestrator gate caught both — future dispatches name fmt+clippy explicitly.
 Human verification needed:
-- None before execution; pre-execution dissent ruling required.
+- None outstanding.

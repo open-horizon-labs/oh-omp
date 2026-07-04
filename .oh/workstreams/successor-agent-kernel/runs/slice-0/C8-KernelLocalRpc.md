@@ -75,10 +75,10 @@ Verdict: required-before-execute
 
 If skipped, rationale: not applicable; C8 touches public local RPC/SSE surface, resume authority, provider secret exposure boundaries, module/Cargo bootstrap staging, and model-visible execution routing through the kernel.
 
-If completed:
-- Dissent concern: pending.
-- Response: pending.
-- Outcome: pending.
+If completed — SHELL/BOOTSTRAP STAGE (task 161-C8ShellPreExecutionDissent, verdict PROCEED-WITH-CONDITIONS, checkout-proof `ec2899898`; full-RPC-stage dissent remains owed before the final C8 execution):
+- Dissent concern: the kernel shell fixes durable decisions (module topology, Cargo substrate) before owning lanes exist; dangling `pub mod` does not compile; the reviewer also reported the C packets missing from the working tree.
+- Response: materialization concern DISPROVEN by orchestrator evidence — `git ls-tree ec2899898` shows all eight C packets committed and `ls` shows all eight on disk; the reviewer's filesystem lookup was faulty. Substantive findings stand: contract §0 recommends tokio/reqwest/serde/thiserror/tracing substrate; §2.4/§10 keep provider credentials local; the eight packets' owned files define the exact module topology; B1/A0 precedent allows disclosed bootstrap shells with compilable stubs.
+- Outcome: PROCEED with orchestrator rulings for the shell stage: (1) declare modules ONLY with corresponding compilable stub files carrying no behavior or API contracts, disclosed as bootstrap ownership expansion that owning lanes replace/extend — topology: `platform_client`/`platform_http`/`platform_error` (C1), `frame_sink`/`stream`/`sse` (C2), `config` + `provider::{auth, credentials}` (C3), `provider::{projection, anthropic}` + `provider/mod.rs` (C4-owned, stub only), `tools::{catalog, read}` + `tools/mod.rs` (C5-owned, stub only), `tools::{search_files, find, grep}` (C6), `runner`/`state_machine`/`id_factory`/`turn_trace` (C7), `http`/`routes`/`api` (C8); (2) Cargo shell adds ONLY tokio, reqwest (json + streaming + rustls-tls), serde/serde_json, thiserror, tracing; prohibited in shell: axum (full-C8 decision), sqlx/storage deps, provider SDKs, per-lane fs/glob/regex crates; (3) kernel stays lib-only; any bin/RPC-server target belongs to full C8; (4) no error-seam or API-shape decisions in stubs — the kernel error type belongs to C1, RPC surface to full C8; (5) `Cargo.lock` transitive-only, disclosed.
 
 ## Execute
 

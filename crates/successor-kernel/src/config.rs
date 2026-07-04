@@ -29,10 +29,7 @@
 //! other's.
 
 pub use crate::provider::auth::ANTHROPIC_API_KEY_ENV;
-use crate::{
-	platform_http::EntitlementToken,
-	provider::auth::{ProviderSlot, resolve_provider_auth},
-};
+use crate::platform_http::EntitlementToken;
 
 /// Env var carrying the platform entitlement token (contract §2.4).
 ///
@@ -128,6 +125,7 @@ mod tests {
 	use std::collections::HashMap;
 
 	use super::*;
+	use crate::provider::auth::{ProviderSlot, resolve_provider_auth};
 
 	fn map_lookup<'a>(entries: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {
 		let map: HashMap<&str, &str> = entries.iter().copied().collect();

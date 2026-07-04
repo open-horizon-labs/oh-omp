@@ -208,6 +208,52 @@ fn read_rejects_a_directory_as_not_a_file() {
 }
 
 // ---------------------------------------------------------------------
+// Read: root-bounding precedence — lexical rejection before root I/O
+// ---------------------------------------------------------------------
+
+#[test]
+fn read_precedence_absolute_path_wins_over_missing_root() {
+	let base = unique_temp_dir("missing-root-abs");
+	let missing_root = base.join("does-not-exist");
+	assert_eq!(read(&missing_root, "/etc/passwd"), Err(ReadRejection::AbsolutePath));
+	std::fs::remove_dir_all(&base).ok();
+}
+
+#[test]
+fn read_precedence_parent_traversal_wins_over_missing_root() {
+	let base = unique_temp_dir("missing-root-dotdot");
+	let missing_root = base.join("does-not-exist");
+	assert_eq!(read(&missing_root, "../outside.txt"), Err(ReadRejection::ParentTraversal));
+	std::fs::remove_dir_all(&base).ok();
+}
+
+#[cfg(unix)]
+#[test]
+fn read_precedence_unreadable_root_with_malformed_path_rejects_lexically_first() {
+	use std::os::unix::fs::PermissionsExt;
+
+	let base = unique_temp_dir("unreadable-root");
+	let locked_parent = base.join("locked_parent");
+	let root = locked_parent.join("workspace");
+	std::fs::create_dir_all(&root).unwrap();
+	std::fs::set_permissions(&locked_parent, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+	// Even if a privileged runner (root/CI) bypasses these permission bits
+	// entirely, this assertion still holds: the lexical check on
+	// `relative_path` runs before `WorkspaceRoot::new` ever attempts to
+	// canonicalize `root`, so the outcome does not depend on permission
+	// enforcement.
+	let outcome_abs = read(&root, "/etc/passwd");
+	let outcome_dotdot = read(&root, "../outside.txt");
+
+	std::fs::set_permissions(&locked_parent, std::fs::Permissions::from_mode(0o755)).ok();
+	std::fs::remove_dir_all(&base).ok();
+
+	assert_eq!(outcome_abs, Err(ReadRejection::AbsolutePath));
+	assert_eq!(outcome_dotdot, Err(ReadRejection::ParentTraversal));
+}
+
+// ---------------------------------------------------------------------
 // Root with trailing separator normalizes correctly
 // ---------------------------------------------------------------------
 

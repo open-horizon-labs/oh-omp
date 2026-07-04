@@ -22,7 +22,10 @@ use std::path::Path;
 
 use successor_protocol::artifact::{ArtifactHash, validate_artifact_content};
 
-use super::{PathBoundError, WorkspaceRoot, compute_artifact_bytes, looks_binary};
+use super::{
+	PathBoundError, WorkspaceRoot, compute_artifact_bytes, looks_binary,
+	validate_relative_path_lexically,
+};
 
 /// Whole-file content produced by a successful [`read`].
 ///
@@ -113,8 +116,30 @@ fn map_read_io(err: std::io::Error) -> ReadRejection {
 /// host process) — never derived internally from an environment variable
 /// or the current working directory. `relative_path` is caller/tool-call
 /// supplied and is bounded per [`super::WorkspaceRoot::resolve`].
+///
+/// `relative_path` is validated lexically (absolute path, `..` components)
+/// *before* `root_path` is canonicalized, so a malformed caller path is
+/// rejected even when the configured root itself does not exist or cannot
+/// be read — canonicalizing an untrusted root first would let a root-level
+/// I/O failure (`RootNotFound`/`PermissionDenied`) mask a lexical
+/// rejection the contract requires to take precedence.
 pub fn read(root_path: &Path, relative_path: &str) -> Result<ReadArtifactContent, ReadRejection> {
+	validate_relative_path_lexically(relative_path).map_err(map_path_bound)?;
 	let root = WorkspaceRoot::new(root_path).map_err(map_path_bound)?;
+	read_with_root(&root, relative_path)
+}
+
+/// Read `relative_path` against an already-constructed [`WorkspaceRoot`].
+///
+/// For `pub(crate)` callers (e.g. a turn runner) that construct the
+/// workspace root once per session rather than canonicalizing it on every
+/// tool call. [`WorkspaceRoot::resolve`] applies the same lexical checks
+/// before any candidate-path I/O that [`read`] applies before root
+/// construction, so precedence is identical between the two entry points.
+pub(crate) fn read_with_root(
+	root: &WorkspaceRoot,
+	relative_path: &str,
+) -> Result<ReadArtifactContent, ReadRejection> {
 	let resolved = root.resolve(relative_path).map_err(map_path_bound)?;
 
 	let metadata = std::fs::metadata(&resolved).map_err(map_read_io)?;
@@ -262,6 +287,66 @@ mod tests {
 		let plain = read(&root, "hello.txt").unwrap();
 		let slashed = read(Path::new(&with_slash), "hello.txt").unwrap();
 		assert_eq!(plain, slashed);
+
+		std::fs::remove_dir_all(&root).ok();
+	}
+
+	#[test]
+	fn read_precedence_absolute_path_wins_over_missing_root() {
+		let base = unique_temp_dir("missing-root-abs");
+		let missing_root = base.join("does-not-exist");
+		assert_eq!(read(&missing_root, "/etc/passwd"), Err(ReadRejection::AbsolutePath));
+		std::fs::remove_dir_all(&base).ok();
+	}
+
+	#[test]
+	fn read_precedence_parent_traversal_wins_over_missing_root() {
+		let base = unique_temp_dir("missing-root-dotdot");
+		let missing_root = base.join("does-not-exist");
+		assert_eq!(read(&missing_root, "../outside.txt"), Err(ReadRejection::ParentTraversal));
+		std::fs::remove_dir_all(&base).ok();
+	}
+
+	#[cfg(unix)]
+	#[test]
+	fn read_precedence_unreadable_root_with_malformed_path_rejects_lexically_first() {
+		use std::os::unix::fs::PermissionsExt;
+
+		let base = unique_temp_dir("unreadable-root");
+		let locked_parent = base.join("locked_parent");
+		let root = locked_parent.join("workspace");
+		std::fs::create_dir_all(&root).unwrap();
+		std::fs::set_permissions(&locked_parent, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+		// Even if a privileged runner (root/CI) bypasses these permission
+		// bits entirely, this assertion still holds: the lexical check on
+		// `relative_path` runs before `WorkspaceRoot::new` ever attempts to
+		// canonicalize `root`, so the outcome does not depend on permission
+		// enforcement.
+		let outcome_abs = read(&root, "/etc/passwd");
+		let outcome_dotdot = read(&root, "../outside.txt");
+
+		std::fs::set_permissions(&locked_parent, std::fs::Permissions::from_mode(0o755)).ok();
+		std::fs::remove_dir_all(&base).ok();
+
+		assert_eq!(outcome_abs, Err(ReadRejection::AbsolutePath));
+		assert_eq!(outcome_dotdot, Err(ReadRejection::ParentTraversal));
+	}
+
+	#[test]
+	fn read_with_root_applies_the_same_checks_as_read() {
+		let root = unique_temp_dir("read-with-root");
+		let content = b"same substrate, two entry points\n";
+		std::fs::write(root.join("shared.txt"), content).unwrap();
+
+		let workspace_root = WorkspaceRoot::new(&root).expect("root must canonicalize");
+
+		assert_eq!(read_with_root(&workspace_root, "shared.txt"), read(&root, "shared.txt"));
+		assert_eq!(read_with_root(&workspace_root, "/etc/passwd"), Err(ReadRejection::AbsolutePath));
+		assert_eq!(
+			read_with_root(&workspace_root, "../outside.txt"),
+			Err(ReadRejection::ParentTraversal)
+		);
 
 		std::fs::remove_dir_all(&root).ok();
 	}

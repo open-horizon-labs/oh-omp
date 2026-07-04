@@ -368,13 +368,29 @@ pub fn normalize_response(
 				.get("content")
 				.and_then(WireJson::as_array)
 				.ok_or_else(malformed)?;
-			let text = content
+			let text_block = content
 				.iter()
-				.find(|block| block.get("type").and_then(WireJson::as_str) == Some("text"))
-				.and_then(|block| block.get("text"))
-				.and_then(WireJson::as_str)
-				.ok_or_else(malformed)?;
-			(normalize_anthropic_stop_reason(stop_reason), text.to_owned())
+				.find(|block| block.get("type").and_then(WireJson::as_str) == Some("text"));
+			let has_tool_use = content
+				.iter()
+				.any(|block| block.get("type").and_then(WireJson::as_str) == Some("tool_use"));
+			let text = if let Some(block) = text_block {
+				block
+					.get("text")
+					.and_then(WireJson::as_str)
+					.ok_or_else(malformed)?
+					.to_owned()
+			} else if has_tool_use {
+				// Anthropic emits tool-use-only turns (`stop_reason: "tool_use"`) with no
+				// text content block. `NormalizedResponseV0::text` is a required `String`
+				// field (not `Option<String>`), so the least-inventive representation
+				// consistent with fixture semantics is an empty string; the tool call
+				// itself is extracted separately via `normalize_tool_call`.
+				String::new()
+			} else {
+				return Err(malformed());
+			};
+			(normalize_anthropic_stop_reason(stop_reason), text)
 		},
 		ProviderApiShapeV0::OpenAiChatCompletions => {
 			let choice = wire
@@ -547,5 +563,90 @@ mod tests {
 
 		let wire = project_tool_result(&ProviderApiShapeV0::OpenAiResponses, &tool_result, "call_1");
 		assert_eq!(wire["output"], "artifact:art_00000000-0000-4000-8000-000000000001");
+	}
+	#[test]
+	fn normalize_response_succeeds_for_a_tool_use_only_anthropic_message() {
+		let wire = serde_json::json!({
+			"stop_reason": "tool_use",
+			"content": [{
+				"type": "tool_use",
+				"id": "toolu_01",
+				"name": "read",
+				"input": { "path": "a.txt" },
+			}],
+		});
+		let message_id = MessageId::from_raw("msg_00000000-0000-4000-8000-000000000002".to_owned());
+
+		let response = normalize_response(&ProviderApiShapeV0::AnthropicMessages, &wire, message_id)
+			.expect("a tool-use-only message must normalize, not be treated as malformed");
+		assert_eq!(response.finish_reason, "tool_calls");
+		assert_eq!(response.text, "");
+
+		let tool_call_id =
+			ToolCallId::from_raw("tool_00000000-0000-4000-8000-000000000002".to_owned());
+		let block = &wire["content"][0];
+		let (tool_call, _metadata) =
+			normalize_tool_call(&ProviderApiShapeV0::AnthropicMessages, block, tool_call_id)
+				.expect("the tool_use block must still normalize into a tool call");
+		assert_eq!(tool_call.tool_name, "read");
+	}
+
+	#[test]
+	fn normalize_response_keeps_the_text_block_when_content_is_mixed() {
+		let wire = serde_json::json!({
+			"stop_reason": "tool_use",
+			"content": [
+				{ "type": "text", "text": "thinking out loud" },
+				{ "type": "tool_use", "id": "toolu_02", "name": "bash", "input": {} },
+			],
+		});
+		let message_id = MessageId::from_raw("msg_00000000-0000-4000-8000-000000000003".to_owned());
+
+		let response = normalize_response(&ProviderApiShapeV0::AnthropicMessages, &wire, message_id)
+			.expect("mixed text + tool_use content must still normalize");
+		assert_eq!(response.text, "thinking out loud");
+		assert_eq!(response.finish_reason, "tool_calls");
+	}
+
+	#[test]
+	fn normalize_response_still_rejects_content_with_neither_text_nor_tool_use() {
+		let wire = serde_json::json!({
+			"stop_reason": "end_turn",
+			"content": [{ "type": "unknown_block_kind" }],
+		});
+		let message_id = MessageId::from_raw("msg_00000000-0000-4000-8000-000000000004".to_owned());
+
+		let err = normalize_response(&ProviderApiShapeV0::AnthropicMessages, &wire, message_id)
+			.expect_err("content with neither a text nor a tool_use block must stay malformed");
+		assert_eq!(err, ProjectionError::MalformedResponse { shape: "anthropic_messages" });
+	}
+
+	#[test]
+	fn first_tool_use_block_wins_when_a_message_carries_more_than_one() {
+		// Pins Slice 0's single-call semantics: `AnthropicAdapter::send_message`
+		// extracts a tool call by taking the first `tool_use` content block via
+		// `.find()`. Mirrored here directly against the wire shape, since
+		// `send_message` performs a live HTTP call and this crate has no
+		// mock-HTTP dependency in scope for this fix.
+		let wire = serde_json::json!({
+			"stop_reason": "tool_use",
+			"content": [
+				{ "type": "tool_use", "id": "toolu_first", "name": "read", "input": {} },
+				{ "type": "tool_use", "id": "toolu_second", "name": "bash", "input": {} },
+			],
+		});
+		let first_block = wire["content"]
+			.as_array()
+			.expect("content is an array")
+			.iter()
+			.find(|block| block.get("type").and_then(WireJson::as_str) == Some("tool_use"))
+			.expect("at least one tool_use block is present");
+
+		let tool_call_id =
+			ToolCallId::from_raw("tool_00000000-0000-4000-8000-000000000005".to_owned());
+		let (tool_call, _metadata) =
+			normalize_tool_call(&ProviderApiShapeV0::AnthropicMessages, first_block, tool_call_id)
+				.expect("the first tool_use block normalizes");
+		assert_eq!(tool_call.tool_name, "read");
 	}
 }

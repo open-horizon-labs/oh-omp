@@ -57,6 +57,10 @@ use successor_protocol::artifact::ArtifactHash;
 /// deliberately not exposed in any public function signature in this crate;
 /// [`read::read`] takes a plain `&Path` and constructs a `WorkspaceRoot`
 /// internally so its own public API never has to name this type.
+///
+/// [`read::read_with_root`] additionally accepts a preconstructed root for
+/// `pub(crate)` callers (e.g. a turn runner) that need to avoid
+/// re-canonicalizing the root on every tool call.
 #[derive(Debug, Clone)]
 pub(crate) struct WorkspaceRoot {
 	root: PathBuf,
@@ -72,21 +76,16 @@ impl WorkspaceRoot {
 	/// Resolve a caller-supplied relative path to a canonical path
 	/// guaranteed to be contained within the trusted root.
 	///
-	/// Rejection order: absolute path, `..` component (both lexical, no
-	/// I/O), then not-found or out-of-root (both require canonicalizing the
-	/// candidate, which requires it to exist).
+	/// Lexical checks (absolute path, `..` component) are delegated to
+	/// [`validate_relative_path_lexically`] so callers that must construct
+	/// the trusted root can apply the same checks before any root I/O.
+	/// Rejection order: lexical checks first (no I/O), then not-found or
+	/// out-of-root (both require canonicalizing the candidate, which
+	/// requires it to exist).
 	pub(crate) fn resolve(&self, relative: &str) -> Result<PathBuf, PathBoundError> {
-		let candidate = Path::new(relative);
-		if candidate.is_absolute() {
-			return Err(PathBoundError::AbsolutePath);
-		}
-		if candidate
-			.components()
-			.any(|component| matches!(component, Component::ParentDir))
-		{
-			return Err(PathBoundError::ParentTraversal);
-		}
+		validate_relative_path_lexically(relative)?;
 
+		let candidate = Path::new(relative);
 		let joined = self.root.join(candidate);
 		let canonical = std::fs::canonicalize(&joined).map_err(classify_candidate_io)?;
 
@@ -96,6 +95,27 @@ impl WorkspaceRoot {
 
 		Ok(canonical)
 	}
+}
+
+/// Reject `relative` lexically without touching the filesystem: absolute
+/// paths and any `..` component are refused before canonicalization.
+/// Shared by [`WorkspaceRoot::resolve`] and by callers (e.g.
+/// [`read::read`]) that must validate the caller-supplied path before
+/// performing I/O to construct the workspace root itself — so a
+/// malformed path is rejected even when the configured root does not
+/// exist or cannot be read.
+pub(crate) fn validate_relative_path_lexically(relative: &str) -> Result<(), PathBoundError> {
+	let candidate = Path::new(relative);
+	if candidate.is_absolute() {
+		return Err(PathBoundError::AbsolutePath);
+	}
+	if candidate
+		.components()
+		.any(|component| matches!(component, Component::ParentDir))
+	{
+		return Err(PathBoundError::ParentTraversal);
+	}
+	Ok(())
 }
 
 fn classify_root_io(err: std::io::Error) -> PathBoundError {

@@ -80,58 +80,59 @@ If completed (task 193-C6PreExecutionDissent, verdict ALLOW / PROCEED-WITH-CONDI
 ## Execute
 
 Checklist:
-- [ ] owned files only, plus explicit C8 `lib.rs` grant and C5 `tools/mod.rs` export grant if authorized
-- [ ] shared tool/artifact interfaces imported from `successor-protocol` and C5 accepted helper APIs
-- [ ] no forbidden shortcuts: no shelling out, no web/subagent authority, no hidden semantic retrieval
-- [ ] tests/checks added in `crates/successor-kernel/tests/slice0_tools_discovery.rs`
-- [ ] targeted validation passed (`cargo test -p successor-kernel slice0_tools_discovery` or package-local equivalent, then orchestrator `make check-rs` before review)
-- [ ] named risks retired or routed, especially root escape, unbounded output, and `.gitignore`/binary/error behavior
-- [ ] model binding verified for execution agent
-- [ ] fixture sovereignty preserved; no fixture/contract edits
+- [x] owned files only (tools/{search_files,find,grep}.rs + granted tests/slice0_tools_discovery.rs); no lib.rs or tools/mod.rs grants needed — the shared walker lives in C6-owned find.rs
+- [x] shared interfaces from `successor-protocol` and accepted C5 helpers (WorkspaceRoot, validate_relative_path_lexically, read_with_root, looks_binary, compute_artifact_bytes)
+- [x] no forbidden shortcuts: no subprocess, no gitignore/hidden-file semantics (`ignore` crate deliberately absent), no semantic retrieval; deps exactly the granted regex/globset/walkdir
+- [x] tests in granted file: 18 discovery tests + revision regressions (long-line truncation, oversize skip, fixture replay)
+- [x] targeted validation + orchestrator `make check-rs` exit 0 at `c8ebb4abb` and `a5557d6fd`
+- [x] named risks retired: root escape via substrate reuse; unbounded output closed by revision (512-byte previews, 2MiB scan gate); binary NUL rule; determinism proven (sorted-walk ≡ lexicographic sort-then-truncate)
+- [x] model binding verified (`slice0-executor`, Sonnet 5; tasks 194, 199; task 198 cancelled mid-flight — design reused, no edits lost)
+- [x] fixture sovereignty preserved AND enforced: C6 surfaced two verified fixture STOP items (unreproducible score 0.91, non-derivable preview) — routed to the approved sovereign amendment `1db794108` (dissent task 200 ALLOW, human acceptance, sovereignty review task 202 ALLOW)
 
 Changed files:
-- Pending execution.
+- `crates/successor-kernel/src/tools/{search_files.rs, find.rs, grep.rs}`, new `tests/slice0_tools_discovery.rs`, `Cargo.toml` (regex minimal+unicode-perl, globset, walkdir), `Cargo.lock`
 
 Validation evidence:
-- Pending execution.
+- All kernel suites green (8 binaries); fixture-replay test asserts exact score/preview post-amendment; determinism, truncation-metadata, symlink-exclusion, invalid-pattern typed errors all covered; `cargo test --workspace` 22 ok blocks at `1db794108`
 
 ## Code Review
 
 Reviewer: `slice0-reviewer`
 Reviewer model: `openai-codex/gpt-5.5:high`
-Verdict: pending
+Verdict: REVISE, closed (task 195-C6CodeReview, checkout-proof at `c8ebb4abb`)
 
 Findings:
-- Pending execution.
+- P1: grep previews unbounded (full matching line serialized; oversize files fully read before scan).
+- P2: search_files did not reproduce the canonical fixture's recorded result (tests avoided the fixture's real query).
 
-Fixes applied:
-- Pending execution.
+Fixes applied (task 199 implementing cancelled task 198's design, commit `a5557d6fd`):
+- 512-byte char-boundary-safe preview truncation with `preview_truncated` metadata; 2MiB per-file scan gate (skip like binary); content-derived first-non-empty-line previews bounded by the same helpers; fixture-replay test with the real query — which surfaced the fixture's own inconsistency, resolved by sovereign amendment `1db794108`.
 
 ## Drift Review
 
 Original aim: bounded read-only discovery tools without shell or hidden context path.
-Current work: pending execution.
-Gap: pending.
-Verdict: pending
-Authority boundary: pending
+Current work: tasks 194+199 through `a5557d6fd` (+fixture amendment `1db794108`).
+Gap: none material (task 197-C6DriftReview: discovery-only, C5 files untouched, walker in C6-owned files).
+Verdict: aligned
+Authority boundary: clear
 
 ## Superego Review
 
 Reviewer: `slice0-superego-reviewer`
 Reviewer model: `openai-codex/gpt-5.5:high`
-Verdict: pending
+Verdict: REVISE, closed (task 196-C6SuperegoReview, checkout-proof at `c8ebb4abb`)
 
 Frame risks:
-- Pending execution.
+- Unbounded grep content channel + full-file reads (converged with code review P1) — closed by task 199 bounds and regression tests; stricter-than-ruled structural symlink exclusion accepted as sound conservative deviation, disclosed.
 
 Required corrections:
-- Pending execution.
+- Applied in task 199; evidence recorded in this update.
 
 ## Delivery
 
-Status: pending execution
+Status: accepted
 Residual risks:
-- Exact traversal/regex/ignore dependency choices need disclosed Cargo bootstrap and may need dissent ruling.
-- C6 depends on C5 helper/export shape; if unavailable, route a narrow C5 reopen rather than duplicating path authority logic.
+- Regex DoS surface (catastrophic patterns) accepted for Slice 0: single-tenant local kernel, bounded scan gate limits blast radius; revisit if the kernel ever serves untrusted patterns.
+- search_files ranking remains path-only disclosed policy; content relevance is deliberately out of Slice 0 scope.
 Human verification needed:
-- None before execution; pre-execution dissent ruling required.
+- Fixture amendment human acceptance GRANTED (recorded in tasks 200/201/202 and commit `1db794108`).

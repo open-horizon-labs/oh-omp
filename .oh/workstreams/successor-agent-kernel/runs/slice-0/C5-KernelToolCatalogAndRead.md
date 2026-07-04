@@ -80,56 +80,56 @@ If completed (task 181-C5PreExecutionDissent, verdict REVISE → PROCEED-WITH-CO
 ## Execute
 
 Checklist:
-- [ ] owned files only, plus explicit C8 `lib.rs` module grant and disclosed Cargo bootstrap artifacts if authorized
-- [ ] shared catalog/artifact/tool interfaces imported from `successor-protocol`; no local clone DTOs
-- [ ] no forbidden shortcuts: no shelling out, no mutation authority, no unsupported tool execution
-- [ ] tests/checks added in `crates/successor-kernel/tests/slice0_tools_read.rs`
-- [ ] targeted validation passed (`cargo test -p successor-kernel slice0_tools_read` or package-local equivalent, then orchestrator `make check-rs` before review)
-- [ ] named risks retired or routed, especially root escape, hash/byte-length, unsupported catalog behavior
-- [ ] model binding verified for execution agent
-- [ ] fixture sovereignty preserved; no fixture/contract edits
+- [x] owned files only (tools/{mod,catalog,read}.rs + granted tests/slice0_tools_read.rs); C6-owned stubs untouched; no lib.rs or Cargo changes
+- [x] catalog delegates to the accepted protocol `tool_catalog()` accessor — zero local re-transcription (34 tools, executable set per fixture)
+- [x] no forbidden shortcuts: containment is canonicalized component-ancestry (never string prefix); hashing via protocol `ArtifactHash` (no new deps)
+- [x] tests in granted file (12 integration incl. real-symlink escape and the string-prefix trap) + precedence regressions from the review fix
+- [x] targeted validation + orchestrator `make check-rs` exit 0 at `df88fa0ce` and `da4436642`
+- [x] named risks retired: lexical rejection now strictly before I/O (review fix, proven by temporary-revert); NUL-window binary rule per ruling; root injected via constructor only
+- [x] model binding verified (`slice0-executor`, Sonnet 5; tasks 183, 192)
+- [x] fixture sovereignty preserved; bash rejection reason reproduced verbatim; generalized stub-rejection template disclosed as C5 policy
 
 Changed files:
-- Pending execution.
+- `crates/successor-kernel/src/tools/{mod.rs, catalog.rs, read.rs}`, new `tests/slice0_tools_read.rs`
 
 Validation evidence:
-- Pending execution.
+- All kernel suites green; catalog typed-equal to fixture; read hash/byte_length via `validate_artifact_content`; distinct typed rejections (absolute, `..`, symlink escape, not-found, permission, binary); lexical-precedence regressions (nonexistent/unreadable root + malformed path → lexical rejection wins)
 
 ## Code Review
 
-Reviewer: `slice0-reviewer`
+Reviewer: `slice0-reviewer` (task 188-C5CodeReview, checkout-proof at `931cd99cb`)
 Reviewer model: `openai-codex/gpt-5.5:high`
-Verdict: pending
+Verdict: REVISE, closed
 
 Findings:
-- Pending execution.
+- P2 (converged with Superego task 190): public `read(root_path, relative_path)` canonicalized the root (I/O) before lexical path validation, inverting contract §8 precedence — invalid roots masked `AbsolutePath`/`ParentTraversal` rejections.
 
-Fixes applied:
-- Pending execution.
+Fixes applied (task 192, commit `da4436642`):
+- Shared pub(crate) `validate_relative_path_lexically` runs before any root I/O; `read_with_root` added for C7 preconstructed-root use (one implementation, two entry points); precedence regressions proven genuine by temporary revert.
 
 ## Drift Review
 
 Original aim: contract-exact tool catalog and safe read foundation.
-Current work: pending execution.
-Gap: pending.
-Verdict: pending
-Authority boundary: pending
+Current work: tasks 183+192 through `da4436642`.
+Gap: none material (task 186-C5DriftReview: catalog/read/substrate only; C6 stubs untouched; substrate is helpers, not pre-implemented C6 behavior).
+Verdict: aligned
+Authority boundary: clear
 
 ## Superego Review
 
 Reviewer: `slice0-superego-reviewer`
 Reviewer model: `openai-codex/gpt-5.5:high`
-Verdict: pending
+Verdict: REVISE, closed (task 190-C5SuperegoReview, checkout-proof at `931cd99cb`)
 
 Frame risks:
-- Pending execution.
+- The lexical-precedence inversion (same finding as code review) — closed by task 192.
 
 Required corrections:
-- Pending execution.
+- Applied: lexical checks before I/O with regression coverage; evidence recorded in this update.
 
 ## Delivery
 
-Status: pending execution
+Status: accepted
 Residual risks:
 - Binary detection heuristic and common helper visibility to C6 require dissent/orchestrator ruling.
 - Unsupported-tool fixture handling is routed jointly to C5 catalog, C6 discovery authority, and C7 lifecycle; no single lane may paper over fixture/projection rejection.

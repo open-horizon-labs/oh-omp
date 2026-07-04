@@ -19,3 +19,15 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
 tracing = "0.1"
+
+[dev-dependencies]
+# Test-only: binds the accepted platform router (successor-context-platform::http::build_router)
+# on 127.0.0.1:0 with a real temp SQLite DB and exercises KernelPlatformClient over real TCP
+# (Dissent ruling 2). `axum` is required alongside it to call `axum::serve` on the returned
+# `axum::Router` value — Rust does not expose a dependency's transitive dependencies for direct
+# `use`, so serving the router in-process is not reachable through `successor-context-platform`
+# alone. Neither crate appears in the production dependency graph (verified via
+# `cargo tree -p successor-kernel -e normal`). Flagged as a reopen candidate against ruling 1's
+# literal wording, which named only the `successor-context-platform` entry.
+successor-context-platform = { path = "../successor-context-platform" }
+axum = "0.8"

@@ -71,10 +71,10 @@ Verdict: required-before-execute
 
 If skipped, rationale: not applicable; C1 touches auth-plane boundary, persisted event append behavior, platform sequence trust, and client-side contract semantics.
 
-If completed:
-- Dissent concern: pending.
-- Response: pending.
-- Outcome: pending.
+If completed (task 163-C1PreExecutionDissent, verdict ALLOW / PROCEED-WITH-CONDITIONS, checkout-proof `e8562c6af`):
+- Dissent concern: the client lane could quietly invent wire shapes, redefine the error envelope, couple kernel production code to platform internals, or leak entitlement material through logs/errors; the test strategy is a one-way door (mocks invent behavior; in-process shortcuts skip the real HTTP contract).
+- Response: contract §4.2 names `ErrorEnvelopeV0` as the error body and §2.4 defines `MEMEX_LICENSE` custody; protocol already carries every platform API DTO C1 needs; the platform exposes the accepted `build_router` plus env-configured binary, enabling real-router tests without mocks.
+- Outcome: PROCEED with orchestrator rulings: (1) no Cargo change beyond the shell substrate EXCEPT a test-only dev-dependency on `successor-context-platform`; kernel-local transport/error enum lives in `platform_error.rs`, wrapping status + protocol `ErrorEnvelopeV0` when present — never a parallel envelope; transport/malformed-response errors redacted; (2) integration tests bind the accepted platform router on `127.0.0.1:0` with a real temp SQLite DB and exercise the reqwest client over real TCP; production code never imports the platform crate; `tower::ServiceExt`/oneshot and hand-rolled mock platform servers are PROHIBITED; subprocess black-box smoke deferred to e2e; (3) client-local structs only for non-JSON internal state (base URL, resolved bearer, cursor state, retry classification, redacted diagnostics); any new wire shape is a routed reopen, never client-local; (4) `MEMEX_LICENSE` read via the kernel config seam from env, held in a redacted-Debug type, never logged/echoed; provider credentials strictly out of C1 scope (C3); (5) full §6 client surface including traces — C2/C7 depend on it.
 
 ## Execute
 

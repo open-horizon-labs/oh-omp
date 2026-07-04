@@ -28,8 +28,8 @@
 //! accidentally treat one auth plane's failure (or credential) as the
 //! other's.
 
-pub use crate::provider::auth::ANTHROPIC_API_KEY_ENV;
 use crate::platform_http::EntitlementToken;
+pub use crate::provider::auth::ANTHROPIC_API_KEY_ENV;
 
 /// Env var carrying the platform entitlement token (contract §2.4).
 ///

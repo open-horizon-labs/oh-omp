@@ -72,10 +72,10 @@ Verdict: required-before-execute
 
 If skipped, rationale: not applicable; C4 touches provider normalized types, provider credential trace boundaries, tool-call lifecycle projection, and the unsupported-tool fixture residual.
 
-If completed:
-- Dissent concern: pending.
-- Response: pending.
-- Outcome: pending.
+If completed (task 182-C4PreExecutionDissent, verdict ALLOW / PROCEED-WITH-CONDITIONS, checkout-proof `b75f38389`):
+- Dissent concern: provider projection could redefine A3-owned normalized DTOs, make wire JSON or credentials canonical state, pull live network into default CI, widen C3's credential API, or work around the A4 unsupported-tool rejection.
+- Response: A3 owns `ProviderApiShapeV0`, `NormalizedProviderRequestV0/ToolCallV0/ToolResultV0/ResponseV0`, `ProviderObservationMetadataV0`, `ProviderWireShapeV0` and the three-shape fixture validator — C4 imports, never redefines; the three-shape fixture binds C4's deterministic tests and interface model to all three shapes while live transport is Anthropic-only; kernel Cargo already carries reqwest(json/stream/rustls) — no SDKs, no additions; C3's `header_value` is provider-boundary-internal and sufficient.
+- Outcome: PROCEED with orchestrator rulings: (1) C4 edits `provider/{mod,projection,anthropic}.rs` + granted `tests/slice0_provider_shapes.rs`; mod.rs reorganization preserves C3 `auth`/`credentials` declarations and APIs — any C3 change is a C3 reopen, not C4 scope; (2) no Cargo changes; provider SDKs prohibited; (3) deterministic fixture-driven projection tests for ALL THREE shapes + a live-capable Anthropic adapter; live smoke strictly opt-in env-gated (never default CI, never a test the suite requires network/credentials for); (4) custody invariants tested: no Serialize path for credential-bearing request state, no secret in Debug/traces/observations, `provider_api_shape` present on request-built observations per fixtures; (5) A4 residual: DETECT and RECORD unsupported-tool projection rejection in the fixture path as typed behavior — any local reimplementation or bypass of accepted projection is forbidden.
 
 ## Execute
 

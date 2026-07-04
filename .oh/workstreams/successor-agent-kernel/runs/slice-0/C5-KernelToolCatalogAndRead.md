@@ -72,10 +72,10 @@ Verdict: required-before-execute
 
 If skipped, rationale: not applicable; C5 touches tool authority, fixture schema, artifact retention, and unsupported-tool rejection semantics.
 
-If completed:
-- Dissent concern: pending.
-- Response: pending.
-- Outcome: pending.
+If completed (task 181-C5PreExecutionDissent, verdict REVISE → PROCEED-WITH-CONDITIONS once these rulings are recorded, checkout-proof `b75f38389`):
+- Dissent concern: root-bounding via textual prefix checks is the named wrong patch (symlink escape); helper visibility for C6 and the workspace-root source were unresolved; sha256 could be re-implemented; catalog content could drift from the fixture; the binary heuristic was unspecified.
+- Response: contract §8 pins the containment mechanism (relative paths only; lexical rejection of absolute/`..` before I/O; canonicalize root and candidate; component-ancestry check; root from trusted kernel/session config, never provider/env/cwd); protocol already exposes `ArtifactHash::compute` + `validate_artifact_content` (sha2 lives in successor-protocol — kernel needs no hashing dep); `tool-catalog.json` pins 34 tools, schema `kernel.tool_catalog.v0`, executable only search_files/read/find/grep, `stub_rejected` for the rest; the unsupported-tool fixture pins the bash rejection (`policy: slice0_read_only`).
+- Outcome: PROCEED with orchestrator rulings: (1) C5 edits `tools/{mod,catalog,read}.rs` + granted `tests/slice0_tools_read.rs`; `tools/mod.rs` exposes the safe-path/artifact substrate as pub(crate) for C6 without implementing C6 tools; no lib.rs change; NO new Cargo deps — hashing via protocol `ArtifactHash::compute`/`validate_artifact_content`; (2) root bounding per contract §8 exactly: reject absolute and `..` lexically before I/O, canonicalize root+candidate, component ancestry (never string prefix), symlink escape rejected, nonexistent = typed not-found (never treated as in-root content), root injected by constructor from trusted config; (3) catalog is fixture-derived data — no locally invented schema versions/ids/counts/metadata; the bash rejection follows the fixture; generalized rejection reasons for other stub tools are a RECORDED C5 deterministic policy decision, not presented as fixture-pinned; (4) binary detection: minimal recorded decision — NUL-byte presence in the read window marks binary-looking with a typed rejection; no content-type inference invention; (5) read semantics: whole-file Slice 0 scope with correct sha256/byte_length; no pagination/truncation invention.
 
 ## Execute
 

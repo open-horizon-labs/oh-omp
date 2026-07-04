@@ -1,0 +1,354 @@
+//! Owned by Lane C4 `KernelProviderProjection`.
+//!
+//! Fixture-driven, deterministic offline proofs that
+//! `successor_kernel::provider::projection` round-trips against the
+//! canonical `fixtures/slice-0/provider-shape-normalization.json` fixture
+//! for all three published provider API shapes (Dissent ruling 3), that
+//! the custody invariants hold (Dissent ruling 4), and that the A4
+//! unsupported-tool residual is typed, recorded behavior rather than a
+//! bypass of the accepted projection (Dissent ruling 5).
+//!
+//! These are external-crate proofs that complement, and deliberately do
+//! not duplicate, the in-module unit tests in `provider::projection` and
+//! `provider::anthropic` (which cover the Anthropic-only success/failure
+//! paths and the adapter's credential custody). This file extends the
+//! same contracts to the two `OpenAI` wire shapes and anchors the
+//! request/tool-call/tool-result projections directly to the fixture as
+//! the single source of truth.
+
+use successor_kernel::provider::projection::{
+	ProjectionError, ProviderBuildInputV0, build_provider_request, normalize_response,
+	normalize_tool_call, project_request_body, project_tool_call, project_tool_result,
+};
+use successor_protocol::{
+	fixtures,
+	ids::{ArtifactId, MessageId, ToolCallId},
+	provider::{NormalizedToolResultV0, ProviderApiShapeV0, ProviderWireShapeV0},
+	provider_shape_fixture::ProviderShapeNormalizationFixtureV0,
+	tool_catalog::{ToolCatalogV0, ToolDefinitionV0, ToolStatusV0},
+};
+
+const USER_TEXT: &str = "Read packages/coding-agent/src/context/concept-graph.ts";
+const SENTINEL_SECRET: &str = "sk-ant-should-never-appear-anywhere";
+
+const fn all_shapes() -> [ProviderApiShapeV0; 3] {
+	[
+		ProviderApiShapeV0::AnthropicMessages,
+		ProviderApiShapeV0::OpenAiChatCompletions,
+		ProviderApiShapeV0::OpenAiResponses,
+	]
+}
+
+/// Recursively re-parses any string value that is itself valid JSON before
+/// comparing. JSON object key order carries no contract meaning (this
+/// `serde_json` build does not enable `preserve_order`, so re-encoding a
+/// deserialized map is alphabetical, not insertion order), and `OpenAI`'s
+/// wire shapes stringify `arguments` as embedded JSON text. Byte-exact
+/// string equality on that embedded text would assert an implementation
+/// accident, not a fixture contract, so structural equality is used
+/// instead.
+fn canonicalize(value: &serde_json::Value) -> serde_json::Value {
+	match value {
+		serde_json::Value::String(text) => match serde_json::from_str::<serde_json::Value>(text) {
+			Ok(parsed) => canonicalize(&parsed),
+			Err(_) => value.clone(),
+		},
+		serde_json::Value::Object(map) => map
+			.iter()
+			.map(|(key, entry)| (key.clone(), canonicalize(entry)))
+			.collect(),
+		serde_json::Value::Array(items) => items.iter().map(canonicalize).collect(),
+		other => other.clone(),
+	}
+}
+
+fn assert_wire_json_eq(actual: &serde_json::Value, expected: &serde_json::Value, context: &str) {
+	assert_eq!(canonicalize(actual), canonicalize(expected), "{context}");
+}
+
+fn wire_shape<'a>(
+	fixture: &'a ProviderShapeNormalizationFixtureV0,
+	shape: &ProviderApiShapeV0,
+) -> &'a ProviderWireShapeV0 {
+	fixture
+		.wire_shapes
+		.iter()
+		.find(|entry| &entry.provider_api_shape == shape)
+		.unwrap_or_else(|| panic!("canonical fixture is missing a wire shape entry for {shape:?}"))
+}
+
+/// The fixture's `request_projection` advertises a `read` tool with an
+/// `input_schema`. `successor_protocol::fixtures::tool_catalog()` is owned
+/// by a different lane and publishes a differently worded `read` tool with
+/// no schema, so this builds a catalog from the literal values in
+/// `provider-shape-normalization.json` instead of reusing that fixture.
+fn read_tool_catalog() -> ToolCatalogV0 {
+	let read_tool = ToolDefinitionV0 {
+		name:         "read".to_owned(),
+		category:     "safe_read_discovery".to_owned(),
+		status:       ToolStatusV0::Executable,
+		description:  Some("Read a relative file under the workspace root.".to_owned()),
+		input_schema: Some(serde_json::json!({
+			"type": "object",
+			"properties": { "path": { "type": "string" }, "max_bytes": { "type": "integer" } },
+			"required": ["path"],
+		})),
+	};
+	ToolCatalogV0::new(
+		"catalog_shape_00000000-0000-4000-8000-000000000001",
+		"2026-07-02T00:00:00Z",
+		"v0",
+		vec![read_tool],
+	)
+}
+
+#[test]
+fn request_projection_matches_the_canonical_fixture_for_every_provider_shape() {
+	let fixture = fixtures::provider_shape_normalization();
+	let catalog = read_tool_catalog();
+
+	for shape in all_shapes() {
+		let expected = &wire_shape(&fixture, &shape).request_projection;
+		let projected = project_request_body(&shape, USER_TEXT, &catalog);
+		assert_wire_json_eq(
+			&projected,
+			expected,
+			&format!("request projection mismatch for {shape:?}"),
+		);
+	}
+}
+
+#[test]
+fn build_provider_request_carries_the_provider_api_shape_for_every_shape() {
+	let fixture = fixtures::provider_shape_normalization();
+	let catalog = read_tool_catalog();
+
+	for shape in all_shapes() {
+		let input = ProviderBuildInputV0 {
+			request_id:         fixture.canonical_successor_ids.request_id.clone(),
+			turn_id:            fixture.canonical_successor_ids.turn_id.clone(),
+			provider_api_shape: shape.clone(),
+			content_preview:    Some(USER_TEXT.to_owned()),
+			source_artifact_id: None,
+			source_ref:         None,
+			tool_name:          None,
+		};
+		let request = build_provider_request(&input, &catalog).expect("tool-free turn always builds");
+		assert_eq!(request.provider_api_shape, shape);
+	}
+}
+
+#[test]
+fn tool_call_round_trips_through_project_and_normalize_for_every_shape() {
+	let fixture = fixtures::provider_shape_normalization();
+	let canonical_tool_call_id: ToolCallId = fixture.canonical_successor_ids.tool_call_id.clone();
+
+	for shape in all_shapes() {
+		let entry = wire_shape(&fixture, &shape);
+
+		let (normalized, metadata) = normalize_tool_call(
+			&shape,
+			&entry.observed_tool_call_projection,
+			canonical_tool_call_id.clone(),
+		)
+		.expect("canonical fixture wire tool call always parses");
+		assert_eq!(
+			normalized, fixture.normalized_tool_call,
+			"normalized tool call mismatch for {shape:?}"
+		);
+		// Provider-specific tool call IDs are metadata, not successor identity
+		// (fixture assertion). The canonical `tool_call_id` stays stable across
+		// shapes; only the metadata carries the provider-specific wire ID.
+		assert_eq!(metadata.provider_api_shape, shape);
+		assert_eq!(metadata.provider_tool_call_id, entry.provider_specific_tool_call_id);
+
+		let projected = project_tool_call(
+			&shape,
+			&fixture.normalized_tool_call,
+			&entry.provider_specific_tool_call_id,
+		);
+		assert_wire_json_eq(
+			&projected,
+			&entry.observed_tool_call_projection,
+			&format!("tool call projection mismatch for {shape:?}"),
+		);
+	}
+}
+
+#[test]
+fn tool_result_projects_to_the_canonical_fixture_for_every_shape() {
+	let fixture = fixtures::provider_shape_normalization();
+
+	for shape in all_shapes() {
+		let entry = wire_shape(&fixture, &shape);
+		let projected = project_tool_result(
+			&shape,
+			&fixture.normalized_tool_result,
+			&entry.provider_specific_tool_call_id,
+		);
+		assert_wire_json_eq(
+			&projected,
+			&entry.tool_result_projection,
+			&format!("tool result projection mismatch for {shape:?}"),
+		);
+	}
+}
+
+#[test]
+fn tool_result_projection_never_inlines_artifact_content_only_the_handle() {
+	let fixture = fixtures::provider_shape_normalization();
+	let artifact_id: ArtifactId = fixture.normalized_tool_result.artifact_id.clone();
+
+	// A tool result carrying secret-shaped content in a field the projection
+	// does not read must still project to nothing but the artifact handle:
+	// the projection layer never has a code path that could echo artifact
+	// content, because `NormalizedToolResultV0` never carries content at all.
+	let tool_result = NormalizedToolResultV0 {
+		event_type:   fixture.normalized_tool_result.event_type.clone(),
+		tool_call_id: fixture.normalized_tool_result.tool_call_id.clone(),
+		tool_name:    fixture.normalized_tool_result.tool_name.clone(),
+		status:       fixture.normalized_tool_result.status,
+		artifact_id:  artifact_id.clone(),
+	};
+
+	for shape in all_shapes() {
+		let projected = project_tool_result(&shape, &tool_result, "provider-specific-id");
+		let rendered = projected.to_string();
+		assert!(
+			rendered.contains(artifact_id.as_str()),
+			"projection for {shape:?} must reference the artifact handle"
+		);
+		assert!(
+			!rendered.contains(SENTINEL_SECRET),
+			"projection for {shape:?} must never carry inlined content"
+		);
+	}
+}
+
+#[test]
+fn unsupported_tool_rejection_is_typed_and_shape_independent() {
+	let fixture = fixtures::provider_shape_normalization();
+	let catalog = ToolCatalogV0::new(
+		"catalog_stub_00000000-0000-4000-8000-000000000002",
+		"2026-07-02T00:00:00Z",
+		"v0",
+		vec![ToolDefinitionV0::stub_rejected("bash", "shell_execution")],
+	);
+
+	for shape in [ProviderApiShapeV0::OpenAiChatCompletions, ProviderApiShapeV0::OpenAiResponses] {
+		let input = ProviderBuildInputV0 {
+			request_id:         fixture.canonical_successor_ids.request_id.clone(),
+			turn_id:            fixture.canonical_successor_ids.turn_id.clone(),
+			provider_api_shape: shape.clone(),
+			content_preview:    None,
+			source_artifact_id: None,
+			source_ref:         None,
+			tool_name:          Some("bash".to_owned()),
+		};
+		let err = build_provider_request(&input, &catalog)
+			.expect_err("a stub-rejected tool must never build a provider request");
+		assert_eq!(
+			err,
+			ProjectionError::UnsupportedTool {
+				tool_name: "bash".to_owned(),
+				status:    ToolStatusV0::StubRejected,
+			},
+			"unsupported-tool detection must be typed for {shape:?}, not a bespoke rejection"
+		);
+	}
+}
+
+#[test]
+fn tool_absent_from_catalog_is_rejected_regardless_of_shape() {
+	let fixture = fixtures::provider_shape_normalization();
+	let catalog = read_tool_catalog(); // publishes only "read".
+
+	for shape in [ProviderApiShapeV0::OpenAiChatCompletions, ProviderApiShapeV0::OpenAiResponses] {
+		let input = ProviderBuildInputV0 {
+			request_id:         fixture.canonical_successor_ids.request_id.clone(),
+			turn_id:            fixture.canonical_successor_ids.turn_id.clone(),
+			provider_api_shape: shape.clone(),
+			content_preview:    None,
+			source_artifact_id: None,
+			source_ref:         None,
+			tool_name:          Some("bash".to_owned()),
+		};
+		let err = build_provider_request(&input, &catalog)
+			.expect_err("a catalog-absent tool must never build a provider request");
+		assert_eq!(err, ProjectionError::ToolNotInCatalog { tool_name: "bash".to_owned() });
+	}
+}
+
+#[test]
+fn malformed_wire_tool_call_error_never_echoes_the_wire_body_for_openai_shapes() {
+	let fixture = fixtures::provider_shape_normalization();
+	let tool_call_id: ToolCallId = fixture.canonical_successor_ids.tool_call_id;
+
+	for shape in [ProviderApiShapeV0::OpenAiChatCompletions, ProviderApiShapeV0::OpenAiResponses] {
+		let wire = serde_json::json!({ "leaked_secret": SENTINEL_SECRET });
+		let err = normalize_tool_call(&shape, &wire, tool_call_id.clone())
+			.expect_err("a wire tool call missing every expected field must be rejected");
+		assert!(matches!(err, ProjectionError::MalformedToolCall { .. }));
+
+		let rendered = format!("{err}");
+		assert!(!rendered.contains(SENTINEL_SECRET));
+		assert!(!rendered.contains("leaked_secret"));
+	}
+}
+
+#[test]
+fn malformed_wire_response_error_never_echoes_the_wire_body_for_openai_shapes() {
+	let fixture = fixtures::provider_shape_normalization();
+	let message_id: MessageId = fixture.canonical_successor_ids.message_id;
+
+	for shape in [ProviderApiShapeV0::OpenAiChatCompletions, ProviderApiShapeV0::OpenAiResponses] {
+		let wire = serde_json::json!({ "leaked_secret": SENTINEL_SECRET });
+		let err = normalize_response(&shape, &wire, message_id.clone())
+			.expect_err("a wire response missing every expected field must be rejected");
+		assert!(matches!(err, ProjectionError::MalformedResponse { .. }));
+
+		let rendered = format!("{err}");
+		assert!(!rendered.contains(SENTINEL_SECRET));
+		assert!(!rendered.contains("leaked_secret"));
+	}
+}
+
+#[test]
+fn normalize_response_extracts_finish_reason_and_text_for_every_shape() {
+	let fixture = fixtures::provider_shape_normalization();
+	let message_id: MessageId = fixture.canonical_successor_ids.message_id.clone();
+
+	let cases: [(ProviderApiShapeV0, serde_json::Value, &str); 3] = [
+		(
+			ProviderApiShapeV0::AnthropicMessages,
+			serde_json::json!({
+				"stop_reason": "end_turn",
+				"content": [{ "type": "text", "text": "Read completed." }],
+			}),
+			"stop",
+		),
+		(
+			ProviderApiShapeV0::OpenAiChatCompletions,
+			serde_json::json!({
+				"choices": [{ "finish_reason": "stop", "message": { "content": "Read completed." } }],
+			}),
+			"stop",
+		),
+		(
+			ProviderApiShapeV0::OpenAiResponses,
+			serde_json::json!({ "status": "completed", "output_text": "Read completed." }),
+			"completed",
+		),
+	];
+
+	for (shape, wire, expected_finish_reason) in cases {
+		let response = normalize_response(&shape, &wire, message_id.clone())
+			.unwrap_or_else(|err| panic!("well-formed wire response for {shape:?} must parse: {err}"));
+		assert_eq!(
+			response.finish_reason, expected_finish_reason,
+			"finish reason mismatch for {shape:?}"
+		);
+		assert_eq!(response.text, "Read completed.", "text mismatch for {shape:?}");
+		assert_eq!(response.event_type, fixture.normalized_response.event_type);
+	}
+}

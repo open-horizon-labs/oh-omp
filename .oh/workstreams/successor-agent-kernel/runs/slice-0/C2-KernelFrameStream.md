@@ -71,10 +71,10 @@ Verdict: required-before-execute
 
 If skipped, rationale: not applicable; C2 touches the frame/event boundary and public live-stream protocol.
 
-If completed:
-- Dissent concern: pending.
-- Response: pending.
-- Outcome: pending.
+If completed (task 169-C2PreExecutionDissent, verdict ALLOW / PROCEED-WITH-CONDITIONS, checkout-proof `4360ce436`):
+- Dissent concern: frames could quietly become a second truth plane (persisted/replayable), C2 could pre-own C7 lifecycle or C8 SSE-route semantics, and the lane has no dispatch-owned test file; channel choice may need a Cargo feature change.
+- Response: sovereign rules pin RawEvent as the only persisted truth and KernelFrame as live projection; the canonical `kernel-frame-stream.json` pins schema `kernel.frame.v0`, SSE event name `kernel_frame`, dense `stream_seq` 1..10, exact frame kinds, and paired `raw_event_id`/`raw_event_session_seq` refs (null for `turn_started`); accepted A2 DTO tests already enforce the shapes; kernel Cargo has no SSE crate and needs none.
+- Outcome: PROCEED with orchestrator rulings: (1) C2 edits only `frame_sink.rs`, `stream.rs`, `sse.rs` — no C8 RPC/route files, no turn-lifecycle ordering decisions; (2) SSE serialization hand-rolled over accepted `KernelFrameV0` (`event: kernel_frame` + `data:` JSON); SSE/event-stream crates prohibited; (3) if channels are used, the tokio `sync` feature change is authorized as a disclosed Cargo bootstrap artifact; no new crates; (4) test-file grant: C2-owned `crates/successor-kernel/tests/kernel_frame_stream.rs` (plus `#[cfg(test)]` modules as needed); fixture/contract edits remain forbidden; (5) live-view semantics only — deterministic enqueue/close/drop-on-disconnect, dense per-stream seq, persisted-fact frames carry raw-event refs; durable replay, redelivery, and backpressure guarantees are NOT invented; provider delta raw events remain forbidden.
 
 ## Execute
 

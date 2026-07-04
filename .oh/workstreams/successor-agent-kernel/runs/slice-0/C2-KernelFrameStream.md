@@ -79,58 +79,59 @@ If completed (task 169-C2PreExecutionDissent, verdict ALLOW / PROCEED-WITH-CONDI
 ## Execute
 
 Checklist:
-- [ ] owned files only, plus explicit C8 `lib.rs` module grant and disclosed Cargo bootstrap artifacts if authorized
-- [ ] shared `KernelFrameV0`/ID interfaces imported from `successor-protocol`
-- [ ] no forbidden shortcuts: no duplicate frame DTOs, no persisted frame truth, no provider wire SSE protocol
-- [ ] tests/checks added or explicitly routed for the dispatch-map test-file ambiguity
-- [ ] targeted validation passed (`cargo test -p successor-kernel` minimum, then orchestrator `make check-rs` before review)
-- [ ] named risks retired or routed, especially dense sequence and persisted-fact raw-event references
-- [ ] model binding verified for execution agent
-- [ ] fixture sovereignty preserved; no fixture/contract edits
+- [x] owned files only (frame_sink.rs, stream.rs, sse.rs replacing their C8-shell stubs) plus granted test file and the authorized tokio `sync` feature disclosure (dissent ruling 3)
+- [x] shared `KernelFrameV0`/ID interfaces imported from `successor-protocol`
+- [x] no forbidden shortcuts: no duplicate frame DTOs, no persisted frame truth, no provider wire SSE protocol, no SSE crate
+- [x] test-file ambiguity resolved via granted `tests/kernel_frame_stream.rs` (dissent ruling 4)
+- [x] targeted validation passed (15 unit + 12 integration kernel tests); orchestrator `make check-rs` exit 0 at `f839787be`
+- [x] named risks retired: dense seq atomic with close-check under one mutex (verified 8-thread/50-task); paired raw-event refs unrepresentable as unpaired at the FrameSink type level with A2 `validate_dto` safety net
+- [x] model binding verified (`slice0-executor`, `anthropic/claude-sonnet-5:high`; task 170)
+- [x] fixture sovereignty preserved; canonical 10-frame fixture reproduced field-for-field (frame_id/ts caller-supplied by design — C7 authority; only stream_seq sink-assigned)
 
 Changed files:
-- Pending execution.
+- `crates/successor-kernel/src/{frame_sink.rs, stream.rs, sse.rs}`, new `crates/successor-kernel/tests/kernel_frame_stream.rs`, `Cargo.toml` (tokio +sync), `Cargo.lock` transitive
 
 Validation evidence:
-- Pending execution.
+- Fixture reproduction full PartialEq (no exclusions); dense concurrent seq; independent per-stream sequences; SSE spec-correctness (event name constant, per-line data, trailing blank line); subscriber-drop and post-close typed-error semantics; `make check-rs` exit 0
 
 ## Code Review
 
-Reviewer: `slice0-reviewer`
+Reviewer: `slice0-reviewer` (task 173-C2CodeReview, checkout-proof at `f839787be`)
 Reviewer model: `openai-codex/gpt-5.5:high`
-Verdict: pending
+Verdict: PASS (`overall_correctness=correct`, confidence 0.86, zero findings)
 
 Findings:
-- Pending execution.
+- None. Zero-subscriber publish judged consistent with live-view/no-redelivery ruling; caller-supplied identity correctly left to C7; JSON-escape-before-SSE-framing prevents raw CR/LF.
 
 Fixes applied:
-- Pending execution.
+- None required.
 
 ## Drift Review
 
 Original aim: live kernel frame stream/SSE substrate without weakening raw-event truth.
-Current work: pending execution.
-Gap: pending.
-Verdict: pending
-Authority boundary: pending
+Current work: task 170 as committed at `f839787be`.
+Gap: none material (task 172-C2DriftReview). Two residual notes recorded below for later lanes.
+Verdict: aligned
+Authority boundary: clear
 
 ## Superego Review
 
-Reviewer: `slice0-superego-reviewer`
+Reviewer: `slice0-superego-reviewer` (task 171-C2SuperegoReview, checkout-proof at `f839787be`)
 Reviewer model: `openai-codex/gpt-5.5:high`
-Verdict: pending
+Verdict: ALLOW
 
 Frame risks:
-- Pending execution.
+- None: RawEvent truth vs live projection preserved; identity/lifecycle authority stays with C7/A5; broadcast capacity disclosed as live-view detail, not a delivery guarantee.
 
 Required corrections:
-- Pending execution.
+- None.
 
 ## Delivery
 
-Status: pending execution
+Status: accepted
 Residual risks:
-- C2 has no dispatch-owned test file; orchestration must grant/reroute fixture tests before acceptance.
-- Backpressure/cancel semantics are unspecified for Slice 0 and must not be invented beyond what C7/C8 need.
+- `publish_with` is pub(crate): C7/C8 could bypass FrameSink; later lanes must route through FrameSink or justify direct use explicitly (drift note).
+- Per-kind mandatory raw_event_ref enforcement is C7/A5-owned; C2 enforces only the paired shape.
+- A stale comment in stream.rs claims frame construction happens under the lock; actual code releases first — cosmetic, behavior tested; fix opportunistically in C7/C8 work.
 Human verification needed:
-- None before execution; pre-execution dissent ruling required.
+- None outstanding.

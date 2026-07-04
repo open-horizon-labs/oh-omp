@@ -71,10 +71,10 @@ Verdict: required-before-execute
 
 If skipped, rationale: not applicable; C3 directly touches the local provider auth boundary and credential custody rules.
 
-If completed:
-- Dissent concern: pending.
-- Response: pending.
-- Outcome: pending.
+If completed (task 174-C3PreExecutionDissent, verdict ALLOW / PROCEED-WITH-CONDITIONS, checkout-proof `85a4ca9b8`):
+- Dissent concern: provider credentials are the highest-consequence material in the kernel; risks are serde-reachable secrets (any `Serialize` path into raw events/frames/artifacts/platform DTOs), a prematurely public provider-generic env contract the Slice 0 contract does not pin, config-file sources without deny-by-default boundaries, persisted token state violating resume semantics, and missing-credential failures collapsing the wrong auth plane.
+- Response: contract §2.4 pins `MEMEX_LICENSE` as the platform plane and keeps provider auth local; §10 allows API-key/dev-token local auth only (OAuth/subscription roadmap); §11 resume is re-resolution, not restoration; acceptance criteria 7–9 require custody, redaction, and resume proofs. The shell already declares `provider::{auth, credentials}`, so C4-owned `provider/mod.rs` needs no C3 edits; C1's `EntitlementToken` sets the redacted-newtype precedent.
+- Outcome: PROCEED with orchestrator rulings: (1) C3 edits only `config.rs`, `provider/auth.rs`, `provider/credentials.rs`; `provider/mod.rs` untouched (any need becomes an explicit append-only staging grant); no Cargo changes — no provider SDKs, keyring, or zeroize (zeroization recorded as deferred); (2) test-file grant: C3-owned `crates/successor-kernel/tests/slice0_provider_auth.rs`; (3) credential sources: Anthropic-only env resolution (`ANTHROPIC_API_KEY`) behind an internal registry seam — NOT a public provider-generic contract; config-file sources deferred; missing provider credential is a typed local provider-auth degradation consumed by C4/C7, never a kernel-start hard error and never conflated with platform-entitlement failure; (4) custody: secret newtypes with redacted `Debug`/`Display` and non-`Serialize` BY CONSTRUCTION; header materialization private to the provider boundary; runtime scanning is regression defense only; (5) `config.rs` owns env sourcing of `MEMEX_LICENSE` + platform `/v0` base URL for C1 constructor injection, keeping the two auth planes as distinct types that cannot cross-authorize; (6) resume = stateless re-resolution from the environment; persisted token state prohibited.
 
 ## Execute
 

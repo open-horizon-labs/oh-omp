@@ -19,6 +19,21 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
 tracing = "0.1"
+# Lane C6 `KernelToolSearchFindGrep` bootstrap deps (Dissent ruling 2): bounded
+# `search_files`/`find`/`grep` discovery over the C5 filesystem substrate.
+# `default-features = false` on `regex` drops the full Unicode property/script
+# tables (`unicode-age`/`unicode-bool`/`unicode-case`/`unicode-gencat`/
+# `unicode-script`/`unicode-segment`) and the alternate-engine perf knobs
+# (`perf-dfa`/`perf-onepass`/`perf-backtrack`/`perf-literal`/`perf-inline`);
+# `unicode-perl` is kept so `\w`/`\d`/`\s`/`\b` and Unicode-aware case folding
+# still work for grepping arbitrary source text. `globset` and `walkdir` have
+# no default features worth disabling beyond `globset`'s `log` integration.
+# `ignore` is explicitly NOT a dependency: no gitignore/hidden-file semantics
+# (Dissent ruling 2; contract §8.2 "unless implementation explicitly records
+# why not").
+regex = { version = "1", default-features = false, features = ["std", "unicode-perl"] }
+globset = { version = "0.4", default-features = false }
+walkdir = "2"
 
 [dev-dependencies]
 # Test-only: binds the accepted platform router (successor-context-platform::http::build_router)

@@ -4452,6 +4452,8 @@ name = "successor-kernel"
 version = "13.19.0"
 dependencies = [
  "axum",
+ "globset",
+ "regex",
  "reqwest",
  "serde",
  "serde_json",
@@ -4460,6 +4462,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tracing",
+ "walkdir",
 ]
 
 [[package]]

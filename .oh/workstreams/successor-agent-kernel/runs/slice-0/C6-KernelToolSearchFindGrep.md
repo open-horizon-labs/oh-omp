@@ -72,10 +72,10 @@ Verdict: required-before-execute
 
 If skipped, rationale: not applicable; C6 touches tool authority and the contract's no-shell/no-hidden-semantic-retrieval boundary.
 
-If completed:
-- Dissent concern: pending.
-- Response: pending.
-- Outcome: pending.
+If completed (task 193-C6PreExecutionDissent, verdict ALLOW / PROCEED-WITH-CONDITIONS, checkout-proof `da4436642`):
+- Dissent concern: discovery tools could re-implement containment instead of reusing the C5 substrate, hand-roll degraded pattern semantics while presenting them as contract-pinned, invent ordering/limit/gitignore policy silently, or add dependencies without staging disclosure.
+- Response: contract §7.1 names the semantics honestly served by audited crates (`search_files`: walkdir/ignore + lexical/regex matching; `find`: glob; `grep`: regex/text search); §8.2/§8.3 pin root-bounds, artifact-backed `tool_result.recorded` results, no hidden semantic/vector retrieval, same bounds/error rules for find/grep; the successful-turn fixture pins the `search_files` shape (`{query, max_matches}` → `matches[{path, score, preview}]` JSON artifact); the C5 substrate exposes `validate_relative_path_lexically`, `WorkspaceRoot`, `read_with_root`, `looks_binary`, `compute_artifact_bytes`; the SHELL-stage crate prohibition does not import as a C6 ban — C6 is the lane where these semantics live.
+- Outcome: PROCEED with orchestrator rulings: (1) C6 edits `tools/{search_files,find,grep}.rs` + new granted `tests/slice0_tools_discovery.rs`; (2) dependency staging GRANTED as disclosed bootstrap artifacts: `regex`, `globset`, `walkdir` (audited, default-features minimal); `ignore` NOT granted — gitignore semantics are not contract-pinned and must not appear implicitly; Cargo.toml/Cargo.lock changes disclosed in completion notes; (3) containment: reuse the C5 substrate exactly — lexical validation before I/O, WorkspaceRoot ancestry, looks_binary before grep content scans, compute_artifact_bytes for results; any tools/mod.rs addition is a C5 staging expansion requiring explicit disclosure; a shared C6-owned walker composing those helpers is allowed; (4) recorded deterministic policy (disclosed, payload/trace-visible, never presented as fixture-pinned): lexicographic ordering by normalized relative path, stable tie-breaks, explicit max-result/match defaults with truncation metadata, hidden files INCLUDED (no gitignore/hidden exclusion invention), symlinks not followed out of root per substrate, binary files skipped by grep with the NUL rule; (5) search_files result shape follows the fixture exactly; find/grep shapes follow catalog schemas with the same artifact/error rules.
 
 ## Execute
 

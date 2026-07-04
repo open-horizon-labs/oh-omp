@@ -20,7 +20,6 @@ use successor_kernel::{
 	config::{
 		ANTHROPIC_API_KEY_ENV, DEFAULT_PLATFORM_URL, MEMEX_LICENSE_ENV, PLATFORM_URL_ENV,
 		PlatformEntitlementConfigError, resolve_platform_entitlement_config,
-		resolve_provider_auth_entry_point,
 	},
 	platform_client::{EntitlementToken, KernelPlatformClient},
 	provider::auth::{ProviderAuthOutcome, ProviderSlot, resolve_provider_auth},
@@ -169,7 +168,7 @@ fn platform_config_error_and_provider_auth_outcome_are_distinct_planes() {
 	// provider plane. Neither can be constructed from the other.
 	let lookup = env_map(&[]);
 	let platform_result = resolve_platform_entitlement_config(&lookup);
-	let provider_outcome = resolve_provider_auth_entry_point(ProviderSlot::Anthropic, &lookup);
+	let provider_outcome = resolve_provider_auth(ProviderSlot::Anthropic, &lookup);
 
 	assert!(platform_result.is_err());
 	assert_eq!(platform_result.unwrap_err(), PlatformEntitlementConfigError::MissingLicense);

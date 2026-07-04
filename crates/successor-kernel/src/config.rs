@@ -3,9 +3,7 @@
 //! Kernel config seam (Dissent ruling 5): sources `MEMEX_LICENSE` and the
 //! platform `/v0` base URL for
 //! [`crate::platform_client::KernelPlatformClient::new`]'s constructor
-//! injection, and re-exports the provider-auth resolution entry point
-//! (`crate::provider::auth`) so a caller wiring up the kernel has one module
-//! for both auth planes. This is the one place these two env vars are read;
+//! injection. This is the one place these two env vars are read;
 //! `platform_client.rs`/`platform_http.rs` (C1) and
 //! `provider::auth`/`provider::credentials` (this lane) never read the
 //! process environment themselves — see `platform_client.rs`'s own docs,
@@ -30,12 +28,10 @@
 //! accidentally treat one auth plane's failure (or credential) as the
 //! other's.
 
-pub use crate::provider::auth::{
-	ANTHROPIC_API_KEY_ENV, ProviderAuthOutcome as ProviderAuthConfigOutcome,
-};
+pub use crate::provider::auth::ANTHROPIC_API_KEY_ENV;
 use crate::{
 	platform_http::EntitlementToken,
-	provider::auth::{ProviderAuthOutcome, ProviderSlot, resolve_provider_auth},
+	provider::auth::{ProviderSlot, resolve_provider_auth},
 };
 
 /// Env var carrying the platform entitlement token (contract §2.4).
@@ -97,7 +93,7 @@ pub struct PlatformEntitlementConfig {
 /// process-global and unsafe to touch from parallel `cargo test` runs).
 /// Production callers pass [`process_env_lookup`] (or `std::env::var(_).ok()`
 /// directly) — the same `lookup` value can be reused for
-/// [`resolve_provider_auth_entry_point`], since both functions take the
+/// [`crate::provider::auth::resolve_provider_auth`], since both take the
 /// identical closure shape.
 ///
 /// `MEMEX_LICENSE` is required
@@ -114,20 +110,6 @@ pub fn resolve_platform_entitlement_config(
 		.filter(|value| !value.is_empty())
 		.unwrap_or_else(|| DEFAULT_PLATFORM_URL.to_owned());
 	Ok(PlatformEntitlementConfig { base_url, token: EntitlementToken::from(license) })
-}
-
-/// Provider-auth resolution entry point for the kernel config seam.
-///
-/// Thin delegation to [`crate::provider::auth::resolve_provider_auth`]
-/// (Dissent ruling 5), kept here so wiring code has one seam to import for
-/// both auth planes without conflating their distinct outcome types. Not a
-/// duplicate implementation — no resolution logic is repeated, this only
-/// re-exposes the call site.
-pub fn resolve_provider_auth_entry_point(
-	slot: ProviderSlot,
-	lookup: impl Fn(&str) -> Option<String>,
-) -> ProviderAuthOutcome {
-	resolve_provider_auth(slot, lookup)
 }
 
 /// Thin production wrapper over [`std::env::var`] for the real process
@@ -195,17 +177,9 @@ mod tests {
 		// without collapsing into one type.
 		let platform_err = resolve_platform_entitlement_config(map_lookup(&[]))
 			.expect_err("license unset in this test");
-		let provider_outcome =
-			resolve_provider_auth_entry_point(ProviderSlot::Anthropic, map_lookup(&[]));
+		let provider_outcome = resolve_provider_auth(ProviderSlot::Anthropic, map_lookup(&[]));
 
 		assert_eq!(platform_err, PlatformEntitlementConfigError::MissingLicense);
 		assert!(!provider_outcome.is_resolved());
-	}
-
-	#[test]
-	fn provider_auth_entry_point_delegates_to_the_provider_module_resolver() {
-		let lookup = map_lookup(&[(ANTHROPIC_API_KEY_ENV, "sk-ant-config-seam-test")]);
-		let outcome = resolve_provider_auth_entry_point(ProviderSlot::Anthropic, lookup);
-		assert!(outcome.is_resolved());
 	}
 }

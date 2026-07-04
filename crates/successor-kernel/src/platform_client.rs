@@ -3,10 +3,13 @@
 //! Typed async client over the platform `/v0` contract
 //! (`SLICE-0-CONTRACT.md` §6): one method per endpoint, each accepting and
 //! returning the exact protocol DTO the platform's routes accept and
-//! return. Constructed with a base URL and entitlement token; this client
-//! never reads environment variables — the kernel config seam (lane C3)
-//! owns sourcing `MEMEX_LICENSE` and the platform base URL and wiring them
-//! into the constructor.
+//! return. The base URL passed to the constructor is the platform's
+//! `/v0` API base per contract §6 (e.g. `http://127.0.0.1:7332/v0`); every
+//! endpoint path below is contract-relative (`/sessions`, `/events`, …)
+//! and is appended onto that base as-is — this client never appends its
+//! own `/v0` segment. This client never reads environment variables —
+//! the kernel config seam (lane C3) owns sourcing `MEMEX_LICENSE` and the
+//! platform `/v0` base URL and wiring them into the constructor.
 //!
 //! HTTP mechanics (bearer injection, JSON encode/decode, status
 //! classification) live in `platform_http.rs`; the kernel error seam lives
@@ -36,31 +39,33 @@ pub struct KernelPlatformClient {
 }
 
 impl KernelPlatformClient {
-	/// Builds a client against `base_url` (e.g. `http://127.0.0.1:8787`),
-	/// authenticating every request with `token`. Does not read
-	/// environment variables; callers (the kernel config seam) source the
-	/// base URL and `MEMEX_LICENSE` value themselves and pass them here.
+	/// Builds a client against `base_url`, the platform's `/v0` API base
+	/// per contract §6 (e.g. `http://127.0.0.1:8787/v0`), authenticating
+	/// every request with `token`. Does not read environment variables;
+	/// callers (the kernel config seam) source the `/v0` base URL and
+	/// `MEMEX_LICENSE` value themselves and pass them here.
 	pub fn new(base_url: impl Into<String>, token: impl Into<EntitlementToken>) -> Self {
 		Self { http: PlatformHttpClient::new(base_url, token) }
 	}
 
-	/// `POST /v0/sessions` — contract §6.1.
+	/// `POST {base_url}/sessions` — contract §6.1.
 	pub async fn create_session(
 		&self,
 		request: &CreateSessionRequestV0,
 	) -> Result<CreateSessionResponseV0, PlatformClientError> {
-		self.http.post("/v0/sessions", request).await
+		self.http.post("/sessions", request).await
 	}
 
-	/// `POST /v0/events` — contract §6.2.
+	/// `POST {base_url}/events` — contract §6.2.
 	pub async fn append_event(
 		&self,
 		request: &RawEventAppendRequestV0,
 	) -> Result<RawEventAppendResponseV0, PlatformClientError> {
-		self.http.post("/v0/events", request).await
+		self.http.post("/events", request).await
 	}
 
-	/// `GET /v0/sessions/{session_id}/events?after_seq&limit` — contract §6.3.
+	/// `GET {base_url}/sessions/{session_id}/events?after_seq&limit` — contract
+	/// §6.3.
 	pub async fn read_session_events(
 		&self,
 		session_id: &SessionId,
@@ -76,58 +81,58 @@ impl KernelPlatformClient {
 		}
 		self
 			.http
-			.get(&format!("/v0/sessions/{}/events", session_id.as_str()), &query)
+			.get(&format!("/sessions/{}/events", session_id.as_str()), &query)
 			.await
 	}
 
-	/// `GET /v0/events/{event_id}` — contract §6.4.
+	/// `GET {base_url}/events/{event_id}` — contract §6.4.
 	pub async fn read_event(&self, event_id: &EventId) -> Result<RawEventV0, PlatformClientError> {
 		self
 			.http
-			.get(&format!("/v0/events/{}", event_id.as_str()), &[])
+			.get(&format!("/events/{}", event_id.as_str()), &[])
 			.await
 	}
 
-	/// `GET /v0/artifacts/{artifact_id}` — contract §6.5.
+	/// `GET {base_url}/artifacts/{artifact_id}` — contract §6.5.
 	pub async fn read_artifact(
 		&self,
 		artifact_id: &ArtifactId,
 	) -> Result<ReadArtifactResponseV0, PlatformClientError> {
 		self
 			.http
-			.get(&format!("/v0/artifacts/{}", artifact_id.as_str()), &[])
+			.get(&format!("/artifacts/{}", artifact_id.as_str()), &[])
 			.await
 	}
 
-	/// `GET /v0/sessions/{session_id}/snapshot` — contract §6.6.
+	/// `GET {base_url}/sessions/{session_id}/snapshot` — contract §6.6.
 	pub async fn read_snapshot(
 		&self,
 		session_id: &SessionId,
 	) -> Result<SessionSnapshotV0, PlatformClientError> {
 		self
 			.http
-			.get(&format!("/v0/sessions/{}/snapshot", session_id.as_str()), &[])
+			.get(&format!("/sessions/{}/snapshot", session_id.as_str()), &[])
 			.await
 	}
 
-	/// `POST /v0/assemble` — contract §6.7.
+	/// `POST {base_url}/assemble` — contract §6.7.
 	pub async fn assemble(
 		&self,
 		request: &AssembleRequestV0,
 	) -> Result<AssemblyResponseV0, PlatformClientError> {
-		self.http.post("/v0/assemble", request).await
+		self.http.post("/assemble", request).await
 	}
 
-	/// `GET /v0/traces/{assemble_id}` — contract §6.8. Keyed by
+	/// `GET {base_url}/traces/{assemble_id}` — contract §6.8. Keyed by
 	/// `assemble_id`, not `trace_id`: the trace is served from the same
-	/// `PlatformState` that served the originating `POST /v0/assemble`.
+	/// `PlatformState` that served the originating `POST {base_url}/assemble`.
 	pub async fn read_trace(
 		&self,
 		assemble_id: &AssembleId,
 	) -> Result<AssemblyTraceV0, PlatformClientError> {
 		self
 			.http
-			.get(&format!("/v0/traces/{}", assemble_id.as_str()), &[])
+			.get(&format!("/traces/{}", assemble_id.as_str()), &[])
 			.await
 	}
 }

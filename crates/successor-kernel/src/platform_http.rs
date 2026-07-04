@@ -2,7 +2,13 @@
 //!
 //! HTTP transport mechanics for the platform `/v0` client: base URL
 //! composition, bearer injection, JSON encode/decode, and status
-//! classification onto `PlatformClientError`. Endpoint-specific request and
+//! classification onto `PlatformClientError`. The caller-supplied base URL
+//! is the platform's `/v0` API base per contract §6 (e.g.
+//! `http://127.0.0.1:7332/v0`); every path this module receives from
+//! `platform_client.rs` is contract-relative (`/sessions`, …) and is
+//! appended onto that base as a plain string concatenation — never a
+//! `Url::join`, which would silently drop the base's `/v0` path segment
+//! when the base lacks a trailing slash. Endpoint-specific request and
 //! response shapes live in `platform_client.rs`; this module never names an
 //! individual `/v0` route.
 
@@ -84,6 +90,17 @@ impl PlatformHttpClient {
 		}
 	}
 
+	/// Joins `path` (a contract-relative path such as `/sessions`) onto the
+	/// base URL (the caller-supplied `/v0` API base, trailing slash already
+	/// trimmed in [`Self::new`]) via plain string concatenation. Never uses
+	/// `Url::join`: joining a relative path onto a base URL that itself has
+	/// a path segment (like `/v0`) via `Url::join` silently drops that
+	/// segment unless the base ends in `/`, which would double-strip or
+	/// misjoin depending on trailing-slash presence. Concatenation with a
+	/// normalized (no-trailing-slash) base and a leading-slash path is
+	/// unambiguous regardless of whether the caller's original base URL had
+	/// a trailing slash — pinned by the `base_url_with_v0_path_*` tests
+	/// below.
 	fn url(&self, path: &str) -> String {
 		format!("{}{path}", self.base_url)
 	}
@@ -191,8 +208,19 @@ mod tests {
 	}
 
 	#[test]
-	fn base_url_trailing_slash_is_normalized() {
-		let client = PlatformHttpClient::new("http://127.0.0.1:1/", "token");
-		assert_eq!(client.url("/v0/sessions"), "http://127.0.0.1:1/v0/sessions");
+	fn base_url_with_v0_path_and_no_trailing_slash_joins_correctly() {
+		// Contract-faithful base URL: includes the `/v0` API base segment,
+		// no trailing slash.
+		let client = PlatformHttpClient::new("http://127.0.0.1:1/v0", "token");
+		assert_eq!(client.url("/sessions"), "http://127.0.0.1:1/v0/sessions");
+	}
+
+	#[test]
+	fn base_url_with_v0_path_and_trailing_slash_joins_correctly() {
+		// Same contract-faithful base URL, but with a trailing slash — must
+		// normalize to the identical joined URL, not double the slash or
+		// drop the `/v0` segment.
+		let client = PlatformHttpClient::new("http://127.0.0.1:1/v0/", "token");
+		assert_eq!(client.url("/sessions"), "http://127.0.0.1:1/v0/sessions");
 	}
 }

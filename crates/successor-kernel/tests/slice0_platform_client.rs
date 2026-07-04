@@ -74,7 +74,9 @@ impl TestServer {
 				.await
 				.expect("accepted platform router serves");
 		});
-		Self { base_url: format!("http://{addr}"), db_path, handle }
+		// Contract-faithful base URL: the platform's `/v0` API base (contract
+		// §6), not the router root.
+		Self { base_url: format!("http://{addr}/v0"), db_path, handle }
 	}
 
 	fn client(&self) -> KernelPlatformClient {

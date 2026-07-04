@@ -57,9 +57,66 @@ fn search_files_result_shape_matches_the_contract_fixture() {
 	assert!(entry.get("path").is_some());
 	assert!(entry.get("score").is_some());
 	assert!(entry.get("preview").is_some());
-	// search_files never reads content: preview is the path itself, exactly
-	// like the fixture (`preview` equals `path` there too).
-	assert_eq!(entry["path"], entry["preview"]);
+	// Revision C6.2 (review finding): `preview` is now content-derived (first
+	// non-empty line, bounded/truncated like `grep`), not a copy of `path` —
+	// see `search_files_fixture_replay_documents_verified_stop_items` below
+	// for why the fixture's own pinned `score`/`preview` values cannot be
+	// reproduced by the disclosed formula/derivation.
+	assert_eq!(entry["preview"], "export {};");
+
+	std::fs::remove_dir_all(&root_dir).ok();
+}
+
+#[test]
+fn search_files_fixture_replay_documents_verified_stop_items() {
+	// Fixture-replay test using the fixture's own recorded query and file
+	// content: `.oh/workstreams/successor-agent-kernel/fixtures/slice-0/
+	// raw-events-successful-turn.json` pins a `search_files` call with
+	// `query: "concept graph resolver"` over
+	// `packages/coding-agent/src/context/concept-graph.ts`, scoring `0.91`
+	// with `preview: "Concept graph resolver implementation."`, and a
+	// separate `read` tool-result event in the same fixture recording that
+	// file's content as
+	// `"export class ConceptGraphResolver {\n  // fixture content\n}\n"`.
+	//
+	// Revision C6.2 (review finding) verified two STOP items that this test
+	// records rather than silently approximating:
+	//   1. The fixture's pinned score (0.91) is NOT reproducible by the disclosed
+	//      lexical formula for this fixture's own inputs: only 2 of 3 query terms
+	//      ("concept", "graph") match the path — the path has no substring
+	//      "resolver" — giving `0.85 * (2/3) = 0.5666...`, with no phrase-bonus
+	//      substring (the literal phrase "concept graph resolver" is not in the
+	//      path). No combination of the disclosed formula's inputs reaches 0.91.
+	//   2. The fixture's pinned preview text ("Concept graph resolver
+	//      implementation.") is NOT derivable from the fixture's own recorded file
+	//      content above: the first non-empty line of that content is "export class
+	//      ConceptGraphResolver {", not the pinned text, and no disclosed
+	//      transformation (bounded/truncated first line, UTF-8-lossy) produces it.
+	//      Deriving it would require an undisclosed summarization capability, which
+	//      contract §8.2 forbids as hidden semantic retrieval.
+	let root_dir = unique_temp_dir("fixture-replay");
+	std::fs::create_dir_all(root_dir.join("packages/coding-agent/src/context")).unwrap();
+	std::fs::write(
+		root_dir.join("packages/coding-agent/src/context/concept-graph.ts"),
+		b"export class ConceptGraphResolver {\n  // fixture content\n}\n",
+	)
+	.unwrap();
+
+	let result = search_files(&root_dir, "concept graph resolver", 20).unwrap();
+	assert_eq!(result.matches.len(), 1);
+	let matched = &result.matches[0];
+
+	// The only fixture value this test can reproduce exactly: `path`.
+	assert_eq!(matched.path, "packages/coding-agent/src/context/concept-graph.ts");
+
+	// STOP item 1: our disclosed score, not the fixture's pinned 0.91.
+	assert!((matched.score - (0.85 * 2.0 / 3.0)).abs() < 1e-9);
+	assert!((matched.score - 0.91).abs() > 0.3);
+
+	// STOP item 2: our content-derived preview, not the fixture's pinned
+	// preview text.
+	assert_eq!(matched.preview, "export class ConceptGraphResolver {");
+	assert_ne!(matched.preview, "Concept graph resolver implementation.");
 
 	std::fs::remove_dir_all(&root_dir).ok();
 }
@@ -228,9 +285,10 @@ fn grep_matches_lines_and_find_still_lists_binary_files_grep_skips() {
 
 	let grep_result = grep(&root_dir, "needle_here", 100).unwrap();
 	assert_eq!(grep_result.matches, vec![GrepMatch {
-		path:    "text.rs".to_string(),
-		line:    2,
-		preview: "    needle_here();".to_string(),
+		path:              "text.rs".to_string(),
+		line:              2,
+		preview:           "    needle_here();".to_string(),
+		preview_truncated: false,
 	}]);
 
 	let find_result = find(&root_dir, "*.bin", 100).unwrap();

@@ -6,16 +6,23 @@
 //!   [`super::WorkspaceRoot::resolve`] before its bytes are read (Dissent
 //!   ruling 3: reuse the C5 containment substrate exactly for the one secondary
 //!   I/O these three tools perform, rather than trusting the walk's own path
-//!   bookkeeping). `find` and `search_files` never read a candidate's content,
-//!   so they have no second I/O to protect this way.
+//!   bookkeeping). `find` never reads a candidate's content, so it has no
+//!   second I/O to protect this way; `search_files` now also re-validates
+//!   through the same substrate for its bounded content-derived preview (see
+//!   [`super::search_files`] module docs) — only `read`, `grep`, and
+//!   `search_files` perform this second I/O.
 //! - A file is skipped (not scanned, not an error) if its content
 //!   `looks_binary` — the same NUL-byte rule [`super::read::read`] uses to
-//!   reject binary reads. `find` still lists these files by name; only `grep`'s
+//!   reject binary reads — or if it exceeds [`MAX_SCAN_FILE_BYTES`], the
+//!   disclosed cap on how much of a single candidate `grep` will read into
+//!   memory to scan. `find` still lists these files by name; only `grep`'s
 //!   content scan skips them.
 //! - Matching is line-oriented: each candidate file's bytes are decoded as
 //!   UTF-8 with lossy replacement, split on `\n`, and each line is tested
-//!   against the compiled regex. A match's `preview` is the full matched line
-//!   (not just the matched span).
+//!   against the compiled regex. A match's `preview` is the matched line,
+//!   truncated at a UTF-8 char boundary to at most [`MAX_PREVIEW_BYTES`] bytes;
+//!   `preview_truncated` records whether truncation occurred, so a long line is
+//!   bounded without silently losing the fact that it was cut.
 //! - Matches are collected in the walk's deterministic path order (see
 //!   [`super::find`] module docs), then by ascending line number within a file;
 //!   truncation stops the scan itself (not just the output) once `max_matches`
@@ -31,6 +38,34 @@ use super::{
 	find::{DEFAULT_MAX_WALK_ENTRIES, DiscoveryWalkError, walk_workspace},
 	looks_binary,
 };
+
+/// Maximum byte length of a single [`GrepMatch::preview`] (and, via
+/// [`truncate_preview`], a `search_files` content-derived preview — see
+/// [`super::search_files`] module docs). Disclosed bound, not fixture-pinned:
+/// keeps a single long line from turning a match preview into an unbounded
+/// content channel.
+pub(crate) const MAX_PREVIEW_BYTES: usize = 512;
+
+/// Maximum byte length of a candidate file `grep` (and `search_files`, for its
+/// content-derived preview) will read into memory to scan. A candidate larger
+/// than this is skipped exactly like a binary or unreadable file — the same
+/// consistent silent-skip policy, rather than reading an unbounded amount of
+/// file content.
+pub(crate) const MAX_SCAN_FILE_BYTES: u64 = 2 * 1024 * 1024;
+
+/// Truncates `line` to at most [`MAX_PREVIEW_BYTES`] bytes at a UTF-8 char
+/// boundary (never splitting a multi-byte character), returning the
+/// (possibly truncated) preview and whether truncation occurred.
+pub(crate) fn truncate_preview(line: &str) -> (String, bool) {
+	if line.len() <= MAX_PREVIEW_BYTES {
+		return (line.to_string(), false);
+	}
+	let mut end = MAX_PREVIEW_BYTES;
+	while !line.is_char_boundary(end) {
+		end -= 1;
+	}
+	(line[..end].to_string(), true)
+}
 
 /// Typed rejection produced by [`grep`].
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -56,9 +91,10 @@ fn map_walk_error(err: DiscoveryWalkError) -> GrepRejection {
 /// One matched line from [`grep`].
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct GrepMatch {
-	pub path:    String,
-	pub line:    u64,
-	pub preview: String,
+	pub path:              String,
+	pub line:              u64,
+	pub preview:           String,
+	pub preview_truncated: bool,
 }
 
 /// Artifact-backed content produced by a successful [`grep`] call.
@@ -103,6 +139,15 @@ pub fn grep(
 		let Ok(canonical) = walk.workspace_root.resolve(relative) else {
 			continue;
 		};
+		// A candidate whose size exceeds the disclosed scan bound is
+		// skipped exactly like a binary or unreadable file (consistent
+		// silent-skip policy), rather than read in full.
+		let Ok(metadata) = std::fs::metadata(&canonical) else {
+			continue;
+		};
+		if metadata.len() > MAX_SCAN_FILE_BYTES {
+			continue;
+		}
 		let Ok(bytes) = std::fs::read(&canonical) else {
 			continue;
 		};
@@ -118,10 +163,12 @@ pub fn grep(
 				truncated = true;
 				break 'files;
 			}
+			let (preview, preview_truncated) = truncate_preview(line);
 			matches.push(GrepMatch {
-				path:    relative.clone(),
-				line:    (line_index + 1) as u64,
-				preview: line.to_string(),
+				path: relative.clone(),
+				line: (line_index + 1) as u64,
+				preview,
+				preview_truncated,
 			});
 		}
 	}
@@ -160,9 +207,51 @@ mod tests {
 
 		let result = grep(&root_dir, "needle", 10).unwrap();
 		assert_eq!(result.matches, vec![GrepMatch {
-			path:    "a.txt".to_string(),
-			line:    2,
-			preview: "needle here".to_string(),
+			path:              "a.txt".to_string(),
+			line:              2,
+			preview:           "needle here".to_string(),
+			preview_truncated: false,
+		}]);
+		assert!(!result.truncated);
+
+		std::fs::remove_dir_all(&root_dir).ok();
+	}
+
+	#[test]
+	fn grep_truncates_long_match_preview_and_records_metadata() {
+		let root_dir = unique_temp_dir("long-preview");
+		// A 2-byte UTF-8 character (`é`) straddles the MAX_PREVIEW_BYTES (512)
+		// boundary; truncation must stop one byte earlier, at the last
+		// UTF-8 char boundary, rather than splitting the character in half.
+		let mut line = "a".repeat(511);
+		line.push('é');
+		line.push_str("needle");
+		std::fs::write(root_dir.join("a.txt"), line.as_bytes()).unwrap();
+
+		let result = grep(&root_dir, "needle", 10).unwrap();
+		assert_eq!(result.matches.len(), 1);
+		let matched = &result.matches[0];
+		assert!(matched.preview_truncated);
+		assert_eq!(matched.preview, "a".repeat(511));
+		assert!(matched.preview.len() <= MAX_PREVIEW_BYTES);
+
+		std::fs::remove_dir_all(&root_dir).ok();
+	}
+
+	#[test]
+	fn grep_skips_oversize_file_without_error() {
+		let root_dir = unique_temp_dir("oversize");
+		let mut oversize_content = vec![b'a'; (MAX_SCAN_FILE_BYTES + 1) as usize];
+		oversize_content[0..6].copy_from_slice(b"needle");
+		std::fs::write(root_dir.join("big.txt"), &oversize_content).unwrap();
+		std::fs::write(root_dir.join("small.txt"), b"needle here").unwrap();
+
+		let result = grep(&root_dir, "needle", 10).unwrap();
+		assert_eq!(result.matches, vec![GrepMatch {
+			path:              "small.txt".to_string(),
+			line:              1,
+			preview:           "needle here".to_string(),
+			preview_truncated: false,
 		}]);
 		assert!(!result.truncated);
 

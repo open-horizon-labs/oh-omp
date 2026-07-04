@@ -19,18 +19,26 @@
 //!   lexicographic path order (see [`super::find`] module docs) as the
 //!   tie-break for equal scores (Dissent ruling 4: disclosed, stable
 //!   tie-break).
-//! - `search_files` is a pure locator: it never reads file content, only the
-//!   candidate's own relative-path string. The fixture-pinned result shape's
-//!   `preview` field is therefore the same string as `path` — there is no
-//!   content to preview.
+//! - For the top `max_matches` surviving candidates only, `search_files`
+//!   re-validates each through [`super::WorkspaceRoot::resolve`] (Dissent
+//!   ruling 3, reused from [`super::grep`]'s policy) and derives a
+//!   content-based `preview`: the first non-empty line of the file, decoded
+//!   UTF-8-lossy and bounded/truncated exactly like a `grep` match preview
+//!   ([`super::grep::truncate_preview`], [`super::grep::MAX_SCAN_FILE_BYTES`]).
+//!   Scoring itself never reads content — only this bounded, post-truncation
+//!   preview step does, so the ranking guarantee above still holds. A candidate
+//!   that is unreadable, oversize, binary, or has no non-empty line falls back
+//!   to its own `path` as the preview.
 
 use std::path::Path;
 
 use successor_protocol::artifact::ArtifactHash;
 
 use super::{
-	compute_artifact_bytes,
+	WorkspaceRoot, compute_artifact_bytes,
 	find::{DEFAULT_MAX_WALK_ENTRIES, DiscoveryWalkError, walk_workspace},
+	grep::{MAX_SCAN_FILE_BYTES, truncate_preview},
+	looks_binary,
 };
 
 /// Typed rejection produced by [`search_files`].
@@ -78,6 +86,40 @@ pub struct SearchFilesArtifactContent {
 #[derive(serde::Serialize)]
 struct SearchFilesArtifactPayload<'a> {
 	matches: &'a [SearchMatch],
+}
+
+/// Derives a content-based preview for one of the top surviving
+/// `search_files` matches.
+///
+/// Mirrors `grep`'s disclosed bounds and containment policy exactly: the
+/// candidate is re-validated through [`WorkspaceRoot::resolve`] (Dissent
+/// ruling 3) before any content is read, a file larger than
+/// [`MAX_SCAN_FILE_BYTES`] or one that fails to resolve/read is treated like
+/// a binary file, and the surviving line is bounded/truncated exactly like a
+/// `grep` match preview via [`truncate_preview`]. Falls back to `relative`
+/// itself — the candidate's own path — when no content-derived preview is
+/// available (unreadable, oversize, binary, or no non-empty line).
+fn content_preview(workspace_root: &WorkspaceRoot, relative: &str) -> String {
+	let Ok(canonical) = workspace_root.resolve(relative) else {
+		return relative.to_string();
+	};
+	let Ok(metadata) = std::fs::metadata(&canonical) else {
+		return relative.to_string();
+	};
+	if metadata.len() > MAX_SCAN_FILE_BYTES {
+		return relative.to_string();
+	}
+	let Ok(bytes) = std::fs::read(&canonical) else {
+		return relative.to_string();
+	};
+	if looks_binary(&bytes) {
+		return relative.to_string();
+	}
+	let text = String::from_utf8_lossy(&bytes);
+	let Some(first_non_empty) = text.lines().find(|line| !line.is_empty()) else {
+		return relative.to_string();
+	};
+	truncate_preview(first_non_empty).0
 }
 
 /// Bounded lexical/filename search: score every regular, non-symlink file
@@ -135,6 +177,13 @@ pub fn search_files(
 		scored.truncate(max_matches);
 	}
 
+	// Content-derived preview, computed only for the surviving top
+	// `max_matches` candidates (bounds the second I/O the same way
+	// `max_matches` already bounds the output — see module docs).
+	for scored_match in &mut scored {
+		scored_match.preview = content_preview(&walk.workspace_root, &scored_match.path);
+	}
+
 	let payload = SearchFilesArtifactPayload { matches: &scored };
 	let bytes = serde_json::to_vec(&payload).expect("SearchFilesArtifactPayload always serializes");
 	let (sha256, byte_length) = compute_artifact_bytes(&bytes);
@@ -162,13 +211,15 @@ mod tests {
 	}
 
 	#[test]
-	fn search_files_ranks_by_score_and_never_reads_content() {
+	fn search_files_ranks_by_score_from_path_alone() {
 		let root_dir = unique_temp_dir("basic");
 		std::fs::create_dir_all(root_dir.join("docs")).unwrap();
 		std::fs::create_dir_all(root_dir.join("notes")).unwrap();
-		// Content is irrelevant to a locator tool: both files' content is the
-		// opposite of what the query is expected to match, proving the score
-		// comes from the path string alone.
+		// Content affects only the (bounded, content-derived) preview, never
+		// the score: both files' content is unrelated to the query, proving
+		// the score comes from the path string alone. Revision C6.2 made
+		// `preview` content-derived rather than a copy of `path` (see module
+		// docs), so this test asserts the preview text instead of path==preview.
 		std::fs::write(root_dir.join("docs/concept graph.md"), b"UNRELATED CONTENT").unwrap();
 		std::fs::write(root_dir.join("notes/concept-only.rs"), b"UNRELATED CONTENT").unwrap();
 
@@ -176,10 +227,23 @@ mod tests {
 		assert_eq!(result.matches.len(), 2);
 		// The path containing the exact phrase (a literal space) ranks first.
 		assert_eq!(result.matches[0].path, "docs/concept graph.md");
-		assert_eq!(result.matches[0].preview, result.matches[0].path);
+		assert_eq!(result.matches[0].preview, "UNRELATED CONTENT");
 		assert!(result.matches[0].score > result.matches[1].score);
 		assert_eq!(result.matches[1].path, "notes/concept-only.rs");
-		assert!(result.matches[0].score > result.matches[1].score);
+		assert_eq!(result.matches[1].preview, "UNRELATED CONTENT");
+
+		std::fs::remove_dir_all(&root_dir).ok();
+	}
+
+	#[test]
+	fn search_files_preview_falls_back_to_path_when_content_is_binary() {
+		let root_dir = unique_temp_dir("binary-preview");
+		std::fs::write(root_dir.join("concept-graph.bin"), b"concept\0graph").unwrap();
+
+		let result = search_files(&root_dir, "concept graph", 10).unwrap();
+		assert_eq!(result.matches.len(), 1);
+		assert_eq!(result.matches[0].path, "concept-graph.bin");
+		assert_eq!(result.matches[0].preview, result.matches[0].path);
 
 		std::fs::remove_dir_all(&root_dir).ok();
 	}

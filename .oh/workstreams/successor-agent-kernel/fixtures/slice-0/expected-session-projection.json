@@ -48,8 +48,8 @@
     {
       "artifact_id": "art_00000000-0000-4000-8000-000000000001",
       "source_event_id": "evt_00000000-0000-4000-8000-000000000009",
-      "sha256": "sha256:746d4aba680df9855ac47cd327b1addb2386df951b5dd00c72dc95ee3247beec",
-      "byte_length": 139
+      "sha256": "sha256:a7ac4bd84ef9b9ad89a62ff7bcc39c0a1d2b2ef94cc2096ad9b54948bd75c004",
+      "byte_length": 150
     },
     {
       "artifact_id": "art_00000000-0000-4000-8000-000000000002",

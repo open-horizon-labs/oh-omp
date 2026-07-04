@@ -80,58 +80,58 @@ If completed (task 182-C4PreExecutionDissent, verdict ALLOW / PROCEED-WITH-CONDI
 ## Execute
 
 Checklist:
-- [ ] owned files only, plus explicit C8 top-level module grant and early C4 provider-namespace shell/grant for C3 if authorized
-- [ ] shared provider normalization interfaces imported from `successor-protocol`; no local clone DTOs
-- [ ] no forbidden shortcuts: no Anthropic-only normative model, no provider credentials in traces, no provider wire as canonical state
-- [ ] tests/checks added in `crates/successor-kernel/tests/slice0_provider_shapes.rs`
-- [ ] targeted validation passed (`cargo test -p successor-kernel slice0_provider_shapes` or package-local equivalent, then orchestrator `make check-rs` before review)
-- [ ] named risks retired or routed, including A4 unsupported-tool projection residual and credential no-echo
-- [ ] model binding verified for execution agent
-- [ ] fixture sovereignty preserved; no fixture/contract edits
+- [x] owned files only (provider/{mod,projection,anthropic}.rs + granted tests/slice0_provider_shapes.rs); C3 declarations preserved; no Cargo changes
+- [x] A3 normalized DTOs imported, no local clone DTOs (drift task 185: no shadowing structs)
+- [x] no forbidden shortcuts: three-shape interface model, no credentials in traces/observations, wire JSON adapter-internal only
+- [x] tests added in granted file (10 deterministic) + projection unit tests incl. tool-use-only regression set (task 191)
+- [x] targeted validation + orchestrator `make check-rs` exit 0 at `931cd99cb` and `da4436642`
+- [x] named risks retired: A4 residual as typed reject_unsupported_tool (detection only); credential no-echo proven; malformed-wire redacted
+- [x] model binding verified (`slice0-executor`, Sonnet 5; tasks 184 salvage, 191 fix). Provenance: first C4 run died unreported; salvage audit KEPT the draft per file (root cause: incomplete import list + missing test file) — governance accepted by Superego task 189
+- [x] fixture sovereignty preserved
 
 Changed files:
-- Pending execution.
+- `crates/successor-kernel/src/provider/{mod.rs, projection.rs, anthropic.rs}`, new `tests/slice0_provider_shapes.rs`
 
 Validation evidence:
-- Pending execution.
+- All kernel suites green (69 lib + 6 test binaries); three-shape fixture round-trips typed-equal; custody proofs (no-Serialize, redacted Debug, provider_api_shape on observations); opt-in live smoke skipped by default (SUCCESSOR_LIVE_PROVIDER_SMOKE=1 + ANTHROPIC_API_KEY gate)
 
 ## Code Review
 
-Reviewer: `slice0-reviewer`
+Reviewer: `slice0-reviewer` (task 187-C4CodeReview, checkout-proof at `931cd99cb`)
 Reviewer model: `openai-codex/gpt-5.5:high`
-Verdict: pending
+Verdict: REVISE, closed
 
 Findings:
-- Pending execution.
+- P1: normalize_response required a text content block, so Anthropic tool-use-only responses (stop_reason tool_use, no text) died as MalformedResponse exactly when the model calls the read tool.
 
-Fixes applied:
-- Pending execution.
+Fixes applied (task 191, commit `da4436642`):
+- Tool-use-only messages normalize with empty text (A3 DTO requires String — least-inventive, disclosed inline); tool call extracted independently; neither-text-nor-tooluse still typed; mixed-content behavior guarded; first-call semantics for multiple tool_use blocks pinned explicitly.
 
 ## Drift Review
 
 Original aim: provider projection/normalization without credential leakage or provider-wire canonization.
-Current work: pending execution.
-Gap: pending.
-Verdict: pending
-Authority boundary: pending
+Current work: tasks 184+191 through `da4436642`.
+Gap: none material (task 185-C4DriftReview: all seven boundary checks pass; build_provider_request takes data, orchestrates nothing).
+Verdict: aligned
+Authority boundary: clear
 
 ## Superego Review
 
 Reviewer: `slice0-superego-reviewer`
 Reviewer model: `openai-codex/gpt-5.5:high`
-Verdict: pending
+Verdict: ALLOW (task 189-C4SuperegoReview, checkout-proof at `931cd99cb`)
 
 Frame risks:
-- Pending execution.
+- None: DTO sovereignty, custody, opt-in smoke, A4-residual handling and salvage provenance all confirmed governed.
 
 Required corrections:
-- Pending execution.
+- None.
 
 ## Delivery
 
-Status: pending execution
+Status: accepted
 Residual risks:
-- A4 unsupported-tool projection residual is routed here for detection only and to C7 for lifecycle handling; no local workaround is permitted.
-- Exact live provider request substrate/features remain to be ruled by dissent if Cargo bootstrap is needed.
+- A4 unsupported-tool residual: detection typed here; lifecycle handling remains routed to C7.
+- The private request_body credential-leak path is covered by type-level proofs (no-Serialize, redacted Debug) rather than an offline wire test (mock servers prohibited); live smoke exercises it end-to-end when opted in.
 Human verification needed:
-- None before execution; pre-execution dissent ruling required.
+- None outstanding.

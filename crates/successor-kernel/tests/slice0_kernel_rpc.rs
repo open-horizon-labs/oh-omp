@@ -19,7 +19,7 @@ use successor_context_platform::{
 	auth::PlatformLicense, http::build_router as build_platform_router, routes::PlatformState,
 };
 use successor_kernel::{
-	api::{ResumeResponse, SubmitTurnRequest},
+	api::{CreateSessionResponse, ResumeResponse, SessionAttachResponse, SubmitTurnRequest},
 	config::ANTHROPIC_API_KEY_ENV,
 	http::{AppState, build_router},
 	id_factory::{RealClock, RealIdFactory},
@@ -791,4 +791,120 @@ fn submit_turn_request_converts_into_a_turn_input() {
 	let input: successor_kernel::runner::TurnInput = request.into();
 	assert_eq!(input.user_text, "hello");
 	assert_eq!(input.assembly_query.as_deref(), Some("hello, but override"));
+}
+
+// ---------------------------------------------------------------------
+// GET /v0/sessions/{session_id} (attach) is a thin C1 wrapper over
+// KernelPlatformClient::read_snapshot: inspection of an existing platform
+// session, never turn continuation. Nothing on this path touches
+// TurnRunner, FrameSink, or any provider seam.
+// ---------------------------------------------------------------------
+
+#[tokio::test]
+async fn attach_session_returns_the_platforms_own_snapshot_for_a_created_session() {
+	let server = TestServer::start("attach").await;
+	let workspace = seed_workspace("attach");
+	let state = scripted_state(server.client(), workspace.clone(), vec![ScriptedRound::Final {
+		text:    "hi".to_owned(),
+		summary: "hi".to_owned(),
+	}]);
+	let router = build_router(state);
+
+	// The "create" half: POST /v0/sessions must succeed and hand back a
+	// platform-assigned id.
+	let create_request = Request::builder()
+		.method("POST")
+		.uri("/v0/sessions")
+		.header("content-type", "application/json")
+		.body(Body::from(serde_json::json!({ "title": "attach-test" }).to_string()))
+		.expect("build a create-session request");
+	let create_response = router
+		.clone()
+		.oneshot(create_request)
+		.await
+		.expect("router handles create-session without panicking");
+	assert_eq!(create_response.status(), StatusCode::OK, "create-session must succeed");
+	let created: CreateSessionResponse = serde_json::from_slice(&body_bytes(create_response).await)
+		.expect("create-session body is a valid CreateSessionResponse");
+	assert!(
+		!created.session_id.as_str().is_empty(),
+		"create-session must hand back a platform-assigned session id"
+	);
+
+	// The "attach" half: inspect a session the real C7 runner actually
+	// populated -- not the bare session created above (the platform cannot
+	// replay a snapshot for a session with zero raw events, see
+	// `seed_populated_session`'s doc comment). Attach must not run a turn:
+	// no runner, no provider, no frame stream is involved on this path.
+	let populated_session_id = seed_populated_session(&server, &workspace).await;
+	let attach_request = Request::builder()
+		.method("GET")
+		.uri(format!("/v0/sessions/{}", populated_session_id.as_str()))
+		.body(Body::empty())
+		.expect("build an attach-session request");
+	let attach_response = router
+		.clone()
+		.oneshot(attach_request)
+		.await
+		.expect("router handles attach-session without panicking");
+	assert_eq!(attach_response.status(), StatusCode::OK, "attach must find a populated session");
+	let snapshot: SessionAttachResponse = serde_json::from_slice(&body_bytes(attach_response).await)
+		.expect("attach body is a valid SessionSnapshotV0");
+
+	assert_eq!(
+		snapshot.session_id, populated_session_id,
+		"attach must return the exact platform-assigned session id, unchanged"
+	);
+	assert!(
+		snapshot.last_raw_event_seq > 0,
+		"the seeded session had a real turn run against it, so attach's snapshot must reflect at \
+		 least one raw event -- proving attach reads the platform's own state rather than \
+		 fabricating an empty response"
+	);
+
+	cleanup_workspace(&workspace);
+}
+
+// ---------------------------------------------------------------------
+// GET /v0/sessions/{session_id} for a session the platform has never seen
+// surfaces the platform's own not-found through the C1 error seam, not a
+// silent empty snapshot or a panic.
+// ---------------------------------------------------------------------
+
+#[tokio::test]
+async fn attach_session_maps_an_unknown_session_id_to_a_kernel_rpc_error_envelope() {
+	let server = TestServer::start("attach-unknown").await;
+	let workspace = seed_workspace("attach-unknown");
+	let state = scripted_state(server.client(), workspace.clone(), vec![ScriptedRound::Final {
+		text:    "hi".to_owned(),
+		summary: "hi".to_owned(),
+	}]);
+	let router = build_router(state);
+
+	let request = Request::builder()
+		.method("GET")
+		.uri("/v0/sessions/ses_does-not-exist-0000")
+		.body(Body::empty())
+		.expect("build an attach-session request for a well-formed but unknown id");
+	let response = router
+		.clone()
+		.oneshot(request)
+		.await
+		.expect("router handles an unknown session id without panicking");
+
+	assert_eq!(
+		response.status(),
+		StatusCode::NOT_FOUND,
+		"a well-formed session id the platform has never seen must surface the platform's own \
+		 not-found status, not a 200 with an empty body or a 5xx"
+	);
+	let envelope: ErrorEnvelopeV0 = serde_json::from_slice(&body_bytes(response).await)
+		.expect("error body is a valid ErrorEnvelopeV0");
+	assert_eq!(
+		envelope.code, "kernel_rpc.platform_unavailable",
+		"attach maps every platform-rejected read_snapshot call through the same C1 error seam as \
+		 the other routes -- there is no attach-specific error code"
+	);
+
+	cleanup_workspace(&workspace);
 }

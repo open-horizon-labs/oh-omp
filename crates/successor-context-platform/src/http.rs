@@ -32,6 +32,18 @@ pub fn build_router(license: PlatformLicense, state: Arc<PlatformState>) -> Rout
 	Router::new().nest("/v0", v0)
 }
 
+/// Serves the Context Platform HTTP router on an already-bound listener.
+///
+/// LIB-ONLY: does not bind the listener itself and does not manage process
+/// lifecycle — Wave D owns both.
+pub async fn serve(
+	listener: tokio::net::TcpListener,
+	license: PlatformLicense,
+	state: Arc<PlatformState>,
+) -> std::io::Result<()> {
+	axum::serve(listener, build_router(license, state)).await
+}
+
 /// Reached only for `/v0` paths with no matching route, after auth
 /// succeeds.
 async fn no_route_implemented() -> PlatformError {

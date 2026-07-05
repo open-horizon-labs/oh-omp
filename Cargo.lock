@@ -4429,6 +4429,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "successor-context-platform",
  "successor-kernel",
  "successor-protocol",
  "tokio",

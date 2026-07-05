@@ -274,6 +274,11 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
 /// `provider_event_id`, minted but never persisted) can be filled with any
 /// syntactically valid placeholder of the right kind.
 #[derive(Debug, Default)]
+#[expect(
+	clippy::struct_field_names,
+	reason = "per-kind id queues intentionally mirror the IdFactory method names (event_ids, \
+	          turn_ids, ...); renaming would decouple the builder from the trait vocabulary"
+)]
 pub struct ScriptedIdFactoryBuilder {
 	event_ids:           VecDeque<String>,
 	turn_ids:            VecDeque<String>,
@@ -363,6 +368,12 @@ impl ScriptedIdFactoryBuilder {
 /// order. Panics loudly (never silently) if a kind's queue is exhausted or
 /// if a scripted value fails the target ID type's own prefix validation.
 #[derive(Debug, Default)]
+#[expect(
+	clippy::struct_field_names,
+	reason = "per-kind id queues intentionally mirror the IdFactory method names (event_ids, \
+	          turn_ids, ...); renaming would decouple the scripted factory from the trait \
+	          vocabulary"
+)]
 pub struct ScriptedIdFactory {
 	event_ids:           Mutex<VecDeque<String>>,
 	turn_ids:            Mutex<VecDeque<String>>,

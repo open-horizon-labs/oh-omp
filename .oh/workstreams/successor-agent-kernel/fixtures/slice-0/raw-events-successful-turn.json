@@ -224,7 +224,7 @@
     "entity_ids": { "message_id": null, "tool_call_id": null, "source_envelope_id": null, "artifact_id": null, "assemble_id": "asm_00000000-0000-4000-8000-000000000002", "context_item_ids": ["ctx_00000000-0000-4000-8000-000000000001"], "trace_id": "trace_00000000-0000-4000-8000-000000000003", "error_id": null, "provider_event_id": null },
     "visibility": { "model": true, "transcript": false, "recall": false, "assemble": false, "share": false, "debug": true },
     "redaction": "sensitive",
-    "payload": { "phase": "post_locator", "context_item_ids": ["ctx_00000000-0000-4000-8000-000000000001"] },
+    "payload": { "phase": "post_locator", "context_item_ids": ["ctx_00000000-0000-4000-8000-000000000001"], "degradation": ["embeddings_unavailable"] },
     "artifact": null
   },
   {
@@ -376,7 +376,7 @@
     "entity_ids": { "message_id": null, "tool_call_id": null, "source_envelope_id": null, "artifact_id": null, "assemble_id": "asm_00000000-0000-4000-8000-000000000003", "context_item_ids": ["ctx_00000000-0000-4000-8000-000000000002"], "trace_id": "trace_00000000-0000-4000-8000-000000000005", "error_id": null, "provider_event_id": null },
     "visibility": { "model": true, "transcript": false, "recall": false, "assemble": false, "share": false, "debug": true },
     "redaction": "sensitive",
-    "payload": { "phase": "post_read", "context_item_ids": ["ctx_00000000-0000-4000-8000-000000000002"] },
+    "payload": { "phase": "post_read", "context_item_ids": ["ctx_00000000-0000-4000-8000-000000000002"], "degradation": ["embeddings_unavailable"] },
     "artifact": null
   },
   {

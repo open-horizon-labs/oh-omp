@@ -429,13 +429,44 @@ async fn submit_turn_surfaces_turn_failure_as_a_terminal_frame_without_dropping_
 	// there is no external observer to independently count "genuine" frames
 	// against; the SSE body itself is the only source of truth for what the
 	// route emitted.
+	//
+	// Task 232 (C8 review round 2, P2): a bare record count would still pass
+	// if every pre-terminal frame were dropped and only the synthesized
+	// terminal frame survived. Decode every record into a `KernelFrameV0` and
+	// assert the exact pre-terminal kind sequence this scripted failure path
+	// produces: the turn starts, the user's turn is appended as a raw event,
+	// one `pre_tool`-phase assembly round runs (started + completed), and
+	// only then does dispatch reject `not_a_real_tool`, terminating with
+	// `turn_failed`. If any pre-terminal frame were dropped or reordered, or
+	// the body carried only the terminal frame, this comparison fails.
 	let records: Vec<&str> = body
 		.split("\n\n")
 		.filter(|record| !record.is_empty())
 		.collect();
-	assert!(
-		!records.is_empty(),
-		"the runner must have published at least one real frame before failing"
+	let kinds: Vec<KernelFrameKindV0> = records
+		.iter()
+		.map(|record| {
+			let data = record
+				.strip_prefix("event: kernel_frame\ndata: ")
+				.unwrap_or_else(|| panic!("every SSE record is a kernel_frame event: {record}"));
+			let frame: KernelFrameV0 = serde_json::from_str(data).unwrap_or_else(|err| {
+				panic!("SSE record data decodes as a KernelFrameV0: {err}: {data}")
+			});
+			frame.kind
+		})
+		.collect();
+	assert_eq!(
+		kinds,
+		vec![
+			KernelFrameKindV0::TurnStarted,
+			KernelFrameKindV0::RawEventAppended,
+			KernelFrameKindV0::PlatformAssembleStarted,
+			KernelFrameKindV0::PlatformAssembleCompleted,
+			KernelFrameKindV0::TurnFailed,
+		],
+		"the scripted failure path's pre-terminal frames (turn start, the user-turn append, and the \
+		 single pre_tool assembly round) must survive intact and in order, terminated by \
+		 turn_failed; body: {body}"
 	);
 
 	let last = *records.last().expect("at least the terminal record exists");

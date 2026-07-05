@@ -57,9 +57,11 @@
 //!    and re-appending an already-stored key is idempotent (the platform's
 //!    `duplicate: true` / stable `session_seq` behavior).
 //! 2. **The task-212 four-class exclusion, isolated-tail oracle only.** The
-//!    unsupported-tool oracle drives `dispatch_tool_call` directly rather than
-//!    through a full `execute_turn`, so it has no real preceding turn history
-//!    to derive `session_seq` or a first-event `causation_event_id` from. For
+//!    unsupported-tool oracle drives a full `execute_turn` (scripted provider
+//!    requesting `bash`), so the PRODUCED stream carries a real preamble and
+//!    continues its numbering/causality from real turn history — while the
+//!    FIXTURE is an isolated tail authored in Wave A with its own numbering
+//!    (`session_seq` from 1, no first-event causation, label-style keys). For
 //!    that fixture only, `session_seq`, the first event's `causation_event_id`,
 //!    `idempotency_key` (folded into exclusion 1 above), and `VisibilityV0` are
 //!    asserted against the runner's own production construction

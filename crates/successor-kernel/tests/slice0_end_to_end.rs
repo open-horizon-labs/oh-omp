@@ -161,6 +161,33 @@ fn parse_sse_frames(raw: &[u8]) -> Vec<KernelFrameV0> {
 	frames
 }
 
+/// Asserts `sentinel` never occurs in `text`. On failure, the panic message
+/// names the surface and sentinel class and reports the match count plus
+/// each match's byte offset/length -- it never echoes the scanned text or
+/// the sentinel value itself (durable law: failure messages name surface +
+/// sentinel class only, never payload bytes).
+fn assert_sentinel_absent(surface: &str, sentinel_class: &str, sentinel: &str, text: &str) {
+	let offsets: Vec<(usize, usize)> = text
+		.match_indices(sentinel)
+		.map(|(offset, matched)| (offset, matched.len()))
+		.collect();
+	assert!(
+		offsets.is_empty(),
+		"{surface} leaked the {sentinel_class} sentinel: {} occurrence(s) at byte offset/length \
+		 {offsets:?}",
+		offsets.len(),
+	);
+}
+
+/// Scans `bytes` for both of this suite's sentinel classes: the platform
+/// license (`LICENSE`, presented as the entitlement token authorizing every
+/// kernel->platform call `TestServer` drives) and the provider credential
+/// (`SENTINEL_ANTHROPIC_KEY`).
+fn assert_never_leaks_either_sentinel(surface: &str, bytes: &[u8]) {
+	let text = String::from_utf8_lossy(bytes);
+	assert_sentinel_absent(surface, "platform license", LICENSE, &text);
+	assert_sentinel_absent(surface, "anthropic key", SENTINEL_ANTHROPIC_KEY, &text);
+}
 // ---------------------------------------------------------------------
 // Full-stack turn against the real platform, replayed from a reconnected
 // store handle (real on-disk persistence, not in-memory carry-over).
@@ -239,6 +266,21 @@ async fn full_stack_turn_persists_events_that_replay_deterministically_from_a_re
 	assert!(!page.events.is_empty(), "the kernel's write path must have persisted raw events");
 	assert_eq!(page.events.first().expect("non-empty").session_id, session_id);
 
+	// Kernel trace-surface sentinel scan (Ruling 243.4: kernel HTTP/SSE +
+	// traces). Distinct from slice0_platform_replay.rs's own store-byte
+	// scans (raw SQLite file bytes against a different on-disk database);
+	// this scans the kernel-produced raw event payloads and replay-snapshot
+	// payloads this suite already reads back through the reconnected store
+	// handles above, for both sentinel classes.
+	assert_never_leaks_either_sentinel(
+		"kernel-persisted raw event payloads (reconnected store)",
+		&serde_json::to_vec(&page.events).expect("serialize raw events for the scan"),
+	);
+	assert_never_leaks_either_sentinel(
+		"kernel-persisted replay snapshot (reconnected store)",
+		&serde_json::to_vec(&first_replay).expect("serialize replay snapshot for the scan"),
+	);
+
 	cleanup_workspace(&workspace);
 }
 
@@ -290,12 +332,34 @@ async fn kernel_http_sse_bytes_never_leak_a_provider_credential_on_a_real_transp
 		.await
 		.expect("submit_turn does not panic on failure");
 	let bytes = body_bytes(response).await;
-	let text = String::from_utf8_lossy(&bytes);
+	assert_never_leaks_either_sentinel("kernel http/sse bytes", &bytes);
 
-	assert!(
-		!text.contains(SENTINEL_ANTHROPIC_KEY),
-		"kernel http/sse bytes must never contain the provider credential: {text}"
-	);
+	// Kernel trace-surface sentinel scan (Ruling 243.4: kernel HTTP/SSE +
+	// traces), continued after the transport-failure path. The failing turn
+	// still emits SSE frames (the runner synthesizes a terminal `turn_failed`
+	// frame once the first frame has flowed), so reconnect a fresh store
+	// handle to the same on-disk file and scan the raw event payloads the
+	// kernel persisted for this session before the transport failed, for
+	// both sentinel classes. Distinct from slice0_platform_replay.rs's own
+	// store-byte scans (raw SQLite file bytes against a different
+	// database); this scans the kernel-produced raw event payloads as read
+	// back through the platform's own API.
+	let frames = parse_sse_frames(&bytes);
+	if let Some(session_id) = frames.first().map(|frame| frame.session_id.clone()) {
+		let db_str = server.db_path.to_str().expect("utf-8 temp db path");
+		let reconnected_append_store = SqliteAppendStore::connect(db_str)
+			.await
+			.expect("reconnect to the same on-disk sqlite file");
+		let boxed_store: &dyn RawEventAppendStore = &reconnected_append_store;
+		let page = boxed_store
+			.read_session_events(&session_id, 0, 200)
+			.await
+			.expect("read back whatever raw events the kernel persisted before the transport failed");
+		assert_never_leaks_either_sentinel(
+			"kernel-persisted raw event payloads on transport failure (reconnected store)",
+			&serde_json::to_vec(&page.events).expect("serialize raw events for the scan"),
+		);
+	}
 
 	cleanup_workspace(&workspace);
 }

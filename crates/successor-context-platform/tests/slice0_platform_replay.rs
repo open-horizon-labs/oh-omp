@@ -56,16 +56,27 @@ async fn body_bytes(response: axum::response::Response) -> Vec<u8> {
 
 fn assert_never_leaks(surface: &str, bytes: &[u8]) {
 	let text = String::from_utf8_lossy(bytes);
-	assert!(
-		!text.contains(SENTINEL_LICENSE),
-		"{surface} leaked the platform license sentinel: {text}"
-	);
-	assert!(
-		!text.contains(SENTINEL_ANTHROPIC_KEY),
-		"{surface} leaked the anthropic key sentinel: {text}"
-	);
+	assert_sentinel_absent(surface, "platform license", SENTINEL_LICENSE, &text);
+	assert_sentinel_absent(surface, "anthropic key", SENTINEL_ANTHROPIC_KEY, &text);
 }
 
+/// Asserts `sentinel` never occurs in `text`. On failure, the panic message
+/// names the surface and sentinel class and reports the match count plus
+/// each match's byte offset/length -- it never echoes the scanned text or
+/// the sentinel value itself (durable law: failure messages name surface +
+/// sentinel class only, never payload bytes).
+fn assert_sentinel_absent(surface: &str, sentinel_class: &str, sentinel: &str, text: &str) {
+	let offsets: Vec<(usize, usize)> = text
+		.match_indices(sentinel)
+		.map(|(offset, matched)| (offset, matched.len()))
+		.collect();
+	assert!(
+		offsets.is_empty(),
+		"{surface} leaked the {sentinel_class} sentinel: {} occurrence(s) at byte offset/length \
+		 {offsets:?}",
+		offsets.len(),
+	);
+}
 fn auth_request(method: &str, uri: &str, body: Vec<u8>) -> Request<Body> {
 	Request::builder()
 		.method(method)

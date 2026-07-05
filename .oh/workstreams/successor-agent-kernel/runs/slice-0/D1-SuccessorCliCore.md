@@ -116,7 +116,7 @@ Record these; do not resolve them by invention before dissent:
 
 ## Dissent
 
-Verdict: required-before-execute / pending
+Verdict: required-before-execute / completed (task 238, PROCEED-WITH-CONDITIONS; record below)
 
 If skipped, rationale: not applicable; D1 fixes public CLI command grammar, process/transport lifecycle, machine-readable output envelopes, session UX semantics, error/exit mapping, and credential exposure boundaries.
 
@@ -134,22 +134,22 @@ If completed (task 238-D1PreExecutionDissent, verdict PROCEED-WITH-CONDITIONS, c
 
 ## Execute
 
-- [ ] Re-read `.oh/workstreams/successor-agent-kernel/SLICE-0-DISPATCH-MAP.md` §4.5, §Wave D, §6 Gate 5, §7 risk matrix, and model-binding table.
-- [ ] Re-read `.oh/workstreams/successor-agent-kernel/SLICE-0-CONTRACT.md` CLI statelessness, resume, SSE/JSON output rules, and §13 acceptance criteria.
-- [ ] Re-read `.oh/workstreams/successor-agent-kernel/SLICE-0-REVIEW-LEARNINGS.md` §1–13 in full.
-- [ ] Re-read accepted C7/C8 packets and tests before touching D1 code.
-- [ ] Complete required-before-execute dissent and record verdict/evidence in this packet before implementation.
-- [ ] Implement only owned files; stop if any kernel/platform/protocol/fixture/contract change appears necessary.
-- [ ] Preserve the frozen C8 route/API wrappers; no route renames, lifecycle edits, or compatibility shims.
-- [ ] Keep the CLI stateless: no local session DB/cache, provider direct calls, tool direct calls, raw-event append, semantic-context construction, or transcript parsing.
-- [ ] Add contract-level CLI tests proving ID preservation, error envelope preservation, stateless behavior, no credential echo, and no false session continuation.
-- [ ] Run focused D1 validation and capture exact commands/exits.
-- [ ] Run or obtain orchestrator Rust check evidence appropriate for the lane.
-- [ ] Update this packet's review/delivery sections with observed evidence only.
+- [x] Dispatch map §4.5/§Wave D/§6 Gate 5/§7 + model-binding table re-read (executor task 239 preflight).
+- [x] Contract CLI statelessness/resume/SSE-JSON rules/§13 re-read.
+- [x] Review learnings §1–13 re-read in full.
+- [x] Accepted C7/C8 packets and kernel tests read before code (construction patterns mirrored from the kernel's own RPC tests).
+- [x] Dissent completed and recorded BEFORE execution: task 238 at `1c10f9d6c`, committed `40e6e55b6`; executor launched only after that commit.
+- [x] Owned files only: `crates/successor-cli/{Cargo.toml, src/main.rs, src/args.rs, src/client.rs, src/render.rs, tests/slice0_cli_contract.rs}` + `Cargo.lock`; kernel/platform/protocol untouched (verified by reviews 240/241 via diff).
+- [x] Frozen C8 routes/wrappers consumed as-is; no renames, no shims; in-process bootstrap through public `AppState::with_anthropic` + `serve` with a pre-bound port-0 loopback listener (the anticipated serve-seam STOP-gap did not materialize — serve accepts a pre-bound listener).
+- [x] CLI stateless: no session DB/cache/store; no provider/tool direct calls; no raw-event append; no transcript parsing; statelessness proven under a scratch HOME.
+- [x] Contract tests: 15 in `tests/slice0_cli_contract.rs` — grammar rejections (incl. `ask --session-id`, flag conflict, `ask --format json`), ID/envelope byte-preservation against a frozen-surface kernel double, SSE byte-fidelity, sentinel redaction on bootstrap-fail and RPC-fail paths, exit buckets, no false continuation wording.
+- [x] Focused validation quoted in `agent://239`: `cargo fmt --all --check` clean; `cargo test -p successor-cli` 15/15; `cargo clippy -p successor-cli --all-targets` clean; kernel suite spot-checked untouched-green.
+- [x] Orchestrator gate: `make check-rs` exit 0 at `eeced9480`.
+- [x] Packet review/delivery sections updated with observed evidence only (this update).
 
 ## Code Review
 
-Status: pending.
+Status: completed (round 1 clean — zero findings).
 
 Reviewer binding: `slice0-reviewer` / `openai-codex/gpt-5.5`, `thinking-level=high`.
 
@@ -162,11 +162,11 @@ Review must verify:
 - [ ] Tests assert external CLI contract, not incidental internal wiring.
 - [ ] No fixture/contract/learnings/test-oracle weakening.
 
-Verdict: pending.
+Verdict: correct (task 240 at `eeced9480`, confidence 0.87, findings: none; reviewer re-ran `cargo test -p successor-cli` 15/15 and `cargo clippy -p successor-cli --all-targets -- -D warnings` clean; all seven checklist items above verified incl. dissent-before-code, owned-files-only, pass-through fidelity at the write path, and sentinel redaction).
 
 ## Drift Review
 
-Status: pending.
+Status: completed.
 
 Drift reviewer binding: `slice0-drift-reviewer` / `openai-codex/gpt-5.5`, `thinking-level=high`.
 
@@ -177,11 +177,11 @@ Drift review must verify:
 - [ ] No new route, fixture, or protocol contract created without explicit approval.
 - [ ] Inherited C8/D1 residual law remains visible in tests/docs where relevant.
 
-Verdict: pending.
+Verdict: aligned; authority boundary clear (task 241 at `eeced9480`). No material drift; grammar/output/reachability match the ruled surface with nothing invented; session-semantics law visible in code, help text, and tests (ask = fresh runner-owned turn; resume/inspect read-only, no continuation claim). Residuals explicitly routed, not silent: full happy-path/live E2E and leak breadth stay D2 scope under the Cargo-grant split; hardcoded in-process provider model/max_tokens are disclosed internal bootstrap defaults — to stay non-public until a later config/model lane; neither required a D1 stop-and-ask.
 
 ## Superego Review
 
-Status: pending.
+Status: completed.
 
 Superego binding: `slice0-superego-reviewer` / `openai-codex/gpt-5.5`, `thinking-level=high`.
 
@@ -192,21 +192,22 @@ Superego must challenge:
 - [ ] Whether `--session-id` wording or behavior misleads users about continuation.
 - [ ] Whether sentinel leak coverage includes all stdout/stderr/success/error paths.
 
-Verdict: pending.
+Verdict: ALLOW (task 242 at `eeced9480`; full per-ruling table in `agent://242-D1SuperegoReview`). All 8 dissent rulings adjudicated HONORED with code/test evidence: hybrid reachability with no daemon/persistence; exact grammar at clap level; pass-through-only machine output (raw bytes, no CLI-owned envelope); bounded clap grant (no env feature); secret discipline (CLI never reads provider secrets itself — kernel C3 seams only; credential-looking `--kernel-url` userinfo probe not echoed); exit buckets 0/2/3/4/5; test split honored without weakening accepted fixtures; Cargo grant not exceeded (direct deps verified exactly the granted set, no dev-deps). Gap adjudications: happy-path E2E deferral ACCEPTED (D1 grant did not authorize smoke-harness deps; D2 must consume the seams); provider wiring defaults ACCEPTED as internal bootstrap defaults, not contract surface. D2 inheritance recorded: the `--kernel-url` black-box seam, exit buckets as smoke oracles, in-process bootstrap requiring MEMEX_LICENSE in local runs.
 
 ## Delivery
 
-Status: pending.
+Status: accepted
 
-To fill after execution:
 - Changed files:
-  - pending
+  - `crates/successor-cli/{Cargo.toml, src/main.rs, src/args.rs, src/client.rs, src/render.rs}`, new `tests/slice0_cli_contract.rs`, `Cargo.lock`; lane commit `eeced9480` (dissent record `40e6e55b6`).
 - Validation evidence:
-  - pending
+  - 15/15 CLI contract tests; clippy `-D warnings` clean; fmt clean; `make check-rs` exit 0; kernel suite untouched-green. Command surface: `ask --workspace-root --prompt [--format text|sse]`, `resume --session-id [--format json|text]`, `inspect session --session-id [--format json|text]`, each with `--kernel-url`/`--platform-url` (mutually exclusive).
 - Dissent evidence:
-  - pending
+  - Task 238 PROCEED-WITH-CONDITIONS recorded in this packet's Dissent section; full rulings `agent://238-D1PreExecutionDissent`.
 - Review evidence:
-  - pending
+  - Code `agent://240-D1CodeReview` (correct, zero findings); drift `agent://241-D1DriftReview` (aligned/clear); Superego `agent://242-D1SuperegoReview` (ALLOW). First lane in the workstream to clear all three gates in round 1 with zero findings.
+- Residual risks (D2 inherits):
+  - Genuine happy-path E2E not yet exercised (deliberately deferred; D2's cli_smoke must drive the real binary end-to-end); in-process provider wiring defaults (claude-sonnet-4-5/8192) are internal, non-public until a config/model lane; bare zero-event session 422 behavior surfaces through resume/inspect of unused sessions — D2 smoke must account for it.
 - Drift evidence:
   - pending
 - Superego evidence:

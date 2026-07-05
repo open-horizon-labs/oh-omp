@@ -19,6 +19,9 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
 tracing = "0.1"
+# Lane C8 `KernelLocalRpc` (Dissent ruling 1, full-RPC stage): local RPC/SSE
+# substrate for `build_router`/`serve`. `tokio-stream` converts the C2
+# `KernelFrameStream` broadcast receiver into an axum SSE body stream.
 # Lane C6 `KernelToolSearchFindGrep` bootstrap deps (Dissent ruling 2): bounded
 # `search_files`/`find`/`grep` discovery over the C5 filesystem substrate.
 # `default-features = false` on `regex` drops the full Unicode property/script
@@ -34,15 +37,15 @@ tracing = "0.1"
 regex = { version = "1", default-features = false, features = ["std", "unicode-perl"] }
 globset = { version = "0.4", default-features = false }
 walkdir = "2"
+axum = "0.8"
+tokio-stream = { version = "0.1", features = ["sync"] }
 
 [dev-dependencies]
 # Test-only: binds the accepted platform router (successor-context-platform::http::build_router)
 # on 127.0.0.1:0 with a real temp SQLite DB and exercises KernelPlatformClient over real TCP
-# (Dissent ruling 2). `axum` is required alongside it to call `axum::serve` on the returned
-# `axum::Router` value — Rust does not expose a dependency's transitive dependencies for direct
-# `use`, so serving the router in-process is not reachable through `successor-context-platform`
-# alone. Neither crate appears in the production dependency graph (verified via
-# `cargo tree -p successor-kernel -e normal`). Flagged as a reopen candidate against ruling 1's
-# literal wording, which named only the `successor-context-platform` entry.
+# (Dissent ruling 2). Neither crate appears in the production dependency graph beyond what Lane
+# C8 now also requires there (verified via `cargo tree -p successor-kernel -e normal`).
 successor-context-platform = { path = "../successor-context-platform" }
-axum = "0.8"
+# Lane C8 (Dissent ruling 1): `Router` oneshot dispatch in `tests/slice0_kernel_rpc.rs` without
+# binding a real TCP listener.
+tower = { version = "0.5", features = ["util"] }

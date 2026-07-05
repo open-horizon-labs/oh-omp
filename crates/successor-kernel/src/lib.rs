@@ -2,8 +2,9 @@
 //!
 //! Module tree for the standalone kernel: platform client (C1), frame
 //! streaming (C2), provider auth/projection (C3-C4), tool execution (C5-C6),
-//! turn runner (C7), and local RPC/SSE surface (C8). Each module is a shell
-//! stub pending its owning lane's implementation.
+//! turn runner (C7), and local RPC/SSE surface (C8: `api`, `http`, `routes`,
+//! wired over the accepted C1-C7 APIs). Any module not yet listed above as
+//! implemented remains a shell stub pending its owning lane.
 
 pub mod api;
 pub mod config;

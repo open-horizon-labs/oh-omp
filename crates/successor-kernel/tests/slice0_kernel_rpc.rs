@@ -1,0 +1,601 @@
+//! Owned by Lane C8 `KernelLocalRpc` (Dissent ruling 4: disclosed test-file
+//! ownership expansion). Contract tests for the kernel's local RPC/SSE
+//! surface, built directly on the accepted C1-C7 seams: a real `TurnRunner`,
+//! a real `KernelPlatformClient` against a live test double of the
+//! platform's `/v0` surface (mirroring the C7 contract test's `TestServer`
+//! pattern), and a scripted provider to keep turn outcomes deterministic
+//! without any network call.
+
+use std::sync::{
+	Arc,
+	atomic::{AtomicBool, AtomicU64, Ordering},
+};
+
+use axum::{
+	body::Body,
+	http::{Request, StatusCode},
+};
+use successor_context_platform::{
+	auth::PlatformLicense, http::build_router as build_platform_router, routes::PlatformState,
+};
+use successor_kernel::{
+	api::{ResumeResponse, SubmitTurnRequest},
+	config::ANTHROPIC_API_KEY_ENV,
+	http::{AppState, build_router},
+	id_factory::{RealClock, RealIdFactory},
+	platform_client::{EntitlementToken, KernelPlatformClient},
+	provider::auth::ProviderSlot,
+	runner::{ScriptedProviderExecutor, ScriptedRound},
+	sse::render_kernel_frame_sse,
+	state_machine::TurnFailure,
+	stream::KernelFrameStream,
+};
+use successor_protocol::{
+	error::ErrorEnvelopeV0, kernel_frame::KernelFrameKindV0, provider::ProviderApiShapeV0,
+};
+use tower::ServiceExt;
+
+const LICENSE: &str = "dev-license-c8-rpc-abc123";
+const SENTINEL_ANTHROPIC_KEY: &str = "sk-ant-sentinel-do-not-leak-c8rpc9f3c1a2b";
+
+fn temp_db_path(label: &str) -> std::path::PathBuf {
+	static COUNTER: AtomicU64 = AtomicU64::new(0);
+	let nanos = std::time::SystemTime::now()
+		.duration_since(std::time::UNIX_EPOCH)
+		.expect("clock after epoch")
+		.as_nanos();
+	let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+	std::env::temp_dir()
+		.join(format!("successor-kernel-c8-rpc-{label}-{}-{n}-{nanos}.sqlite3", std::process::id()))
+}
+
+fn seed_workspace(label: &str) -> std::path::PathBuf {
+	let root = std::env::temp_dir()
+		.join(format!("successor-kernel-c8-rpc-workspace-{label}-{}", std::process::id()));
+	std::fs::create_dir_all(&root).expect("create a temp workspace dir");
+	root
+}
+
+fn cleanup_workspace(root: &std::path::Path) {
+	let _ = std::fs::remove_dir_all(root);
+}
+
+/// Mirrors `slice0_kernel_contract.rs`'s `TestServer`: a real accepted
+/// platform router, bound on a real TCP port, backed by a real temp `SQLite`
+/// DB. `KernelPlatformClient` talks to it exactly as it would talk to a real
+/// deployment.
+struct TestServer {
+	base_url: String,
+	db_path:  std::path::PathBuf,
+	handle:   tokio::task::JoinHandle<()>,
+}
+
+impl TestServer {
+	async fn start(label: &str) -> Self {
+		let db_path = temp_db_path(label);
+		let state = PlatformState::connect(db_path.to_str().expect("temp db path is valid utf-8"))
+			.await
+			.expect("connect the real temp sqlite db");
+		let router = build_platform_router(PlatformLicense::new(LICENSE), Arc::new(state));
+		let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+			.await
+			.expect("bind an ephemeral tcp port");
+		let addr = listener
+			.local_addr()
+			.expect("bound listener has a local addr");
+		let handle = tokio::spawn(async move {
+			let _ = axum::serve(listener, router).await;
+		});
+		Self { base_url: format!("http://{addr}/v0"), db_path, handle }
+	}
+
+	fn client(&self) -> KernelPlatformClient {
+		KernelPlatformClient::new(self.base_url.clone(), EntitlementToken::new(LICENSE))
+	}
+
+	fn client_with_token(&self, token: &str) -> KernelPlatformClient {
+		KernelPlatformClient::new(self.base_url.clone(), EntitlementToken::new(token))
+	}
+}
+
+impl Drop for TestServer {
+	fn drop(&mut self) {
+		self.handle.abort();
+		let _ = std::fs::remove_file(&self.db_path);
+	}
+}
+
+fn scripted_state(
+	platform: KernelPlatformClient,
+	frame_stream: KernelFrameStream,
+	workspace_root: std::path::PathBuf,
+	rounds: Vec<ScriptedRound>,
+) -> AppState<ScriptedProviderExecutor> {
+	AppState::new(
+		platform,
+		frame_stream,
+		Arc::new(RealIdFactory::new()),
+		Arc::new(RealClock),
+		workspace_root,
+		ProviderSlot::Anthropic,
+		move || {
+			Ok(ScriptedProviderExecutor::new(
+				"scripted",
+				ProviderApiShapeV0::AnthropicMessages,
+				"scripted-model",
+				rounds.clone(),
+			))
+		},
+	)
+}
+
+/// Runs one real scripted turn directly against the accepted C7 runner (not
+/// through this lane's own routes) and returns the resulting session id.
+/// `TurnRunner::execute_turn` always creates its own platform session, so a
+/// bare `create_session` call produces a session with zero raw events — not
+/// enough for the platform's own snapshot replay to succeed. This seeds a
+/// session the way the accepted runner actually populates one.
+async fn seed_populated_session(
+	server: &TestServer,
+	workspace: &std::path::Path,
+) -> successor_protocol::ids::SessionId {
+	let frame_stream = KernelFrameStream::new();
+	let runner = successor_kernel::runner::TurnRunner::new(
+		server.client(),
+		successor_kernel::frame_sink::FrameSink::new(frame_stream),
+		Arc::new(RealIdFactory::new()),
+		Arc::new(RealClock),
+		ScriptedProviderExecutor::new(
+			"scripted",
+			ProviderApiShapeV0::AnthropicMessages,
+			"scripted-model",
+			vec![ScriptedRound::Final { text: "seed".to_owned(), summary: "seed".to_owned() }],
+		),
+		workspace,
+	);
+	let attempt = runner
+		.execute_turn(successor_kernel::runner::TurnInput {
+			user_text:      "seed a populated session".to_owned(),
+			assembly_query: None,
+		})
+		.await;
+	assert!(attempt.outcome.is_ok(), "the seeding turn must succeed: {attempt:?}");
+	attempt
+		.trace
+		.frames()
+		.first()
+		.expect("the seeding turn published at least one frame")
+		.session_id
+		.clone()
+}
+
+async fn body_bytes(response: axum::response::Response) -> Vec<u8> {
+	axum::body::to_bytes(response.into_body(), usize::MAX)
+		.await
+		.expect("collect the response body")
+		.to_vec()
+}
+
+// ---------------------------------------------------------------------
+// 1. Route surface exists and rejects malformed bodies.
+// ---------------------------------------------------------------------
+
+#[tokio::test]
+async fn malformed_request_bodies_are_rejected_with_a_kernel_rpc_error_envelope() {
+	let server = TestServer::start("malformed").await;
+	let workspace = seed_workspace("malformed");
+	let state = scripted_state(server.client(), KernelFrameStream::new(), workspace.clone(), vec![
+		ScriptedRound::Final { text: "hi".to_owned(), summary: "hi".to_owned() },
+	]);
+	let router = build_router(state);
+
+	for (method, path) in [("POST", "/v0/sessions"), ("POST", "/v0/turns")] {
+		let request = Request::builder()
+			.method(method)
+			.uri(path)
+			.header("content-type", "application/json")
+			.body(Body::from("{ not json"))
+			.expect("build a malformed request");
+		let response = router
+			.clone()
+			.oneshot(request)
+			.await
+			.expect("router handles a malformed body without panicking");
+		assert_eq!(
+			response.status(),
+			StatusCode::BAD_REQUEST,
+			"{method} {path} must reject malformed JSON with 400"
+		);
+		let envelope: ErrorEnvelopeV0 = serde_json::from_slice(&body_bytes(response).await)
+			.expect("error body is a valid ErrorEnvelopeV0");
+		assert_eq!(envelope.code, "kernel_rpc.malformed_request");
+	}
+
+	cleanup_workspace(&workspace);
+}
+
+// ---------------------------------------------------------------------
+// 2. SSE emits byte-exact C2-rendered `event: kernel_frame` records.
+// ---------------------------------------------------------------------
+
+#[tokio::test]
+async fn submit_turn_streams_byte_exact_c2_rendered_kernel_frame_records() {
+	let server = TestServer::start("sse").await;
+	let workspace = seed_workspace("sse");
+	let frame_stream = KernelFrameStream::new();
+	let mut observer = frame_stream.subscribe();
+	let state = scripted_state(server.client(), frame_stream, workspace.clone(), vec![
+		ScriptedRound::Final { text: "hello".to_owned(), summary: "hello".to_owned() },
+	]);
+	let router = build_router(state);
+
+	let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+		.await
+		.expect("bind the kernel listener");
+	let addr = listener
+		.local_addr()
+		.expect("kernel listener has a local addr");
+	let serve_handle = tokio::spawn(async move {
+		let _ = axum::serve(listener, router).await;
+	});
+
+	let http = reqwest::Client::new();
+	let response = http
+		.post(format!("http://{addr}/v0/turns"))
+		.header(reqwest::header::CONTENT_TYPE, "application/json")
+		.body(serde_json::json!({ "user_text": "hi" }).to_string())
+		.send()
+		.await
+		.expect("submit turn request");
+	assert_eq!(response.status(), reqwest::StatusCode::OK);
+	assert_eq!(
+		response
+			.headers()
+			.get(reqwest::header::CONTENT_TYPE)
+			.and_then(|value| value.to_str().ok()),
+		Some("text/event-stream")
+	);
+	let body = String::from_utf8(
+		response
+			.bytes()
+			.await
+			.expect("collect the full sse body")
+			.to_vec(),
+	)
+	.expect("sse body is utf8");
+
+	// Independently capture the canonical frames the runner actually
+	// published and render them exactly as the route does; the wire bytes
+	// must be byte-identical (Dissent ruling 7: no second schema).
+	let mut expected = String::new();
+	while let Ok(Ok(frame)) =
+		tokio::time::timeout(std::time::Duration::from_secs(5), observer.recv()).await
+	{
+		let is_terminal = frame.kind == KernelFrameKindV0::TurnCompleted
+			|| frame.kind == KernelFrameKindV0::TurnFailed;
+		expected.push_str(&render_kernel_frame_sse(&frame).expect("render the captured frame"));
+		if is_terminal {
+			break;
+		}
+	}
+
+	assert!(!expected.is_empty(), "the runner must have published at least one frame");
+	assert_eq!(
+		body, expected,
+		"SSE wire bytes must be byte-identical to C2's own rendering of the frames the runner \
+		 published"
+	);
+
+	serve_handle.abort();
+	cleanup_workspace(&workspace);
+}
+
+// ---------------------------------------------------------------------
+// 3. A mid-turn `TurnFailure` surfaces as a terminal frame without dropping the
+//    frames already published for that attempt.
+// ---------------------------------------------------------------------
+
+#[tokio::test]
+async fn submit_turn_surfaces_turn_failure_as_a_terminal_frame_without_dropping_earlier_frames() {
+	let server = TestServer::start("failure").await;
+	let workspace = seed_workspace("failure");
+	let frame_stream = KernelFrameStream::new();
+	let mut observer = frame_stream.subscribe();
+	let state = scripted_state(server.client(), frame_stream, workspace.clone(), vec![
+		ScriptedRound::ToolUse {
+			tool_name:             "not_a_real_tool".to_owned(),
+			arguments:             serde_json::json!({}),
+			provider_tool_call_id: "call_1".to_owned(),
+		},
+	]);
+	let router = build_router(state);
+
+	let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+		.await
+		.expect("bind the kernel listener");
+	let addr = listener
+		.local_addr()
+		.expect("kernel listener has a local addr");
+	let serve_handle = tokio::spawn(async move {
+		let _ = axum::serve(listener, router).await;
+	});
+
+	let http = reqwest::Client::new();
+	let response = http
+		.post(format!("http://{addr}/v0/turns"))
+		.header(reqwest::header::CONTENT_TYPE, "application/json")
+		.body(serde_json::json!({ "user_text": "use a bad tool" }).to_string())
+		.send()
+		.await
+		.expect("submit turn request");
+	assert_eq!(
+		response.status(),
+		reqwest::StatusCode::OK,
+		"a mid-turn failure still streams as SSE, not a JSON error, once real frames exist"
+	);
+	let body = String::from_utf8(
+		response
+			.bytes()
+			.await
+			.expect("collect the sse body")
+			.to_vec(),
+	)
+	.expect("sse body is utf8");
+
+	let mut genuine = 0usize;
+	while let Ok(Ok(_frame)) =
+		tokio::time::timeout(std::time::Duration::from_secs(5), observer.recv()).await
+	{
+		genuine += 1;
+	}
+	assert!(genuine > 0, "the runner must have published at least one real frame before failing");
+
+	let records: Vec<&str> = body
+		.split("\n\n")
+		.filter(|record| !record.is_empty())
+		.collect();
+	// `observer` shares the same broadcast stream as the route's own
+	// subscription and the synthesized terminal frame, so it sees every
+	// record the SSE body carries — no more, no less.
+	assert_eq!(
+		records.len(),
+		genuine,
+		"the SSE stream must carry exactly the frames published on the shared stream, including the \
+		 synthesized terminal one; body: {body}"
+	);
+
+	let last = *records.last().expect("at least the terminal record exists");
+	assert!(
+		last.contains("event: kernel_frame"),
+		"the terminal record uses the same C2 event name as every other frame: {last}"
+	);
+	assert!(
+		last.contains(r#""kind":"turn_failed""#),
+		"the terminal record's kind is turn_failed: {last}"
+	);
+	assert!(
+		last.contains("not present in the published tool catalog"),
+		"the terminal record's payload carries the real TurnFailure detail: {last}"
+	);
+
+	serve_handle.abort();
+	cleanup_workspace(&workspace);
+}
+
+// ---------------------------------------------------------------------
+// 4. Resume queries the platform fresh every time; no local cache.
+// ---------------------------------------------------------------------
+
+#[tokio::test]
+async fn resume_queries_the_platform_fresh_and_never_caches_provider_auth() {
+	let server = TestServer::start("resume").await;
+	let workspace = seed_workspace("resume");
+	let session_id = seed_populated_session(&server, &workspace).await;
+
+	let resolved = Arc::new(AtomicBool::new(false));
+	let flag = Arc::clone(&resolved);
+	let state = AppState::new(
+		server.client(),
+		KernelFrameStream::new(),
+		Arc::new(RealIdFactory::new()),
+		Arc::new(RealClock),
+		workspace.clone(),
+		ProviderSlot::Anthropic,
+		move || {
+			if flag.load(Ordering::SeqCst) {
+				Ok(ScriptedProviderExecutor::new(
+					"scripted",
+					ProviderApiShapeV0::AnthropicMessages,
+					"scripted-model",
+					Vec::new(),
+				))
+			} else {
+				Err(TurnFailure::ProviderAuthUnavailable { slot: ProviderSlot::Anthropic })
+			}
+		},
+	);
+	let router = build_router(state);
+
+	let request = Request::builder()
+		.method("GET")
+		.uri(format!("/v0/resume/{}", session_id.as_str()))
+		.body(Body::empty())
+		.expect("build resume request 1");
+	let response = router
+		.clone()
+		.oneshot(request)
+		.await
+		.expect("resume request 1");
+	assert_eq!(response.status(), StatusCode::OK);
+	let first: ResumeResponse =
+		serde_json::from_slice(&body_bytes(response).await).expect("parse resume response 1");
+	assert!(!first.provider_auth_resolved, "provider auth starts unresolved in this test");
+	assert_eq!(first.session_id.as_str(), session_id.as_str());
+
+	resolved.store(true, Ordering::SeqCst);
+
+	let request = Request::builder()
+		.method("GET")
+		.uri(format!("/v0/resume/{}", session_id.as_str()))
+		.body(Body::empty())
+		.expect("build resume request 2");
+	let response = router.oneshot(request).await.expect("resume request 2");
+	assert_eq!(response.status(), StatusCode::OK);
+	let second: ResumeResponse =
+		serde_json::from_slice(&body_bytes(response).await).expect("parse resume response 2");
+	assert!(
+		second.provider_auth_resolved,
+		"the exact same AppState must reflect the new auth state on the very next call, with no \
+		 caching"
+	);
+
+	cleanup_workspace(&workspace);
+}
+
+// ---------------------------------------------------------------------
+// 5. No secret leak: rejected platform tokens and resolved provider credentials
+//    never appear in a response body.
+// ---------------------------------------------------------------------
+
+#[tokio::test]
+async fn error_bodies_and_resume_responses_never_contain_injected_sentinel_credentials() {
+	let server = TestServer::start("secrets").await;
+	let workspace = seed_workspace("secrets");
+	const REJECTED_TOKEN: &str = "definitely-wrong-license-token-sentinel";
+
+	// A rejected platform token exercises the platform-auth failure path
+	// through this lane's own error mapping.
+	let bad_client = server.client_with_token(REJECTED_TOKEN);
+	let state = AppState::new(
+		bad_client,
+		KernelFrameStream::new(),
+		Arc::new(RealIdFactory::new()),
+		Arc::new(RealClock),
+		workspace.clone(),
+		ProviderSlot::Anthropic,
+		|| {
+			Ok(ScriptedProviderExecutor::new(
+				"scripted",
+				ProviderApiShapeV0::AnthropicMessages,
+				"scripted-model",
+				Vec::new(),
+			))
+		},
+	);
+	let router = build_router(state);
+	let request = Request::builder()
+		.method("POST")
+		.uri("/v0/sessions")
+		.header("content-type", "application/json")
+		.body(Body::from(serde_json::json!({ "title": "secret-test" }).to_string()))
+		.expect("build create-session request");
+	let response = router
+		.oneshot(request)
+		.await
+		.expect("create session over a rejected platform token");
+	assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+	let body = body_bytes(response).await;
+	let text = String::from_utf8_lossy(&body);
+	assert!(
+		!text.contains(REJECTED_TOKEN),
+		"the rejected platform token must never leak into an error body: {text}"
+	);
+	assert!(
+		!text.contains(SENTINEL_ANTHROPIC_KEY),
+		"no provider credential material ever appears in an error body: {text}"
+	);
+
+	// A provider-auth-unavailable failure exercises this lane's own
+	// distinct, redacted envelope for that case (never conflated with a
+	// platform failure).
+	let state2 = AppState::new(
+		server.client(),
+		KernelFrameStream::new(),
+		Arc::new(RealIdFactory::new()),
+		Arc::new(RealClock),
+		workspace.clone(),
+		ProviderSlot::Anthropic,
+		|| {
+			Err::<ScriptedProviderExecutor, _>(TurnFailure::ProviderAuthUnavailable {
+				slot: ProviderSlot::Anthropic,
+			})
+		},
+	);
+	let router2 = build_router(state2);
+	let request = Request::builder()
+		.method("POST")
+		.uri("/v0/turns")
+		.header("content-type", "application/json")
+		.body(Body::from(serde_json::json!({ "user_text": "hi" }).to_string()))
+		.expect("build submit-turn request");
+	let response = router2
+		.oneshot(request)
+		.await
+		.expect("submit turn with unavailable provider auth");
+	assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+	let body = body_bytes(response).await;
+	let envelope: ErrorEnvelopeV0 =
+		serde_json::from_slice(&body).expect("provider-auth-unavailable error is a valid envelope");
+	assert_eq!(envelope.code, "kernel_rpc.provider_auth_unavailable");
+	assert_ne!(
+		envelope.code, "kernel_rpc.platform_unavailable",
+		"provider-auth and platform failures must never share one error shape"
+	);
+
+	// A genuinely *resolved* provider credential (through the real C3 seam)
+	// must still never appear anywhere in a response body.
+	let session_id = seed_populated_session(&server, &workspace).await;
+	let sentinel_state = AppState::with_anthropic(
+		server.client(),
+		KernelFrameStream::new(),
+		Arc::new(RealIdFactory::new()),
+		Arc::new(RealClock),
+		workspace.clone(),
+		"claude-sentinel-test-model",
+		64,
+		|name| {
+			if name == ANTHROPIC_API_KEY_ENV {
+				Some(SENTINEL_ANTHROPIC_KEY.to_owned())
+			} else {
+				None
+			}
+		},
+	);
+	let sentinel_router = build_router(sentinel_state);
+	let request = Request::builder()
+		.method("GET")
+		.uri(format!("/v0/resume/{}", session_id.as_str()))
+		.body(Body::empty())
+		.expect("build sentinel resume request");
+	let response = sentinel_router
+		.oneshot(request)
+		.await
+		.expect("resume with a resolved (sentinel) anthropic credential");
+	assert_eq!(response.status(), StatusCode::OK);
+	let body = body_bytes(response).await;
+	let text = String::from_utf8_lossy(&body);
+	assert!(
+		!text.contains(SENTINEL_ANTHROPIC_KEY),
+		"a resolved provider credential must never appear in a resume response body: {text}"
+	);
+	let resumed: ResumeResponse =
+		serde_json::from_slice(&body).expect("parse sentinel resume response");
+	assert!(
+		resumed.provider_auth_resolved,
+		"the sentinel credential really did resolve, so this exercised the intended code path"
+	);
+
+	cleanup_workspace(&workspace);
+}
+
+/// Exercises [`SubmitTurnRequest`]'s conversion path exists and is total.
+#[test]
+fn submit_turn_request_converts_into_a_turn_input() {
+	let request = SubmitTurnRequest {
+		user_text:      "hello".to_owned(),
+		assembly_query: Some("hello, but override".to_owned()),
+	};
+	let input: successor_kernel::runner::TurnInput = request.into();
+	assert_eq!(input.user_text, "hello");
+	assert_eq!(input.assembly_query.as_deref(), Some("hello, but override"));
+}

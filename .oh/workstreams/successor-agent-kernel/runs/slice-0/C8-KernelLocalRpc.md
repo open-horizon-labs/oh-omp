@@ -88,60 +88,64 @@ If completed — FULL RPC STAGE (task 226-C8FullRpcPreExecutionDissent, verdict 
 ## Execute
 
 Checklist:
-- [ ] shell/bootstrap phase completed before C1–C7 or explicit grants recorded
-- [ ] full C8 execution waits for accepted C1–C7 APIs
-- [ ] owned files only, plus disclosed Cargo bootstrap artifacts if authorized
-- [ ] shared interfaces imported from `successor-protocol` and accepted C1–C7 modules; no duplicate RawEvent/KernelFrame/platform/provider DTOs
-- [ ] no forbidden shortcuts: no local store, no provider secret inspection, no second semantic context path, no stubbed fake runner behavior
-- [ ] tests/checks added or explicitly routed for the dispatch-map test-file ambiguity
-- [ ] targeted validation passed (`cargo test -p successor-kernel` minimum, then orchestrator `make check-rs` before review)
-- [ ] named risks retired or routed, especially resume-from-platform and SSE schema exactness
-- [ ] model binding verified for execution agent
-- [ ] fixture sovereignty preserved; no fixture/contract edits
+- [x] staging honored: shell/bootstrap stage ran first (pre-C1, task 161 rulings); full RPC stage ran last after C7 acceptance (task 227 at `33a35b2c6`)
+- [x] full C8 execution waited for accepted C1-C7 APIs; zero upstream files changed — all wiring through accepted public surfaces
+- [x] owned files only (http.rs, routes.rs, api.rs, lib.rs) + granted `tests/slice0_kernel_rpc.rs` + disclosed Cargo changes exactly per ruling 1 (axum dev->deps move with rationale, tokio-stream sync, dev-only tower util; Cargo.lock transitives only)
+- [x] protocol DTOs embedded by reference in C8-owned request/response wrappers; deny_unknown_fields at boundaries; no duplicate RawEvent/KernelFrame/platform/provider DTOs
+- [x] no forbidden shortcuts: no local session store (resume hits platform fresh per call), no provider secret inspection route (auth exposed as bool only), no second SSE schema (C2 renderer verbatim), no stubbed runner (routes drive real C7 execute_turn)
+- [x] tests in granted file: 7 RPC contract tests after review fixes (route surface/malformed rejection, byte-exact SSE round-trip, mid-turn-failure frame preservation, concurrency isolation, resume freshness, distinct redacted auth errors, no-credential-leak sentinels)
+- [x] targeted validation + orchestrator `make check-rs` exit 0 at `ec1022c5b`, `5dfbd30a0`, and `6a5770130`
+- [x] named risks retired or routed: resume-from-platform proven fresh per call; SSE schema exactness proven byte-exact; per-turn stream isolation proven under deterministic concurrency; A4 residual respected (no project_session on unsupported-tool streams)
+- [x] model binding verified (`slice0-executor`, Sonnet 5; tasks 227/231/233)
+- [x] fixture sovereignty preserved; no fixture/contract edits
 
 Changed files:
-- Pending execution.
+- `crates/successor-kernel/src/{http.rs, routes.rs, api.rs, lib.rs}`, new `tests/slice0_kernel_rpc.rs`, `crates/successor-kernel/Cargo.toml`, `Cargo.lock`; commits `ec1022c5b` (lane), `5dfbd30a0` (P1 stream isolation), `6a5770130` (P2 oracle strengthening)
 
 Validation evidence:
-- Pending execution.
+- Route surface (durable C8/D1 interface per task 228): `POST /v0/sessions` (create, thin C1 wrapper), `GET /v0/sessions/{id}` (attach/inspect, thin C1 wrapper), `POST /v0/turns` (drives real C7 runner; response streams C2-rendered `event: kernel_frame` records verbatim; terminal turn_failed synthesized via the real FrameSink on post-first-frame failure), `GET /v0/resume/{id}` (fresh platform snapshot + C3 re-resolution per call, `provider_auth_resolved` bool only). 7 RPC tests incl. byte-exact SSE proven by decode-and-re-render equality, exact pre-terminal frame-kind sequence on the failure path (terminal-only body demonstrated to fail), and barrier-gated concurrent-turn isolation. Full kernel suite green (10 binaries); `make check-rs` exit 0 at each commit.
 
 ## Code Review
 
-Reviewer: `slice0-reviewer`
+Reviewer: `slice0-reviewer` (round 1 task 230 at `ec1022c5b`; round 2 task 232 at `5dfbd30a0`)
 Reviewer model: `openai-codex/gpt-5.5:high`
-Verdict: pending
+Verdict: round 1 incorrect (one P1), closed; round 2 P1-closed with one P2 (weakened oracle), closed by `6a5770130`
 
 Findings:
-- Pending execution.
+- [P1, task 230] `submit_turn` shared one `KernelFrameStream` across all POST /v0/turns calls — concurrent SSE responses raced on one broadcast channel (cross-talk, wrong terminal frame). Closed by task 231: request-local `KernelFrameStream::new()` subscribed before runner spawn, wired to both runner FrameSink and terminal-failure synthesis; full AppState cutover (shared stream field removed entirely, no shim); deterministic barrier-gated regression test asserting per-response frame partition in both directions. Round 2 confirmed genuine closure and byte-exactness oracle strength.
+- [P2, task 232] the rewritten mid-turn-failure test asserted only a terminal record exists — would pass if all pre-terminal frames were dropped (the C7 oracle-weakening class). Closed by task 233: decode every SSE record to `KernelFrameV0` and assert the exact deterministic kind sequence [TurnStarted, RawEventAppended, PlatformAssembleStarted, PlatformAssembleCompleted, TurnFailed]; contract defense proven empirically (truncated terminal-only body fails the assertion; instrumentation reverted).
 
 Fixes applied:
-- Pending execution.
+- Tasks 231 (commit `5dfbd30a0`) and 233 (commit `6a5770130`); quoted green validation in `agent://231` and `agent://233`. P2 closure follows the A5 precedent: mechanical application of the reviewer's named finding with demonstrated failing-case evidence; not separately re-reviewed (recorded residual).
 
 ## Drift Review
 
 Original aim: C8-owned kernel crate shell plus late local RPC/SSE wiring over accepted runner.
-Current work: pending execution.
-Gap: pending.
-Verdict: pending
-Authority boundary: pending
+Current work: tasks 227-233 through `6a5770130`.
+Gap: minor drift (task 229) — the session-semantics interpretation was disclosed in the executor report but not yet recorded as binding. Closed by the following BINDING NOTE (adjudicated by Superego task 228, ruling option (a)): the accepted C7 runner mints its own platform session inside `execute_turn`; therefore `POST /v0/turns` starts a runner-owned session and does NOT continue a previously created/attached session; `POST /v0/sessions` and `GET /v0/sessions/{id}` are independent thin C1 wrappers. D1 (CLI) inherits exactly this semantics and MUST NOT present attach as turn continuation. Any future session-continuation capability requires a narrow C7 reopen with its own dissent — not a C8/D1 workaround.
+Verdict: minor drift, closed by recorded binding interpretation
+Authority boundary: clear after recording (task 229 flagged ambiguity pending exactly this note)
 
 ## Superego Review
 
-Reviewer: `slice0-superego-reviewer`
+Reviewer: `slice0-superego-reviewer` (dissents tasks 161/226; review task 228 at `ec1022c5b`)
 Reviewer model: `openai-codex/gpt-5.5:high`
-Verdict: pending
+Verdict: ALLOW
 
 Frame risks:
-- Pending execution.
+- All 8 full-stage rulings adjudicated HONORED with code/test evidence (substrate + exact Cargo disclosure; lib-only/no-bin; ruled route surface with by-reference DTO embedding; test-file grant; fresh-state resume with forbidden patterns absent; redaction discipline incl. sentinel tests; C2-rendered SSE verbatim; stub replacement scope). Judgment call adjudicated as sovereign-compatible interpretation (option (a)) — recorded as the binding note above. Observability law held: TurnAttempt trace preserved end-to-end through the HTTP boundary; post-first-frame failure synthesizes the terminal frame through the real FrameSink.
 
 Required corrections:
-- Pending execution.
+- None (ALLOW). The post-review P1/P2 fixes were code-review findings, closed above.
 
 ## Delivery
 
-Status: pending execution
-Residual risks:
-- C8 is both first shell/bootstrap and last full RPC lane; orchestration must split or explicitly stage it before launch.
-- Local RPC route contract and C8 test-file ownership are under-specified and require dissent/orchestrator ruling.
+Status: accepted
+Residual risks (Wave D inherits, per task 228):
+- Session-continuation semantics: POST /v0/turns is runner-owned session creation; D1 must not conflate attach with continuation (binding note in Drift Review).
+- RealIdFactory UUID-shaped std-only ids (accepted C7 residual) now surface through RPC responses; revisit before multi-tenant use.
+- A4 unsupported-tool projection semantics remain routed; RPC surfaces TurnAttempt failure projection without calling project_session on those streams.
+- Route paths/DTO wrappers in api.rs are now the durable C8/D1 interface; changes require contract-level treatment.
+- P2 oracle closure (task 233) not separately re-reviewed (A5 precedent; empirical failing-case evidence recorded).
 Human verification needed:
-- None before execution; pre-execution dissent ruling required.
+- None; both dissent stages, three gates, and two fix rounds are recorded with agent artifacts 161/226/227/228/229/230/231/232/233.

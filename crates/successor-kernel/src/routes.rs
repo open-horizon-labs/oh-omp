@@ -36,6 +36,7 @@ use crate::{
 	http::AppState,
 	runner::{ProviderExecutor, TurnInput, TurnRunner},
 	sse::render_kernel_frame_sse,
+	stream::KernelFrameStream,
 };
 
 fn decode_body<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, String> {
@@ -194,10 +195,18 @@ pub async fn submit_turn<P: ProviderExecutor + Send + Sync + 'static>(
 		},
 	};
 
-	let mut receiver = state.frame_stream.subscribe();
+	// Fresh per-turn C2 stream (C8 review task 230): a single AppState-level
+	// KernelFrameStream would let two concurrent `POST /v0/turns` requests
+	// subscribe to and publish on the very same broadcast channel, so either
+	// SSE response could emit the other turn's frames or terminate on the
+	// other turn's terminal frame. Each turn gets its own live stream, built
+	// through the public constructor (never `publish_with`), subscribed to
+	// before the runner is driven.
+	let frame_stream = KernelFrameStream::new();
+	let mut receiver = frame_stream.subscribe();
 	let runner = TurnRunner::new(
 		state.platform.clone(),
-		FrameSink::new(state.frame_stream.clone()),
+		FrameSink::new(frame_stream.clone()),
 		Arc::clone(&state.ids),
 		Arc::clone(&state.clock),
 		provider,
@@ -266,7 +275,7 @@ pub async fn submit_turn<P: ProviderExecutor + Send + Sync + 'static>(
 	};
 
 	let (tx, rx) = mpsc::channel::<Bytes>(64);
-	let terminal_sink = FrameSink::new(state.frame_stream.clone());
+	let terminal_sink = FrameSink::new(frame_stream.clone());
 	let ids = Arc::clone(&state.ids);
 	let clock = Arc::clone(&state.clock);
 

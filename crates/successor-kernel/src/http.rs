@@ -21,7 +21,6 @@ use crate::{
 	routes,
 	runner::{AnthropicProviderExecutor, ProviderExecutor, require_provider_credential},
 	state_machine::TurnFailure,
-	stream::KernelFrameStream,
 };
 
 /// Shared application state for the kernel's local RPC/SSE surface.
@@ -35,7 +34,6 @@ use crate::{
 /// "fresh local state" requirement.
 pub struct AppState<P: ProviderExecutor + Send + Sync + 'static> {
 	pub(crate) platform:         KernelPlatformClient,
-	pub(crate) frame_stream:     KernelFrameStream,
 	pub(crate) ids:              Arc<dyn IdFactory>,
 	pub(crate) clock:            Arc<dyn Clock>,
 	pub(crate) workspace_root:   PathBuf,
@@ -47,7 +45,6 @@ impl<P: ProviderExecutor + Send + Sync + 'static> Clone for AppState<P> {
 	fn clone(&self) -> Self {
 		Self {
 			platform:         self.platform.clone(),
-			frame_stream:     self.frame_stream.clone(),
 			ids:              Arc::clone(&self.ids),
 			clock:            Arc::clone(&self.clock),
 			workspace_root:   self.workspace_root.clone(),
@@ -64,7 +61,6 @@ impl<P: ProviderExecutor + Send + Sync + 'static> AppState<P> {
 	/// [`AppState::with_anthropic`].
 	pub fn new(
 		platform: KernelPlatformClient,
-		frame_stream: KernelFrameStream,
 		ids: Arc<dyn IdFactory>,
 		clock: Arc<dyn Clock>,
 		workspace_root: impl Into<PathBuf>,
@@ -73,7 +69,6 @@ impl<P: ProviderExecutor + Send + Sync + 'static> AppState<P> {
 	) -> Self {
 		Self {
 			platform,
-			frame_stream,
 			ids,
 			clock,
 			workspace_root: workspace_root.into(),
@@ -95,7 +90,6 @@ impl AppState<AnthropicProviderExecutor> {
 	)]
 	pub fn with_anthropic(
 		platform: KernelPlatformClient,
-		frame_stream: KernelFrameStream,
 		ids: Arc<dyn IdFactory>,
 		clock: Arc<dyn Clock>,
 		workspace_root: impl Into<PathBuf>,
@@ -104,24 +98,16 @@ impl AppState<AnthropicProviderExecutor> {
 		provider_auth_lookup: impl Fn(&str) -> Option<String> + Send + Sync + 'static,
 	) -> Self {
 		let model = model.into();
-		Self::new(
-			platform,
-			frame_stream,
-			ids,
-			clock,
-			workspace_root,
-			ProviderSlot::Anthropic,
-			move || {
-				let outcome =
-					resolve_provider_auth(ProviderSlot::Anthropic, |name| provider_auth_lookup(name));
-				let credential = require_provider_credential(&outcome)?.clone();
-				Ok(AnthropicProviderExecutor::new(
-					AnthropicAdapter::new(credential),
-					model.clone(),
-					max_tokens,
-				))
-			},
-		)
+		Self::new(platform, ids, clock, workspace_root, ProviderSlot::Anthropic, move || {
+			let outcome =
+				resolve_provider_auth(ProviderSlot::Anthropic, |name| provider_auth_lookup(name));
+			let credential = require_provider_credential(&outcome)?.clone();
+			Ok(AnthropicProviderExecutor::new(
+				AnthropicAdapter::new(credential),
+				model.clone(),
+				max_tokens,
+			))
+		})
 	}
 }
 

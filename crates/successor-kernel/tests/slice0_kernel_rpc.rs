@@ -25,13 +25,17 @@ use successor_kernel::{
 	id_factory::{RealClock, RealIdFactory},
 	platform_client::{EntitlementToken, KernelPlatformClient},
 	provider::auth::ProviderSlot,
-	runner::{ScriptedProviderExecutor, ScriptedRound},
+	runner::{ProviderExecutor, ProviderRoundOutcome, ScriptedProviderExecutor, ScriptedRound},
 	sse::render_kernel_frame_sse,
 	state_machine::TurnFailure,
 	stream::KernelFrameStream,
 };
 use successor_protocol::{
-	error::ErrorEnvelopeV0, kernel_frame::KernelFrameKindV0, provider::ProviderApiShapeV0,
+	error::ErrorEnvelopeV0,
+	ids::{MessageId, ToolCallId},
+	kernel_frame::{KernelFrameKindV0, KernelFrameV0},
+	provider::ProviderApiShapeV0,
+	tool_catalog::ToolCatalogV0,
 };
 use tower::ServiceExt;
 
@@ -105,15 +109,17 @@ impl Drop for TestServer {
 	}
 }
 
+// Finding 230 (C8 review task 230): `AppState` no longer holds a
+// `KernelFrameStream` at all — `submit_turn` constructs a fresh one per
+// request (routes.rs), so this helper (and every other `AppState`
+// constructor call in this file) drops the parameter entirely.
 fn scripted_state(
 	platform: KernelPlatformClient,
-	frame_stream: KernelFrameStream,
 	workspace_root: std::path::PathBuf,
 	rounds: Vec<ScriptedRound>,
 ) -> AppState<ScriptedProviderExecutor> {
 	AppState::new(
 		platform,
-		frame_stream,
 		Arc::new(RealIdFactory::new()),
 		Arc::new(RealClock),
 		workspace_root,
@@ -125,6 +131,73 @@ fn scripted_state(
 				"scripted-model",
 				rounds.clone(),
 			))
+		},
+	)
+}
+
+/// Wraps a [`ScriptedProviderExecutor`] with a two-party rendezvous so two
+/// concurrent turns can be driven to genuinely overlap inside
+/// `execute_turn` — a deterministic barrier, not a sleep — exercising the
+/// exact race the per-turn `KernelFrameStream` fix (finding 230) closes:
+/// before that fix, both turns' `submit_turn` calls subscribed to and
+/// published on the one `AppState`-level stream.
+struct BarrierGatedExecutor {
+	inner:   ScriptedProviderExecutor,
+	barrier: Arc<tokio::sync::Barrier>,
+}
+
+impl ProviderExecutor for BarrierGatedExecutor {
+	fn provider_id(&self) -> &str {
+		self.inner.provider_id()
+	}
+
+	fn api_shape(&self) -> ProviderApiShapeV0 {
+		self.inner.api_shape()
+	}
+
+	fn model(&self) -> &str {
+		self.inner.model()
+	}
+
+	async fn send_round(
+		&self,
+		round_text: &str,
+		catalog: &ToolCatalogV0,
+		message_id: MessageId,
+		tool_call_id: ToolCallId,
+	) -> Result<ProviderRoundOutcome, TurnFailure> {
+		self.barrier.wait().await;
+		self
+			.inner
+			.send_round(round_text, catalog, message_id, tool_call_id)
+			.await
+	}
+}
+
+fn barrier_gated_state(
+	platform: KernelPlatformClient,
+	workspace_root: std::path::PathBuf,
+	barrier: Arc<tokio::sync::Barrier>,
+) -> AppState<BarrierGatedExecutor> {
+	AppState::new(
+		platform,
+		Arc::new(RealIdFactory::new()),
+		Arc::new(RealClock),
+		workspace_root,
+		ProviderSlot::Anthropic,
+		move || {
+			Ok(BarrierGatedExecutor {
+				inner:   ScriptedProviderExecutor::new(
+					"scripted",
+					ProviderApiShapeV0::AnthropicMessages,
+					"scripted-model",
+					vec![ScriptedRound::Final {
+						text:    "concurrent-turn-text".to_owned(),
+						summary: "concurrent-turn-text".to_owned(),
+					}],
+				),
+				barrier: Arc::clone(&barrier),
+			})
 		},
 	)
 }
@@ -184,9 +257,10 @@ async fn body_bytes(response: axum::response::Response) -> Vec<u8> {
 async fn malformed_request_bodies_are_rejected_with_a_kernel_rpc_error_envelope() {
 	let server = TestServer::start("malformed").await;
 	let workspace = seed_workspace("malformed");
-	let state = scripted_state(server.client(), KernelFrameStream::new(), workspace.clone(), vec![
-		ScriptedRound::Final { text: "hi".to_owned(), summary: "hi".to_owned() },
-	]);
+	let state = scripted_state(server.client(), workspace.clone(), vec![ScriptedRound::Final {
+		text:    "hi".to_owned(),
+		summary: "hi".to_owned(),
+	}]);
 	let router = build_router(state);
 
 	for (method, path) in [("POST", "/v0/sessions"), ("POST", "/v0/turns")] {
@@ -222,11 +296,10 @@ async fn malformed_request_bodies_are_rejected_with_a_kernel_rpc_error_envelope(
 async fn submit_turn_streams_byte_exact_c2_rendered_kernel_frame_records() {
 	let server = TestServer::start("sse").await;
 	let workspace = seed_workspace("sse");
-	let frame_stream = KernelFrameStream::new();
-	let mut observer = frame_stream.subscribe();
-	let state = scripted_state(server.client(), frame_stream, workspace.clone(), vec![
-		ScriptedRound::Final { text: "hello".to_owned(), summary: "hello".to_owned() },
-	]);
+	let state = scripted_state(server.client(), workspace.clone(), vec![ScriptedRound::Final {
+		text:    "hello".to_owned(),
+		summary: "hello".to_owned(),
+	}]);
 	let router = build_router(state);
 
 	let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -264,27 +337,41 @@ async fn submit_turn_streams_byte_exact_c2_rendered_kernel_frame_records() {
 	)
 	.expect("sse body is utf8");
 
-	// Independently capture the canonical frames the runner actually
-	// published and render them exactly as the route does; the wire bytes
-	// must be byte-identical (Dissent ruling 7: no second schema).
-	let mut expected = String::new();
-	while let Ok(Ok(frame)) =
-		tokio::time::timeout(std::time::Duration::from_secs(5), observer.recv()).await
-	{
-		let is_terminal = frame.kind == KernelFrameKindV0::TurnCompleted
-			|| frame.kind == KernelFrameKindV0::TurnFailed;
-		expected.push_str(&render_kernel_frame_sse(&frame).expect("render the captured frame"));
-		if is_terminal {
-			break;
+	// Finding 230 (C8 review task 230): `submit_turn` now builds a fresh,
+	// request-local `KernelFrameStream` per turn, so this test can no longer
+	// observe an externally-subscribed twin of the exact stream the route
+	// drives. Instead, decode every `event: kernel_frame` record on the wire
+	// back into a `KernelFrameV0` and re-render it through the same C2
+	// function the route calls: if the route ever emitted anything other
+	// than `render_kernel_frame_sse`'s own canonical output (a second,
+	// hand-rolled schema), this round trip would not reproduce the wire
+	// bytes exactly (Dissent ruling 7: no second schema).
+	let records: Vec<&str> = body
+		.split("\n\n")
+		.filter(|record| !record.is_empty())
+		.collect();
+	assert!(!records.is_empty(), "the runner must have published at least one frame");
+	let mut saw_terminal = false;
+	for record in &records {
+		let data_line = record
+			.lines()
+			.find_map(|line| line.strip_prefix("data: "))
+			.expect("every kernel_frame record carries a data: line");
+		let frame: KernelFrameV0 =
+			serde_json::from_str(data_line).expect("data payload decodes as a KernelFrameV0");
+		let rerendered = render_kernel_frame_sse(&frame).expect("re-render the decoded frame");
+		assert_eq!(
+			format!("{record}\n\n"),
+			rerendered,
+			"SSE wire bytes must be byte-identical to C2's own rendering of the decoded frame"
+		);
+		if frame.kind == KernelFrameKindV0::TurnCompleted
+			|| frame.kind == KernelFrameKindV0::TurnFailed
+		{
+			saw_terminal = true;
 		}
 	}
-
-	assert!(!expected.is_empty(), "the runner must have published at least one frame");
-	assert_eq!(
-		body, expected,
-		"SSE wire bytes must be byte-identical to C2's own rendering of the frames the runner \
-		 published"
-	);
+	assert!(saw_terminal, "the SSE stream must terminate on a turn's own terminal frame");
 
 	serve_handle.abort();
 	cleanup_workspace(&workspace);
@@ -299,15 +386,11 @@ async fn submit_turn_streams_byte_exact_c2_rendered_kernel_frame_records() {
 async fn submit_turn_surfaces_turn_failure_as_a_terminal_frame_without_dropping_earlier_frames() {
 	let server = TestServer::start("failure").await;
 	let workspace = seed_workspace("failure");
-	let frame_stream = KernelFrameStream::new();
-	let mut observer = frame_stream.subscribe();
-	let state = scripted_state(server.client(), frame_stream, workspace.clone(), vec![
-		ScriptedRound::ToolUse {
-			tool_name:             "not_a_real_tool".to_owned(),
-			arguments:             serde_json::json!({}),
-			provider_tool_call_id: "call_1".to_owned(),
-		},
-	]);
+	let state = scripted_state(server.client(), workspace.clone(), vec![ScriptedRound::ToolUse {
+		tool_name:             "not_a_real_tool".to_owned(),
+		arguments:             serde_json::json!({}),
+		provider_tool_call_id: "call_1".to_owned(),
+	}]);
 	let router = build_router(state);
 
 	let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -342,26 +425,17 @@ async fn submit_turn_surfaces_turn_failure_as_a_terminal_frame_without_dropping_
 	)
 	.expect("sse body is utf8");
 
-	let mut genuine = 0usize;
-	while let Ok(Ok(_frame)) =
-		tokio::time::timeout(std::time::Duration::from_secs(5), observer.recv()).await
-	{
-		genuine += 1;
-	}
-	assert!(genuine > 0, "the runner must have published at least one real frame before failing");
-
+	// Finding 230 (C8 review task 230): with a request-local `KernelFrameStream`,
+	// there is no external observer to independently count "genuine" frames
+	// against; the SSE body itself is the only source of truth for what the
+	// route emitted.
 	let records: Vec<&str> = body
 		.split("\n\n")
 		.filter(|record| !record.is_empty())
 		.collect();
-	// `observer` shares the same broadcast stream as the route's own
-	// subscription and the synthesized terminal frame, so it sees every
-	// record the SSE body carries — no more, no less.
-	assert_eq!(
-		records.len(),
-		genuine,
-		"the SSE stream must carry exactly the frames published on the shared stream, including the \
-		 synthesized terminal one; body: {body}"
+	assert!(
+		!records.is_empty(),
+		"the runner must have published at least one real frame before failing"
 	);
 
 	let last = *records.last().expect("at least the terminal record exists");
@@ -396,7 +470,6 @@ async fn resume_queries_the_platform_fresh_and_never_caches_provider_auth() {
 	let flag = Arc::clone(&resolved);
 	let state = AppState::new(
 		server.client(),
-		KernelFrameStream::new(),
 		Arc::new(RealIdFactory::new()),
 		Arc::new(RealClock),
 		workspace.clone(),
@@ -468,7 +541,6 @@ async fn error_bodies_and_resume_responses_never_contain_injected_sentinel_crede
 	let bad_client = server.client_with_token(REJECTED_TOKEN);
 	let state = AppState::new(
 		bad_client,
-		KernelFrameStream::new(),
 		Arc::new(RealIdFactory::new()),
 		Arc::new(RealClock),
 		workspace.clone(),
@@ -510,7 +582,6 @@ async fn error_bodies_and_resume_responses_never_contain_injected_sentinel_crede
 	// platform failure).
 	let state2 = AppState::new(
 		server.client(),
-		KernelFrameStream::new(),
 		Arc::new(RealIdFactory::new()),
 		Arc::new(RealClock),
 		workspace.clone(),
@@ -547,7 +618,6 @@ async fn error_bodies_and_resume_responses_never_contain_injected_sentinel_crede
 	let session_id = seed_populated_session(&server, &workspace).await;
 	let sentinel_state = AppState::with_anthropic(
 		server.client(),
-		KernelFrameStream::new(),
 		Arc::new(RealIdFactory::new()),
 		Arc::new(RealClock),
 		workspace.clone(),
@@ -585,6 +655,98 @@ async fn error_bodies_and_resume_responses_never_contain_injected_sentinel_crede
 		"the sentinel credential really did resolve, so this exercised the intended code path"
 	);
 
+	cleanup_workspace(&workspace);
+}
+
+// ---------------------------------------------------------------------
+// 6. Two concurrent `POST /v0/turns` requests never cross-talk on the frame
+//    stream (C8 review task 230).
+// ---------------------------------------------------------------------
+
+#[tokio::test]
+async fn concurrent_submit_turn_requests_never_cross_talk_on_the_frame_stream() {
+	let server = TestServer::start("concurrency").await;
+	let workspace = seed_workspace("concurrency");
+	let barrier = Arc::new(tokio::sync::Barrier::new(2));
+	let state = barrier_gated_state(server.client(), workspace.clone(), Arc::clone(&barrier));
+	let router = build_router(state);
+
+	let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+		.await
+		.expect("bind the kernel listener");
+	let addr = listener
+		.local_addr()
+		.expect("kernel listener has a local addr");
+	let serve_handle = tokio::spawn(async move {
+		let _ = axum::serve(listener, router).await;
+	});
+
+	// Both requests must genuinely overlap inside `execute_turn` for this
+	// test to exercise anything real: the shared two-party barrier inside
+	// `BarrierGatedExecutor::send_round` forces exactly that (a deterministic
+	// rendezvous, not a sleep). Before the per-turn stream fix (finding 230),
+	// both turns subscribing to and publishing on one AppState-level
+	// `KernelFrameStream` meant either SSE response could observe the other's
+	// frames or terminate on the other's terminal frame.
+	let http = reqwest::Client::new();
+	let submit = |addr: std::net::SocketAddr| {
+		let http = http.clone();
+		async move {
+			http
+				.post(format!("http://{addr}/v0/turns"))
+				.header(reqwest::header::CONTENT_TYPE, "application/json")
+				.body(serde_json::json!({ "user_text": "hi" }).to_string())
+				.send()
+				.await
+				.expect("submit turn request")
+				.bytes()
+				.await
+				.expect("collect the full sse body")
+		}
+	};
+	let (body_a, body_b) = tokio::join!(submit(addr), submit(addr));
+
+	let frame_session_ids = |body: &[u8]| -> Vec<String> {
+		let text = String::from_utf8(body.to_vec()).expect("sse body is utf8");
+		text
+			.split("\n\n")
+			.filter(|record| !record.is_empty())
+			.map(|record| {
+				let data_line = record
+					.lines()
+					.find_map(|line| line.strip_prefix("data: "))
+					.expect("every kernel_frame record carries a data: line");
+				let frame: KernelFrameV0 =
+					serde_json::from_str(data_line).expect("data payload decodes as a KernelFrameV0");
+				frame.session_id.as_str().to_owned()
+			})
+			.collect()
+	};
+	let sessions_a = frame_session_ids(&body_a);
+	let sessions_b = frame_session_ids(&body_b);
+
+	assert!(!sessions_a.is_empty(), "turn A must have published at least one frame");
+	assert!(!sessions_b.is_empty(), "turn B must have published at least one frame");
+
+	let unique_a: std::collections::HashSet<&String> = sessions_a.iter().collect();
+	let unique_b: std::collections::HashSet<&String> = sessions_b.iter().collect();
+	assert_eq!(
+		unique_a.len(),
+		1,
+		"turn A's SSE response must carry only its own turn's frames, never turn B's: {sessions_a:?}"
+	);
+	assert_eq!(
+		unique_b.len(),
+		1,
+		"turn B's SSE response must carry only its own turn's frames, never turn A's: {sessions_b:?}"
+	);
+	assert_ne!(
+		unique_a.iter().next(),
+		unique_b.iter().next(),
+		"two concurrent turns must never be assigned the same session identity in this test"
+	);
+
+	serve_handle.abort();
 	cleanup_workspace(&workspace);
 }
 

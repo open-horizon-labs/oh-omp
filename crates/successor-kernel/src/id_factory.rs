@@ -264,64 +264,180 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
 /// runs out of scripted identifiers has a wrong fixture-to-runner call
 /// count, and that must fail immediately rather than degrade into
 /// non-deterministic behavior.
-#[derive(Debug)]
+/// Accumulates one independent, ordered queue per [`IdFactory`] method.
+///
+/// Per-kind queues (rather than one interleaved queue) let a replay test
+/// derive each kind's script directly from what a fixture actually
+/// observes -- e.g. every raw event's own `event_id`, in fixture order --
+/// without needing to know the exact global call order across all twelve
+/// `IdFactory` methods. Kinds a fixture never surfaces (e.g. a tool round's
+/// `provider_event_id`, minted but never persisted) can be filled with any
+/// syntactically valid placeholder of the right kind.
+#[derive(Debug, Default)]
+pub struct ScriptedIdFactoryBuilder {
+	event_ids:           VecDeque<String>,
+	turn_ids:            VecDeque<String>,
+	request_ids:         VecDeque<String>,
+	message_ids:         VecDeque<String>,
+	tool_call_ids:       VecDeque<String>,
+	frame_ids:           VecDeque<String>,
+	trace_ids:           VecDeque<String>,
+	provider_event_ids:  VecDeque<String>,
+	error_ids:           VecDeque<String>,
+	source_envelope_ids: VecDeque<String>,
+	artifact_ids:        VecDeque<String>,
+	catalog_ids:         VecDeque<String>,
+}
+
+macro_rules! impl_builder_queue {
+	($method:ident, $field:ident) => {
+		#[must_use]
+		pub fn $method(mut self, ids: impl IntoIterator<Item = impl Into<String>>) -> Self {
+			self.$field.extend(ids.into_iter().map(Into::into));
+			self
+		}
+	};
+}
+
+impl ScriptedIdFactoryBuilder {
+	impl_builder_queue!(event_ids, event_ids);
+
+	impl_builder_queue!(turn_ids, turn_ids);
+
+	impl_builder_queue!(request_ids, request_ids);
+
+	impl_builder_queue!(message_ids, message_ids);
+
+	impl_builder_queue!(tool_call_ids, tool_call_ids);
+
+	impl_builder_queue!(frame_ids, frame_ids);
+
+	impl_builder_queue!(trace_ids, trace_ids);
+
+	impl_builder_queue!(provider_event_ids, provider_event_ids);
+
+	impl_builder_queue!(error_ids, error_ids);
+
+	impl_builder_queue!(source_envelope_ids, source_envelope_ids);
+
+	impl_builder_queue!(artifact_ids, artifact_ids);
+
+	impl_builder_queue!(catalog_ids, catalog_ids);
+
+	/// Pushes a single value onto a kind's queue. Convenience for kinds
+	/// this lane's runner mints exactly once per turn (`turn_id`,
+	/// `request_id`).
+	#[must_use]
+	pub fn turn_id(self, id: impl Into<String>) -> Self {
+		self.turn_ids([id])
+	}
+
+	#[must_use]
+	pub fn request_id(self, id: impl Into<String>) -> Self {
+		self.request_ids([id])
+	}
+
+	#[must_use]
+	pub fn build(self) -> ScriptedIdFactory {
+		ScriptedIdFactory {
+			event_ids:           Mutex::new(self.event_ids),
+			turn_ids:            Mutex::new(self.turn_ids),
+			request_ids:         Mutex::new(self.request_ids),
+			message_ids:         Mutex::new(self.message_ids),
+			tool_call_ids:       Mutex::new(self.tool_call_ids),
+			frame_ids:           Mutex::new(self.frame_ids),
+			trace_ids:           Mutex::new(self.trace_ids),
+			provider_event_ids:  Mutex::new(self.provider_event_ids),
+			error_ids:           Mutex::new(self.error_ids),
+			source_envelope_ids: Mutex::new(self.source_envelope_ids),
+			artifact_ids:        Mutex::new(self.artifact_ids),
+			catalog_ids:         Mutex::new(self.catalog_ids),
+		}
+	}
+}
+
+/// Mints identifiers from fixture-derived, per-kind FIFO queues.
+///
+/// Each [`IdFactory`] method draws from its own queue (populated via
+/// [`ScriptedIdFactoryBuilder`]), independent of every other method's call
+/// order. Panics loudly (never silently) if a kind's queue is exhausted or
+/// if a scripted value fails the target ID type's own prefix validation.
+#[derive(Debug, Default)]
 pub struct ScriptedIdFactory {
-	remaining: Mutex<VecDeque<String>>,
+	event_ids:           Mutex<VecDeque<String>>,
+	turn_ids:            Mutex<VecDeque<String>>,
+	request_ids:         Mutex<VecDeque<String>>,
+	message_ids:         Mutex<VecDeque<String>>,
+	tool_call_ids:       Mutex<VecDeque<String>>,
+	frame_ids:           Mutex<VecDeque<String>>,
+	trace_ids:           Mutex<VecDeque<String>>,
+	provider_event_ids:  Mutex<VecDeque<String>>,
+	error_ids:           Mutex<VecDeque<String>>,
+	source_envelope_ids: Mutex<VecDeque<String>>,
+	artifact_ids:        Mutex<VecDeque<String>>,
+	catalog_ids:         Mutex<VecDeque<String>>,
 }
 
 impl ScriptedIdFactory {
-	pub fn new(script: impl IntoIterator<Item = impl Into<String>>) -> Self {
-		Self { remaining: Mutex::new(script.into_iter().map(Into::into).collect()) }
+	#[must_use]
+	pub fn builder() -> ScriptedIdFactoryBuilder {
+		ScriptedIdFactoryBuilder::default()
 	}
 
-	fn next_raw(&self, requested_for: &'static str) -> String {
-		self
-			.remaining
+	fn next_from(queue: &Mutex<VecDeque<String>>, kind: &'static str) -> String {
+		queue
 			.lock()
-			.expect("ScriptedIdFactory mutex poisoned")
+			.unwrap_or_else(std::sync::PoisonError::into_inner)
 			.pop_front()
-			.unwrap_or_else(|| {
-				panic!("ScriptedIdFactory script exhausted while requesting a {requested_for}")
-			})
+			.unwrap_or_else(|| panic!("ScriptedIdFactory script exhausted for {kind}"))
 	}
 }
 
 macro_rules! impl_scripted_id_factory_method {
-	($method:ident, $ty:ty, $label:literal) => {
+	($method:ident, $field:ident, $ty:ty, $kind:literal) => {
 		fn $method(&self) -> $ty {
-			let raw = self.next_raw($label);
-			<$ty>::try_from(raw.clone()).unwrap_or_else(|_| {
-				panic!("scripted {} `{raw}` must carry the `{}` prefix", $label, <$ty>::PREFIX)
-			})
+			let raw = Self::next_from(&self.$field, $kind);
+			<$ty>::try_from(raw)
+				.unwrap_or_else(|err| panic!("ScriptedIdFactory scripted an invalid {}: {err}", $kind))
 		}
 	};
 }
 
 impl IdFactory for ScriptedIdFactory {
-	impl_scripted_id_factory_method!(event_id, EventId, "event_id");
+	impl_scripted_id_factory_method!(event_id, event_ids, EventId, "event_id");
 
-	impl_scripted_id_factory_method!(turn_id, TurnId, "turn_id");
+	impl_scripted_id_factory_method!(turn_id, turn_ids, TurnId, "turn_id");
 
-	impl_scripted_id_factory_method!(request_id, RequestId, "request_id");
+	impl_scripted_id_factory_method!(request_id, request_ids, RequestId, "request_id");
 
-	impl_scripted_id_factory_method!(message_id, MessageId, "message_id");
+	impl_scripted_id_factory_method!(message_id, message_ids, MessageId, "message_id");
 
-	impl_scripted_id_factory_method!(tool_call_id, ToolCallId, "tool_call_id");
+	impl_scripted_id_factory_method!(tool_call_id, tool_call_ids, ToolCallId, "tool_call_id");
 
-	impl_scripted_id_factory_method!(frame_id, FrameId, "frame_id");
+	impl_scripted_id_factory_method!(frame_id, frame_ids, FrameId, "frame_id");
 
-	impl_scripted_id_factory_method!(trace_id, TraceId, "trace_id");
+	impl_scripted_id_factory_method!(trace_id, trace_ids, TraceId, "trace_id");
 
-	impl_scripted_id_factory_method!(provider_event_id, ProviderEventId, "provider_event_id");
+	impl_scripted_id_factory_method!(
+		provider_event_id,
+		provider_event_ids,
+		ProviderEventId,
+		"provider_event_id"
+	);
 
-	impl_scripted_id_factory_method!(error_id, ErrorId, "error_id");
+	impl_scripted_id_factory_method!(error_id, error_ids, ErrorId, "error_id");
 
-	impl_scripted_id_factory_method!(source_envelope_id, SourceEnvelopeId, "source_envelope_id");
+	impl_scripted_id_factory_method!(
+		source_envelope_id,
+		source_envelope_ids,
+		SourceEnvelopeId,
+		"source_envelope_id"
+	);
 
-	impl_scripted_id_factory_method!(artifact_id, ArtifactId, "artifact_id");
+	impl_scripted_id_factory_method!(artifact_id, artifact_ids, ArtifactId, "artifact_id");
 
 	fn catalog_id(&self) -> String {
-		self.next_raw("catalog_id")
+		Self::next_from(&self.catalog_ids, "catalog_id")
 	}
 }
 
@@ -384,26 +500,43 @@ mod tests {
 	}
 
 	#[test]
-	fn scripted_id_factory_returns_values_in_call_order_and_validates_prefix() {
-		let factory = ScriptedIdFactory::new([
-			"evt_00000000-0000-4000-8000-000000000001",
-			"turn_00000000-0000-4000-8000-000000000001",
-		]);
-		assert_eq!(factory.event_id().as_str(), "evt_00000000-0000-4000-8000-000000000001");
+	fn scripted_id_factory_returns_per_kind_values_independent_of_call_order() {
+		let factory = ScriptedIdFactory::builder()
+			.event_ids(["evt_00000000-0000-4000-8000-000000000001"])
+			.turn_id("turn_00000000-0000-4000-8000-000000000001")
+			.build();
+		// `turn_id` is requested before `event_id` here, the reverse of
+		// construction order, proving each kind's queue is independent of
+		// every other kind's.
 		assert_eq!(factory.turn_id().as_str(), "turn_00000000-0000-4000-8000-000000000001");
+		assert_eq!(factory.event_id().as_str(), "evt_00000000-0000-4000-8000-000000000001");
 	}
 
 	#[test]
-	#[should_panic(expected = "script exhausted")]
-	fn scripted_id_factory_panics_loudly_when_exhausted() {
-		let factory = ScriptedIdFactory::new(Vec::<String>::new());
+	fn scripted_id_factory_drains_a_kind_s_own_queue_in_fifo_order() {
+		let factory = ScriptedIdFactory::builder()
+			.event_ids([
+				"evt_00000000-0000-4000-8000-000000000001",
+				"evt_00000000-0000-4000-8000-000000000002",
+			])
+			.build();
+		assert_eq!(factory.event_id().as_str(), "evt_00000000-0000-4000-8000-000000000001");
+		assert_eq!(factory.event_id().as_str(), "evt_00000000-0000-4000-8000-000000000002");
+	}
+
+	#[test]
+	#[should_panic(expected = "script exhausted for event_id")]
+	fn scripted_id_factory_panics_loudly_when_a_kind_s_queue_is_exhausted() {
+		let factory = ScriptedIdFactory::builder().build();
 		let _ = factory.event_id();
 	}
 
 	#[test]
-	#[should_panic(expected = "must carry the")]
+	#[should_panic(expected = "invalid event_id")]
 	fn scripted_id_factory_panics_on_prefix_mismatch() {
-		let factory = ScriptedIdFactory::new(["turn_00000000-0000-4000-8000-000000000001"]);
+		let factory = ScriptedIdFactory::builder()
+			.event_ids(["turn_00000000-0000-4000-8000-000000000001"])
+			.build();
 		let _ = factory.event_id();
 	}
 

@@ -10,7 +10,7 @@
 //! require a second platform round trip, and the frame stream is
 //! fire-and-forget broadcast. [`TurnTrace`] closes that gap: the runner
 //! appends to it locally as the turn progresses, and returns it (embedded in
-//! [`crate::runner::TurnOutcome`]) when the attempt finishes, succeeds or
+//! [`TurnAttempt`]) when the attempt finishes, succeeds or
 //! fails.
 //!
 //! Construction is deterministic and append-only: [`TurnTrace::push_event`]
@@ -102,19 +102,19 @@ impl TurnTrace {
 
 /// A completed turn attempt.
 ///
-/// Either the [`TurnTrace`] of a successful run, or a typed
-/// [`TurnFailure`] paired with whatever [`TurnTrace`] had been recorded
-/// before the failure occurred (empty if the failure preceded any raw
-/// event, e.g. provider auth unavailable).
+/// On success, `outcome` carries the turn's final assistant text. On
+/// failure, it carries the typed [`TurnFailure`] paired with whatever
+/// [`TurnTrace`] had been recorded before the failure occurred (empty if
+/// the failure preceded any raw event, e.g. provider auth unavailable).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TurnAttempt {
 	pub trace:   TurnTrace,
-	pub outcome: Result<(), TurnFailure>,
+	pub outcome: Result<String, TurnFailure>,
 }
 
 impl TurnAttempt {
-	pub const fn completed(trace: TurnTrace) -> Self {
-		Self { trace, outcome: Ok(()) }
+	pub const fn completed(trace: TurnTrace, assistant_text: String) -> Self {
+		Self { trace, outcome: Ok(assistant_text) }
 	}
 
 	pub const fn failed(trace: TurnTrace, failure: TurnFailure) -> Self {
@@ -199,9 +199,9 @@ mod tests {
 	}
 
 	#[test]
-	fn turn_attempt_completed_carries_no_failure() {
-		let attempt = TurnAttempt::completed(TurnTrace::new());
-		assert_eq!(attempt.outcome, Ok(()));
+	fn turn_attempt_completed_carries_the_assistant_text_and_no_failure() {
+		let attempt = TurnAttempt::completed(TurnTrace::new(), "final answer".to_owned());
+		assert_eq!(attempt.outcome, Ok("final answer".to_owned()));
 	}
 
 	#[test]

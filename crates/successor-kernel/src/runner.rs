@@ -42,7 +42,8 @@ use serde_json::{Value as WireJson, json};
 use successor_protocol::{
 	artifact::ArtifactHash,
 	ids::{
-		ContextItemId, EventId, MessageId, RequestId, SessionId, SourceEnvelopeId, ToolCallId, TurnId,
+		ContextItemId, EventId, FrameId, MessageId, RequestId, SessionId, SourceEnvelopeId,
+		ToolCallId, TurnId,
 	},
 	kernel_frame::{KernelFrameKindV0, KernelFrameV0},
 	platform_api::{
@@ -69,7 +70,7 @@ use crate::{
 	provider::{auth::ProviderAuthOutcome, credentials::AnthropicApiKey},
 	state_machine::{TurnFailure, TurnPhase, TurnState},
 	tools::{self, catalog},
-	turn_trace::TurnTrace,
+	turn_trace::{TurnAttempt, TurnTrace},
 };
 
 // ---------------------------------------------------------------------
@@ -81,6 +82,10 @@ use crate::{
 pub struct ProviderRoundOutcome {
 	pub response:  NormalizedResponseV0,
 	pub tool_call: Option<(NormalizedToolCallV0, ProviderObservationMetadataV0)>,
+	/// A distinct assistant-turn summary, when the round supplies one
+	/// (production Anthropic responses never do; only scripted/test
+	/// rounds may). `None` falls back to `response.text` at the call site.
+	pub summary:   Option<String>,
 }
 
 /// The seam standing where a live provider adapter (e.g.
@@ -147,7 +152,7 @@ pub enum ScriptedRound {
 		provider_tool_call_id: String,
 	},
 	/// The provider finishes the turn with `text`.
-	Final { text: String },
+	Final { text: String, summary: String },
 }
 
 #[derive(Debug)]
@@ -223,9 +228,10 @@ impl ProviderExecutor for ScriptedProviderExecutor {
 							provider_api_shape: self.api_shape.clone(),
 						},
 					)),
+					summary:   None,
 				}
 			},
-			ScriptedRound::Final { text } => ProviderRoundOutcome {
+			ScriptedRound::Final { text, summary } => ProviderRoundOutcome {
 				response:  NormalizedResponseV0 {
 					event_type: PROVIDER_RESPONSE_RECORDED_EVENT_TYPE.to_owned(),
 					message_id,
@@ -233,6 +239,7 @@ impl ProviderExecutor for ScriptedProviderExecutor {
 					text,
 				},
 				tool_call: None,
+				summary:   Some(summary),
 			},
 		})
 	}
@@ -286,7 +293,11 @@ impl ProviderExecutor for AnthropicProviderExecutor {
 			.send_message(round_text, catalog, &self.model, self.max_tokens, message_id, tool_call_id)
 			.await
 			.map_err(|err| TurnFailure::Provider(err.to_string()))?;
-		Ok(ProviderRoundOutcome { response: outcome.response, tool_call: outcome.tool_call })
+		Ok(ProviderRoundOutcome {
+			response:  outcome.response,
+			tool_call: outcome.tool_call,
+			summary:   None,
+		})
 	}
 }
 
@@ -297,14 +308,14 @@ impl ProviderExecutor for AnthropicProviderExecutor {
 /// One turn's input.
 #[derive(Debug, Clone)]
 pub struct TurnInput {
-	pub user_text: String,
-}
-
-/// A completed turn: the assembled trace plus the final assistant text.
-#[derive(Debug, Clone)]
-pub struct TurnOutcome {
-	pub trace:          TurnTrace,
-	pub assistant_text: String,
+	pub user_text:      String,
+	/// Explicit assembly-query override for the `pre_tool` `assembly.requested`
+	/// payload's `query` field and the `/assemble` intent (task 216's ruling).
+	/// Production callers leave this `None`; the runner then falls back to
+	/// `user_text` verbatim. Replay tests may supply a distinct
+	/// fixture-literal query when the canonical fixture's assembly query is
+	/// not the full user prompt.
+	pub assembly_query: Option<String>,
 }
 
 /// Fixed per-turn identity shared across every raw event the runner
@@ -338,16 +349,90 @@ fn platform_producer() -> RawEventProducerV0 {
 	}
 }
 
+/// Per-event-type `VisibilityV0` construction (contract §§4, 9, 12; task-214
+/// ruling). Audited against every event in the canonical fixtures — all 23
+/// events of `raw-events-successful-turn.json` and the 4-event tail of
+/// `raw-events-unsupported-tool.json` — this is the single source of truth
+/// for visibility: every append site in this module constructs
+/// `VisibilityV0` through this function rather than hand-rolling per-call
+/// overrides.
+///
+/// | `event_type`                  | model | transcript | recall | assemble | share | debug |
+/// |-------------------------------|-------|------------|--------|----------|-------|-------|
+/// | `tool_catalog.published`      | true  | false      | false  | false    | false | true  |
+/// | `user_turn.recorded`          | true  | true       | true   | true     | false | true  |
+/// | `assembly.requested`          | false | false      | false  | false    | false | true  |
+/// | `assembly.completed`          | true  | false      | false  | false    | false | true  |
+/// | `provider_request.built`      | false | false      | false  | false    | false | true  |
+/// | `provider_tool_call.observed` | false | false      | false  | false    | false | true  |
+/// | `tool_call.requested`         | false | true       | false  | false    | false | true  |
+/// | `tool_call.started`           | false | true       | false  | false    | false | true  |
+/// | `tool_result.recorded`        | true  | true       | true   | true     | false | true  |
+/// | `tool_call.completed`         | false | true       | false  | false    | false | true  |
+/// | `tool_call.rejected`          | true  | true       | false  | false    | false | true  |
+/// | `tool_call.failed`            | true  | true       | false  | false    | false | true  |
+/// | `error.recorded`              | true  | true       | false  | false    | false | true  |
+/// | `provider_response.recorded`  | false | true       | false  | false    | false | true  |
+/// | `assistant_turn.recorded`     | true  | true       | true   | true     | false | true  |
+///
+/// `share` is always `false` in Slice 0: no external sharing surface exists.
+/// `tool_call.failed` has no canonical fixture coverage (no fixture path
+/// reaches it in Slice 0); it is grouped with `tool_call.rejected` /
+/// `error.recorded` as the nearest semantic sibling (a terminal
+/// tool-lifecycle failure) pending a canonical fixture addition.
+fn visibility_for(event_type: &RawEventType) -> VisibilityV0 {
+	match event_type {
+		RawEventType::ToolCatalogPublished | RawEventType::AssemblyCompleted => VisibilityV0 {
+			model:      true,
+			transcript: false,
+			recall:     false,
+			assemble:   false,
+			share:      false,
+			debug:      true,
+		},
+		RawEventType::UserTurnRecorded
+		| RawEventType::ToolResultRecorded
+		| RawEventType::AssistantTurnRecorded => VisibilityV0::default(),
+		RawEventType::AssemblyRequested
+		| RawEventType::ProviderRequestBuilt
+		| RawEventType::ProviderToolCallObserved => VisibilityV0 {
+			model:      false,
+			transcript: false,
+			recall:     false,
+			assemble:   false,
+			share:      false,
+			debug:      true,
+		},
+		RawEventType::ToolCallRequested
+		| RawEventType::ToolCallStarted
+		| RawEventType::ToolCallCompleted
+		| RawEventType::ProviderResponseRecorded => VisibilityV0 {
+			model:      false,
+			transcript: true,
+			recall:     false,
+			assemble:   false,
+			share:      false,
+			debug:      true,
+		},
+		RawEventType::ToolCallRejected
+		| RawEventType::ToolCallFailed
+		| RawEventType::ErrorRecorded => VisibilityV0 {
+			model:      true,
+			transcript: true,
+			recall:     false,
+			assemble:   false,
+			share:      false,
+			debug:      true,
+		},
+	}
+}
+
 const fn api_shape_label(shape: &ProviderApiShapeV0) -> &'static str {
 	match shape {
 		ProviderApiShapeV0::AnthropicMessages => "anthropic_messages",
 		ProviderApiShapeV0::OpenAiChatCompletions => "openai_chat_completions",
 		ProviderApiShapeV0::OpenAiResponses => "openai_responses",
 	}
-}
-
-fn first_line(text: &str) -> &str {
-	text.lines().next().unwrap_or_default()
 }
 
 fn artifact_ref(
@@ -394,6 +479,7 @@ pub struct TurnRunner<P: ProviderExecutor> {
 pub struct ToolDispatchSuccess {
 	pub source_envelope_id: SourceEnvelopeId,
 	pub last_event_id:      EventId,
+	pub last_frame_id:      FrameId,
 }
 
 impl<P: ProviderExecutor> TurnRunner<P> {
@@ -513,6 +599,14 @@ impl<P: ProviderExecutor> TurnRunner<P> {
 	/// tools (contract §12, the unsupported-tool fixture). A tool absent
 	/// from the catalog entirely fails the same way, without appending any
 	/// events, since no fixture defines that raw-event shape.
+	#[expect(
+		clippy::too_many_arguments,
+		reason = "tool-call lifecycle seam: \
+		          trace/ctx/tool_call_id/tool_name/arguments/causation_event_id/causation_frame_id \
+		          are each independently required by callers (execute_turn and the \
+		          standalone-dispatch test) and do not group into a coherent sub-struct without \
+		          adding indirection for no behavioral gain"
+	)]
 	pub async fn dispatch_tool_call(
 		&self,
 		trace: &mut TurnTrace,
@@ -521,6 +615,7 @@ impl<P: ProviderExecutor> TurnRunner<P> {
 		tool_name: &str,
 		arguments: &WireJson,
 		causation_event_id: Option<EventId>,
+		causation_frame_id: Option<FrameId>,
 	) -> Result<ToolDispatchSuccess, TurnFailure> {
 		let Some(status) = catalog::tool_status(tool_name) else {
 			return Err(TurnFailure::ToolNotInCatalog { tool_name: tool_name.to_owned() });
@@ -529,7 +624,7 @@ impl<P: ProviderExecutor> TurnRunner<P> {
 			EntityIdsV0 { tool_call_id: Some(tool_call_id.clone()), ..EntityIdsV0::default() };
 
 		let requested_event_id = self.ids.event_id();
-		self
+		let requested_response = self
 			.append(
 				trace,
 				ctx,
@@ -539,7 +634,7 @@ impl<P: ProviderExecutor> TurnRunner<P> {
 				kernel_producer(),
 				causation_event_id,
 				tool_entity_ids.clone(),
-				VisibilityV0 { transcript: true, ..VisibilityV0::default() },
+				visibility_for(&RawEventType::ToolCallRequested),
 				RedactionLevelV0::Sensitive,
 				json!({ "tool_name": tool_name, "arguments": arguments }),
 				None,
@@ -549,6 +644,7 @@ impl<P: ProviderExecutor> TurnRunner<P> {
 		if status != ToolStatusV0::Executable {
 			let reason = catalog::stub_rejection_reason(tool_name);
 			let rejected_event_id = self.ids.event_id();
+			let error_id = self.ids.error_id();
 			self
 				.append(
 					trace,
@@ -558,15 +654,18 @@ impl<P: ProviderExecutor> TurnRunner<P> {
 					self.clock.now(),
 					kernel_producer(),
 					Some(requested_event_id),
-					tool_entity_ids.clone(),
-					VisibilityV0::default(),
+					EntityIdsV0 {
+						tool_call_id: Some(tool_call_id.clone()),
+						error_id: Some(error_id.clone()),
+						..EntityIdsV0::default()
+					},
+					visibility_for(&RawEventType::ToolCallRejected),
 					RedactionLevelV0::Sensitive,
 					json!({ "tool_name": tool_name, "policy": catalog::REJECTION_POLICY, "reason": reason }),
 					None,
 				)
 				.await?;
 
-			let error_id = self.ids.error_id();
 			self
 				.append(
 					trace,
@@ -581,13 +680,13 @@ impl<P: ProviderExecutor> TurnRunner<P> {
 						error_id: Some(error_id.clone()),
 						..EntityIdsV0::default()
 					},
-					VisibilityV0::default(),
+					visibility_for(&RawEventType::ErrorRecorded),
 					RedactionLevelV0::Sensitive,
 					json!({
 						"schema_version": successor_protocol::error::ERROR_SCHEMA_VERSION,
 						"error_id": error_id.as_str(),
 						"code": catalog::REJECTION_ERROR_CODE,
-						"message": reason,
+						"message": format!("Tool {tool_name} is catalog-visible but not executable in Slice 0."),
 						"recoverable": true,
 						"retryable": false,
 						"correlation_id": ctx.request_id.as_str(),
@@ -600,6 +699,16 @@ impl<P: ProviderExecutor> TurnRunner<P> {
 			return Err(TurnFailure::ToolRejected { tool_name: tool_name.to_owned(), reason });
 		}
 
+		let requested_fields = self.frame_fields(
+			ctx,
+			KernelFrameKindV0::ToolCallRequested,
+			Some(RawEventRef::new(requested_event_id.clone(), requested_response.session_seq)),
+			tool_entity_ids.clone(),
+			json!({ "tool_name": tool_name, "arguments": arguments }),
+		);
+		let requested_frame =
+			self.emit(trace, FrameFields { causation_frame_id, ..requested_fields });
+
 		let started_event_id = self.ids.event_id();
 		self
 			.append(
@@ -611,7 +720,7 @@ impl<P: ProviderExecutor> TurnRunner<P> {
 				kernel_producer(),
 				Some(requested_event_id),
 				tool_entity_ids.clone(),
-				VisibilityV0 { transcript: true, ..VisibilityV0::default() },
+				visibility_for(&RawEventType::ToolCallStarted),
 				RedactionLevelV0::Sensitive,
 				json!({ "tool_name": tool_name }),
 				None,
@@ -621,17 +730,19 @@ impl<P: ProviderExecutor> TurnRunner<P> {
 		let (payload, artifact) = self
 			.execute_tool(tool_name, arguments)
 			.map_err(TurnFailure::Protocol)?;
+		let artifact_preview = artifact.preview.clone();
 
 		let result_event_id = self.ids.event_id();
 		// `tool_result.recorded` is the sole tool-lifecycle sub-event that
-		// introduces a source envelope and an artifact handle (contract§§4.5,
+		// introduces a source envelope and an artifact handle (contract §§4.5,
 		// 9): the platform's append store echoes `entity_ids.source_envelope_id`
 		// / `entity_ids.artifact_id` verbatim from the request rather than
 		// minting them, so the kernel must propose both here.
+		let artifact_id = self.ids.artifact_id();
 		let result_entity_ids = EntityIdsV0 {
 			tool_call_id: Some(tool_call_id.clone()),
 			source_envelope_id: Some(self.ids.source_envelope_id()),
-			artifact_id: Some(self.ids.artifact_id()),
+			artifact_id: Some(artifact_id.clone()),
 			..EntityIdsV0::default()
 		};
 		let result_response = self
@@ -644,13 +755,7 @@ impl<P: ProviderExecutor> TurnRunner<P> {
 				kernel_producer(),
 				Some(started_event_id),
 				result_entity_ids,
-				VisibilityV0 {
-					model: true,
-					transcript: true,
-					recall: true,
-					assemble: true,
-					..VisibilityV0::default()
-				},
+				visibility_for(&RawEventType::ToolResultRecorded),
 				RedactionLevelV0::Sensitive,
 				payload,
 				Some(artifact),
@@ -663,7 +768,7 @@ impl<P: ProviderExecutor> TurnRunner<P> {
 		})?;
 
 		let completed_event_id = self.ids.event_id();
-		self
+		let completed_response = self
 			.append(
 				trace,
 				ctx,
@@ -673,14 +778,41 @@ impl<P: ProviderExecutor> TurnRunner<P> {
 				kernel_producer(),
 				Some(result_event_id),
 				tool_entity_ids,
-				VisibilityV0 { transcript: true, ..VisibilityV0::default() },
+				visibility_for(&RawEventType::ToolCallCompleted),
 				RedactionLevelV0::Sensitive,
 				json!({ "tool_name": tool_name, "status": "ok" }),
 				None,
 			)
 			.await?;
 
-		Ok(ToolDispatchSuccess { source_envelope_id, last_event_id: completed_event_id })
+		let frame_preview = artifact_preview
+			.as_deref()
+			.unwrap_or("")
+			.lines()
+			.next()
+			.unwrap_or("");
+		let completed_fields = self.frame_fields(
+			ctx,
+			KernelFrameKindV0::ToolCallCompleted,
+			Some(RawEventRef::new(completed_event_id.clone(), completed_response.session_seq)),
+			EntityIdsV0 {
+				tool_call_id: Some(tool_call_id.clone()),
+				source_envelope_id: Some(source_envelope_id.clone()),
+				artifact_id: Some(artifact_id),
+				..EntityIdsV0::default()
+			},
+			json!({ "tool_name": tool_name, "status": "ok", "preview": frame_preview }),
+		);
+		let completed_frame = self.emit(trace, FrameFields {
+			causation_frame_id: Some(requested_frame.frame_id.clone()),
+			..completed_fields
+		});
+
+		Ok(ToolDispatchSuccess {
+			source_envelope_id,
+			last_event_id: completed_event_id,
+			last_frame_id: completed_frame.frame_id,
+		})
 	}
 
 	/// Runs the underlying tool executor for the four Slice 0 read-only
@@ -708,14 +840,14 @@ impl<P: ProviderExecutor> TurnRunner<P> {
 				let preview = result
 					.matches
 					.first()
-					.map_or("no matches", |_| "matches found");
+					.map_or_else(|| "no matches".to_owned(), |m| m.path.clone());
 				Ok((
 					json!({ "source_kind": "tool_result", "tool_name": "search_files", "matches": result.matches }),
 					artifact_ref(
 						result.sha256.clone(),
 						result.byte_length,
 						"application/json",
-						preview,
+						&preview,
 						&result.bytes,
 					),
 				))
@@ -728,19 +860,20 @@ impl<P: ProviderExecutor> TurnRunner<P> {
 				let content =
 					tools::read::read(&self.workspace_root, path).map_err(|err| err.to_string())?;
 				let text = String::from_utf8_lossy(&content.bytes).into_owned();
+				let preview = text.strip_suffix('\n').unwrap_or(&text);
 				Ok((
 					json!({
 						"source_kind": "tool_result",
 						"tool_name": "read",
 						"path": path,
 						"truncated": false,
-						"preview": first_line(&text),
+						"preview": preview,
 					}),
 					artifact_ref(
 						content.sha256.clone(),
 						content.byte_length,
 						"text/plain",
-						&text,
+						preview,
 						&content.bytes,
 					),
 				))
@@ -787,25 +920,23 @@ impl<P: ProviderExecutor> TurnRunner<P> {
 		}
 	}
 
+	#[expect(
+		clippy::too_many_arguments,
+		reason = "task 216 assembly-query seam adds one parameter; splitting into a struct is out \
+		          of scope for this narrow fix"
+	)]
 	async fn assemble_round(
 		&self,
 		trace: &mut TurnTrace,
 		ctx: &TurnContext,
 		phase: TurnPhase,
 		user_text: &str,
+		query: &str,
 		required_source_envelope_ids: &[SourceEnvelopeId],
 		causation_event_id: EventId,
-	) -> Result<(AssemblyResponseV0, EventId), TurnFailure> {
-		if phase.is_first() {
-			let fields = self.frame_fields(
-				ctx,
-				KernelFrameKindV0::PlatformAssembleStarted,
-				None,
-				EntityIdsV0::default(),
-				json!({ "phase": phase.as_assemble_phase().as_str() }),
-			);
-			self.emit(trace, fields);
-		}
+		causation_frame_id: FrameId,
+	) -> Result<(AssemblyResponseV0, EventId, FrameId), TurnFailure> {
+		let trace_id = self.ids.trace_id();
 
 		let mut assemble_request = AssembleRequestV0::new(
 			ctx.session_id.clone(),
@@ -813,7 +944,7 @@ impl<P: ProviderExecutor> TurnRunner<P> {
 			ctx.request_id.clone(),
 			phase.as_assemble_phase(),
 			AssembleIntentV0 {
-				query:         user_text.to_owned(),
+				query:         query.to_owned(),
 				raw_user_text: user_text.to_owned(),
 				confidence:    "high".to_owned(),
 			},
@@ -821,7 +952,7 @@ impl<P: ProviderExecutor> TurnRunner<P> {
 				root_hint: self.workspace_root.display().to_string(),
 				repo_id:   "successor-agent-kernel".to_owned(),
 			},
-			AssemblyBudgetV0 { max_context_tokens: 8_000, max_items: 8 },
+			AssemblyBudgetV0 { max_context_tokens: 12_000, max_items: 20 },
 		);
 		assemble_request.required_source_envelope_ids = required_source_envelope_ids.to_vec();
 		let assembly_response = self
@@ -837,11 +968,12 @@ impl<P: ProviderExecutor> TurnRunner<P> {
 		let assemble_entity_ids = EntityIdsV0 {
 			assemble_id: Some(assembly_response.assemble_id.clone()),
 			context_item_ids: context_item_ids.clone(),
+			trace_id: Some(trace_id.clone()),
 			..EntityIdsV0::default()
 		};
 
 		let requested_payload = if phase.is_first() {
-			json!({ "phase": phase.as_assemble_phase().as_str(), "query": user_text, "max_context_tokens": 8_000_u32, "max_items": 8_u32 })
+			json!({ "phase": phase.as_assemble_phase().as_str(), "query": query, "max_context_tokens": 12_000_u32, "max_items": 20_u32 })
 		} else {
 			json!({
 				"phase": phase.as_assemble_phase().as_str(),
@@ -849,7 +981,7 @@ impl<P: ProviderExecutor> TurnRunner<P> {
 			})
 		};
 		let requested_event_id = self.ids.event_id();
-		self
+		let requested_response = self
 			.append(
 				trace,
 				ctx,
@@ -860,21 +992,44 @@ impl<P: ProviderExecutor> TurnRunner<P> {
 				Some(causation_event_id),
 				EntityIdsV0 {
 					assemble_id: assemble_entity_ids.assemble_id.clone(),
+					trace_id: Some(trace_id.clone()),
 					..EntityIdsV0::default()
 				},
-				VisibilityV0::default(),
+				visibility_for(&RawEventType::AssemblyRequested),
 				RedactionLevelV0::Public,
 				requested_payload,
 				None,
 			)
 			.await?;
 
+		let started_frame = if phase.is_first() {
+			let fields = self.frame_fields(
+				ctx,
+				KernelFrameKindV0::PlatformAssembleStarted,
+				Some(RawEventRef::new(requested_event_id.clone(), requested_response.session_seq)),
+				assemble_entity_ids.clone(),
+				json!({ "phase": phase.as_assemble_phase().as_str() }),
+			);
+			Some(self.emit(trace, FrameFields {
+				causation_frame_id: Some(causation_frame_id.clone()),
+				..fields
+			}))
+		} else {
+			None
+		};
+
 		let mut completed_payload = json!({
 			"phase": phase.as_assemble_phase().as_str(),
 			"context_item_ids": context_item_ids.iter().map(ContextItemId::as_str).collect::<Vec<_>>(),
 		});
 		if !assembly_response.degradation.is_empty() {
-			completed_payload["degradation"] = json!(assembly_response.degradation);
+			completed_payload["degradation"] = json!(
+				assembly_response
+					.degradation
+					.iter()
+					.map(|d| d.code.as_str())
+					.collect::<Vec<_>>()
+			);
 		}
 		let completed_event_id = self.ids.event_id();
 		let completed_response = self
@@ -887,378 +1042,430 @@ impl<P: ProviderExecutor> TurnRunner<P> {
 				platform_producer(),
 				Some(requested_event_id),
 				assemble_entity_ids.clone(),
-				VisibilityV0 { model: true, ..VisibilityV0::default() },
-				RedactionLevelV0::Sensitive,
+				visibility_for(&RawEventType::AssemblyCompleted),
+				if context_item_ids.is_empty() {
+					RedactionLevelV0::Public
+				} else {
+					RedactionLevelV0::Sensitive
+				},
 				completed_payload.clone(),
 				None,
 			)
 			.await?;
 
 		let is_terminal = phase.round_index() == TurnPhase::PostRead.round_index();
-		if phase.is_first() || is_terminal {
+		let last_frame_id = if phase.is_first() || is_terminal {
+			let completed_causation = started_frame
+				.as_ref()
+				.map_or_else(|| causation_frame_id.clone(), |frame| frame.frame_id.clone());
+			let completed_frame_payload = json!({
+				"phase": phase.as_assemble_phase().as_str(),
+				"context_item_count": context_item_ids.len() as u64,
+			});
+			let mut completed_frame_payload = completed_frame_payload;
+			if !assembly_response.degradation.is_empty() {
+				completed_frame_payload["degradation_codes"] = json!(
+					assembly_response
+						.degradation
+						.iter()
+						.map(|d| d.code.as_str())
+						.collect::<Vec<_>>()
+				);
+			}
 			let fields = self.frame_fields(
 				ctx,
 				KernelFrameKindV0::PlatformAssembleCompleted,
 				Some(RawEventRef::new(completed_event_id.clone(), completed_response.session_seq)),
 				assemble_entity_ids,
-				completed_payload,
+				completed_frame_payload,
 			);
-			self.emit(trace, fields);
-		}
+			let frame = self
+				.emit(trace, FrameFields { causation_frame_id: Some(completed_causation), ..fields });
+			frame.frame_id
+		} else {
+			causation_frame_id
+		};
 
-		Ok((assembly_response, completed_event_id))
+		Ok((assembly_response, completed_event_id, last_frame_id))
 	}
 
 	/// Runs a full turn (contract §9). Auth must already have been
 	/// resolved by the caller via [`require_provider_credential`] before
 	/// constructing `self.provider`; this method assumes `self.provider`
 	/// is ready to send requests.
-	pub async fn execute_turn(&self, input: TurnInput) -> Result<TurnOutcome, TurnFailure> {
+	pub async fn execute_turn(&self, input: TurnInput) -> TurnAttempt {
 		let mut trace = TurnTrace::new();
-		let mut state = TurnState::NotStarted;
+		// Finding 1 (C7 review): thread the accumulated trace through every
+		// exit path, success or failure, instead of discarding it on the
+		// `?`-propagated failure paths below. The fallible body runs in a
+		// nested async block that borrows `trace` mutably; once it resolves,
+		// `trace` is intact (partial on failure, complete on success) and is
+		// wrapped into the returned `TurnAttempt` either way.
+		let result: Result<String, TurnFailure> = async {
+			let mut state = TurnState::NotStarted;
 
-		let session = self
-			.platform
-			.create_session(&CreateSessionRequestV0 {
-				workspace:  WorkspaceV0 {
-					id:        "workspace-1".to_owned(),
-					label:     "Slice 0 workspace".to_owned(),
-					root_hint: self.workspace_root.display().to_string(),
-				},
-				title:      "Slice 0 turn".to_owned(),
-				created_by: CreatedByV0 {
-					client_kind: "kernel".to_owned(),
-					client_id:   "successor-kernel".to_owned(),
-				},
-			})
-			.await
-			.map_err(Self::map_transport)?;
-		let ctx = TurnContext {
-			session_id: session.session_id,
-			turn_id:    self.ids.turn_id(),
-			request_id: self.ids.request_id(),
-		};
+			let session = self
+				.platform
+				.create_session(&CreateSessionRequestV0 {
+					workspace:  WorkspaceV0 {
+						id:        "workspace-1".to_owned(),
+						label:     "Slice 0 workspace".to_owned(),
+						root_hint: self.workspace_root.display().to_string(),
+					},
+					title:      "Slice 0 turn".to_owned(),
+					created_by: CreatedByV0 {
+						client_kind: "kernel".to_owned(),
+						client_id:   "successor-kernel".to_owned(),
+					},
+				})
+				.await
+				.map_err(Self::map_transport)?;
+			let ctx = TurnContext {
+				session_id: session.session_id,
+				turn_id:    self.ids.turn_id(),
+				request_id: self.ids.request_id(),
+			};
 
-		let catalog = catalog::slice0_catalog();
-		let catalog_event_id = self.ids.event_id();
-		// `tool_catalog.published` is session-level (contract §9): unlike every
-		// other raw event in a turn, its `turn_id` is `null`. `Self::append`
-		// always scopes to `ctx.turn_id`, so this one event is constructed
-		// inline rather than threading a rarely-used `Option<TurnId>` override
-		// through every other call site.
-		let catalog_request = RawEventAppendRequestV0 {
-			schema_version:     RAW_EVENT_SCHEMA_VERSION.to_owned(),
-			event_id:           catalog_event_id.clone(),
-			event_type:         RawEventType::ToolCatalogPublished,
-			session_id:         ctx.session_id.clone(),
-			turn_id:            None,
-			request_id:         ctx.request_id.clone(),
-			occurred_at:        self.clock.now(),
-			producer:           kernel_producer(),
-			causation_event_id: None,
-			correlation_id:     ctx.request_id.clone(),
-			entity_ids:         EntityIdsV0::default(),
-			visibility:         VisibilityV0 { model: true, debug: true, ..VisibilityV0::default() },
-			redaction:          RedactionLevelV0::Public,
-			payload:            json!({
-				"catalog_id": self.ids.catalog_id(),
-				"projection_version": successor_protocol::tool_catalog::TOOL_CATALOG_SCHEMA_VERSION,
-				"tool_count": catalog.tools.len(),
-			}),
-			artifact:           None,
-			idempotency_key:    format!("{}:{}", ctx.session_id.as_str(), catalog_event_id.as_str()),
-		};
-		self
-			.platform
-			.append_event(&catalog_request)
-			.await
-			.map_err(Self::map_transport)?;
-		let catalog_persisted = self
-			.platform
-			.read_event(&catalog_event_id)
-			.await
-			.map_err(Self::map_transport)?;
-		trace.push_event(catalog_persisted);
-		state = state.validate_next(TurnState::CatalogEnsured)?;
-
-		let turn_started_at = self.clock.now();
-		let message_id = self.ids.message_id();
-		let turn_started_fields = self.frame_fields(
-			&ctx,
-			KernelFrameKindV0::TurnStarted,
-			None,
-			EntityIdsV0 { message_id: Some(message_id.clone()), ..EntityIdsV0::default() },
-			json!({ "message_id": message_id.as_str(), "text_preview": input.user_text }),
-		);
-		self.emit(&mut trace, FrameFields { ts: turn_started_at.clone(), ..turn_started_fields });
-
-		let user_turn_event_id = self.ids.event_id();
-		let user_turn_response = self
-			.append(
-				&mut trace,
-				&ctx,
-				user_turn_event_id.clone(),
-				RawEventType::UserTurnRecorded,
-				turn_started_at,
-				kernel_producer(),
-				Some(catalog_event_id),
-				EntityIdsV0 {
-					message_id: Some(message_id.clone()),
-					source_envelope_id: Some(self.ids.source_envelope_id()),
-					..EntityIdsV0::default()
-				},
-				VisibilityV0 {
-					model: true,
-					transcript: true,
-					recall: true,
-					assemble: true,
-					..VisibilityV0::default()
-				},
-				RedactionLevelV0::Sensitive,
-				json!({ "source_kind": "user_turn", "text": input.user_text }),
-				None,
-			)
-			.await?;
-		state = state.validate_next(TurnState::UserTurnRecorded)?;
-
-		let raw_event_appended_fields = self.frame_fields(
-			&ctx,
-			KernelFrameKindV0::RawEventAppended,
-			Some(RawEventRef::new(user_turn_event_id.clone(), user_turn_response.session_seq)),
-			EntityIdsV0 { message_id: Some(message_id.clone()), ..EntityIdsV0::default() },
-			json!({ "message_id": message_id.as_str() }),
-		);
-		self.emit(&mut trace, raw_event_appended_fields);
-
-		let mut causation = user_turn_event_id;
-		let mut required_source_envelope_ids: Vec<SourceEnvelopeId> = Vec::new();
-		let mut phase = TurnPhase::PreTool;
-
-		let (assistant_text, terminal_state) = loop {
-			state = state.validate_next(TurnState::Assembling(phase))?;
-			let (assembly_response, assemble_completed_event_id) = self
-				.assemble_round(
-					&mut trace,
-					&ctx,
-					phase,
-					&input.user_text,
-					&required_source_envelope_ids,
-					causation,
-				)
-				.await?;
-			state = state.validate_next(TurnState::Assembled(phase))?;
-			causation = assemble_completed_event_id;
-
-			let context_item_ids: Vec<ContextItemId> = assembly_response
-				.context_items
-				.iter()
-				.map(|item| item.context_item_id.clone())
-				.collect();
-			let mut request_payload = json!({
-				"phase": phase.provider_request_label(),
-				"provider_id": self.provider.provider_id(),
-				"provider_api_shape": api_shape_label(&self.provider.api_shape()),
-				"model": self.provider.model(),
-				"context_item_ids": context_item_ids.iter().map(ContextItemId::as_str).collect::<Vec<_>>(),
-			});
-			if phase.is_first() {
-				let tool_names: Vec<&str> = catalog
-					.tools
-					.iter()
-					.filter(|tool| tool.status == ToolStatusV0::Executable)
-					.map(|tool| tool.name.as_str())
-					.collect();
-				request_payload["tool_names"] = json!(tool_names);
-			}
-			let request_event_id = self.ids.event_id();
+			let catalog = catalog::slice0_catalog();
+			let catalog_event_id = self.ids.event_id();
+			// `tool_catalog.published` is session-level (contract §9): unlike every
+			// other raw event in a turn, its `turn_id` is `null`. `Self::append`
+			// always scopes to `ctx.turn_id`, so this one event is constructed
+			// inline rather than threading a rarely-used `Option<TurnId>` override
+			// through every other call site.
+			let catalog_request = RawEventAppendRequestV0 {
+				schema_version:     RAW_EVENT_SCHEMA_VERSION.to_owned(),
+				event_id:           catalog_event_id.clone(),
+				event_type:         RawEventType::ToolCatalogPublished,
+				session_id:         ctx.session_id.clone(),
+				turn_id:            None,
+				request_id:         ctx.request_id.clone(),
+				occurred_at:        self.clock.now(),
+				producer:           kernel_producer(),
+				causation_event_id: None,
+				correlation_id:     ctx.request_id.clone(),
+				entity_ids:         EntityIdsV0::default(),
+				visibility:         visibility_for(&RawEventType::ToolCatalogPublished),
+				redaction:          RedactionLevelV0::Public,
+				payload:            json!({
+					"catalog_id": self.ids.catalog_id(),
+					"projection_version": successor_protocol::projection::PROJECTION_VERSION,
+					"tool_count": catalog.tools.len(),
+				}),
+				artifact:           None,
+				idempotency_key:    format!(
+					"{}:{}",
+					ctx.session_id.as_str(),
+					catalog_event_id.as_str()
+				),
+			};
 			self
+				.platform
+				.append_event(&catalog_request)
+				.await
+				.map_err(Self::map_transport)?;
+			let catalog_persisted = self
+				.platform
+				.read_event(&catalog_event_id)
+				.await
+				.map_err(Self::map_transport)?;
+			trace.push_event(catalog_persisted);
+			state = state.validate_next(TurnState::CatalogEnsured)?;
+
+			let turn_started_at = self.clock.now();
+			let message_id = self.ids.message_id();
+			let turn_started_fields = self.frame_fields(
+				&ctx,
+				KernelFrameKindV0::TurnStarted,
+				None,
+				EntityIdsV0 { message_id: Some(message_id.clone()), ..EntityIdsV0::default() },
+				json!({ "text_preview": input.user_text }),
+			);
+			let turn_started_frame = self
+				.emit(&mut trace, FrameFields { ts: turn_started_at.clone(), ..turn_started_fields });
+
+			let user_turn_event_id = self.ids.event_id();
+			let user_turn_source_envelope_id = self.ids.source_envelope_id();
+			let user_turn_response = self
 				.append(
 					&mut trace,
 					&ctx,
-					request_event_id.clone(),
-					RawEventType::ProviderRequestBuilt,
-					self.clock.now(),
+					user_turn_event_id.clone(),
+					RawEventType::UserTurnRecorded,
+					turn_started_at,
 					kernel_producer(),
-					Some(causation),
+					Some(catalog_event_id),
 					EntityIdsV0 {
-						context_item_ids: context_item_ids.clone(),
-						trace_id: Some(self.ids.trace_id()),
+						message_id: Some(message_id.clone()),
+						source_envelope_id: Some(user_turn_source_envelope_id.clone()),
 						..EntityIdsV0::default()
 					},
-					VisibilityV0 { debug: true, ..VisibilityV0::default() },
+					visibility_for(&RawEventType::UserTurnRecorded),
 					RedactionLevelV0::Sensitive,
-					request_payload,
+					json!({ "source_kind": "user_turn", "text": input.user_text }),
 					None,
 				)
 				.await?;
-			state = state.validate_next(TurnState::ProviderRequestBuilt(phase))?;
-			causation = request_event_id;
+			state = state.validate_next(TurnState::UserTurnRecorded)?;
 
-			let round_message_id = self.ids.message_id();
-			let round_tool_call_id = self.ids.tool_call_id();
-			let outcome = self
-				.provider
-				.send_round(
-					&input.user_text,
-					&catalog,
-					round_message_id.clone(),
-					round_tool_call_id.clone(),
+			let raw_event_appended_fields = FrameFields {
+				causation_frame_id: Some(turn_started_frame.frame_id.clone()),
+				..self.frame_fields(
+					&ctx,
+					KernelFrameKindV0::RawEventAppended,
+					Some(RawEventRef::new(user_turn_event_id.clone(), user_turn_response.session_seq)),
+					EntityIdsV0 {
+						message_id: Some(message_id.clone()),
+						source_envelope_id: Some(user_turn_source_envelope_id.clone()),
+						..EntityIdsV0::default()
+					},
+					json!({ "duplicate": user_turn_response.duplicate, "event_type": "user_turn.recorded" }),
 				)
-				.await?;
+			};
+			let raw_event_appended_frame = self.emit(&mut trace, raw_event_appended_fields);
 
-			if let Some((tool_call, _metadata)) = outcome.tool_call {
-				if phase.round_index() >= TurnPhase::PostRead.round_index() {
-					return Err(TurnFailure::ToolBudgetExhausted);
+			let mut causation = user_turn_event_id;
+			let mut last_frame_id = raw_event_appended_frame.frame_id;
+			let mut required_source_envelope_ids: Vec<SourceEnvelopeId> = Vec::new();
+			let mut phase = TurnPhase::PreTool;
+			let assembly_query = input
+				.assembly_query
+				.clone()
+				.unwrap_or_else(|| input.user_text.clone());
+
+			let (assistant_text, terminal_state) = loop {
+				state = state.validate_next(TurnState::Assembling(phase))?;
+				let (assembly_response, assemble_completed_event_id, assemble_last_frame_id) = self
+					.assemble_round(
+						&mut trace,
+						&ctx,
+						phase,
+						&input.user_text,
+						&assembly_query,
+						&required_source_envelope_ids,
+						causation,
+						last_frame_id,
+					)
+					.await?;
+				state = state.validate_next(TurnState::Assembled(phase))?;
+				causation = assemble_completed_event_id;
+				last_frame_id = assemble_last_frame_id;
+
+				let context_item_ids: Vec<ContextItemId> = assembly_response
+					.context_items
+					.iter()
+					.map(|item| item.context_item_id.clone())
+					.collect();
+				let mut request_payload = json!({
+					"phase": phase.provider_request_label(),
+					"provider_id": self.provider.provider_id(),
+					"provider_api_shape": api_shape_label(&self.provider.api_shape()),
+					"model": self.provider.model(),
+					"context_item_ids": context_item_ids.iter().map(ContextItemId::as_str).collect::<Vec<_>>(),
+				});
+				if phase.is_first() {
+					let tool_names: Vec<&str> = catalog
+						.tools
+						.iter()
+						.filter(|tool| tool.status == ToolStatusV0::Executable)
+						.map(|tool| tool.name.as_str())
+						.collect();
+					request_payload["tool_names"] = json!(tool_names);
 				}
-
-				let observed_event_id = self.ids.event_id();
-				let _provider_event_id = self.ids.provider_event_id();
+				let request_event_id = self.ids.event_id();
 				self
 					.append(
 						&mut trace,
 						&ctx,
-						observed_event_id.clone(),
-						RawEventType::ProviderToolCallObserved,
+						request_event_id.clone(),
+						RawEventType::ProviderRequestBuilt,
 						self.clock.now(),
 						kernel_producer(),
 						Some(causation),
 						EntityIdsV0 {
-							tool_call_id: Some(round_tool_call_id.clone()),
-							..EntityIdsV0::default()
-						},
-						VisibilityV0 { debug: true, ..VisibilityV0::default() },
-						RedactionLevelV0::Sensitive,
-						json!({
-							"provider_api_shape": api_shape_label(&self.provider.api_shape()),
-							"tool_name": tool_call.tool_name,
-							"arguments": tool_call.arguments,
-						}),
-						None,
-					)
-					.await?;
-				state = state.validate_next(TurnState::ToolDispatching(phase))?;
-
-				let requested_frame = self.frame_fields(
-					&ctx,
-					KernelFrameKindV0::ToolCallRequested,
-					None,
-					EntityIdsV0 {
-						tool_call_id: Some(round_tool_call_id.clone()),
-						..EntityIdsV0::default()
-					},
-					json!({ "tool_name": tool_call.tool_name }),
-				);
-				self.emit(&mut trace, requested_frame);
-
-				let dispatch = self
-					.dispatch_tool_call(
-						&mut trace,
-						&ctx,
-						&round_tool_call_id,
-						&tool_call.tool_name,
-						&tool_call.arguments,
-						Some(observed_event_id),
-					)
-					.await?;
-				state = state.validate_next(TurnState::ToolCompleted(phase))?;
-
-				let completed_frame = self.frame_fields(
-					&ctx,
-					KernelFrameKindV0::ToolCallCompleted,
-					None,
-					EntityIdsV0 {
-						tool_call_id: Some(round_tool_call_id.clone()),
-						..EntityIdsV0::default()
-					},
-					json!({ "tool_name": tool_call.tool_name }),
-				);
-				self.emit(&mut trace, completed_frame);
-
-				required_source_envelope_ids = vec![dispatch.source_envelope_id];
-				causation = dispatch.last_event_id;
-				phase = phase
-					.next()
-					.expect("bounded by the round_index guard above");
-			} else {
-				let response_event_id = self.ids.event_id();
-				self
-					.append(
-						&mut trace,
-						&ctx,
-						response_event_id.clone(),
-						RawEventType::ProviderResponseRecorded,
-						self.clock.now(),
-						kernel_producer(),
-						Some(causation),
-						EntityIdsV0 {
-							message_id: Some(round_message_id.clone()),
+							context_item_ids: context_item_ids.clone(),
 							trace_id: Some(self.ids.trace_id()),
+							assemble_id: Some(assembly_response.assemble_id.clone()),
 							..EntityIdsV0::default()
 						},
-						VisibilityV0 { transcript: true, ..VisibilityV0::default() },
+						visibility_for(&RawEventType::ProviderRequestBuilt),
 						RedactionLevelV0::Sensitive,
-						json!({
-							"phase": "final_response",
-							"provider_id": self.provider.provider_id(),
-							"provider_api_shape": api_shape_label(&self.provider.api_shape()),
-							"model": self.provider.model(),
-							"finish_reason": outcome.response.finish_reason,
-							"text": outcome.response.text,
-						}),
+						request_payload,
 						None,
 					)
 					.await?;
-				state = state.validate_next(TurnState::ProviderResponseRecorded)?;
+				state = state.validate_next(TurnState::ProviderRequestBuilt(phase))?;
+				causation = request_event_id;
 
-				let assistant_message_id = self.ids.message_id();
-				self
-					.append(
-						&mut trace,
+				let round_message_id = self.ids.message_id();
+				let round_tool_call_id = self.ids.tool_call_id();
+				let outcome = self
+					.provider
+					.send_round(
+						&input.user_text,
+						&catalog,
+						round_message_id.clone(),
+						round_tool_call_id.clone(),
+					)
+					.await?;
+
+				if let Some((tool_call, _metadata)) = outcome.tool_call {
+					if phase.round_index() >= TurnPhase::PostRead.round_index() {
+						return Err(TurnFailure::ToolBudgetExhausted);
+					}
+
+					let observed_event_id = self.ids.event_id();
+					let provider_event_id = self.ids.provider_event_id();
+					let is_executable_tool =
+						catalog::tool_status(&tool_call.tool_name) == Some(ToolStatusV0::Executable);
+					let mut observed_payload = json!({
+						"tool_name": tool_call.tool_name,
+						"arguments": tool_call.arguments,
+					});
+					if is_executable_tool {
+						observed_payload["provider_api_shape"] =
+							json!(api_shape_label(&self.provider.api_shape()));
+					}
+					self
+						.append(
+							&mut trace,
+							&ctx,
+							observed_event_id.clone(),
+							RawEventType::ProviderToolCallObserved,
+							self.clock.now(),
+							kernel_producer(),
+							Some(causation),
+							EntityIdsV0 {
+								tool_call_id: Some(round_tool_call_id.clone()),
+								provider_event_id: Some(provider_event_id),
+								..EntityIdsV0::default()
+							},
+							visibility_for(&RawEventType::ProviderToolCallObserved),
+							RedactionLevelV0::Sensitive,
+							observed_payload,
+							None,
+						)
+						.await?;
+					state = state.validate_next(TurnState::ToolDispatching(phase))?;
+
+					let dispatch = self
+						.dispatch_tool_call(
+							&mut trace,
+							&ctx,
+							&round_tool_call_id,
+							&tool_call.tool_name,
+							&tool_call.arguments,
+							Some(observed_event_id),
+							Some(last_frame_id),
+						)
+						.await?;
+					state = state.validate_next(TurnState::ToolCompleted(phase))?;
+
+					required_source_envelope_ids = vec![dispatch.source_envelope_id];
+					causation = dispatch.last_event_id;
+					last_frame_id = dispatch.last_frame_id;
+					phase = phase
+						.next()
+						.expect("bounded by the round_index guard above");
+				} else {
+					let response_event_id = self.ids.event_id();
+					let final_provider_event_id = self.ids.provider_event_id();
+					self
+						.append(
+							&mut trace,
+							&ctx,
+							response_event_id.clone(),
+							RawEventType::ProviderResponseRecorded,
+							self.clock.now(),
+							kernel_producer(),
+							Some(causation),
+							EntityIdsV0 {
+								message_id: Some(round_message_id.clone()),
+								context_item_ids: context_item_ids.clone(),
+								trace_id: Some(self.ids.trace_id()),
+								provider_event_id: Some(final_provider_event_id),
+								..EntityIdsV0::default()
+							},
+							visibility_for(&RawEventType::ProviderResponseRecorded),
+							RedactionLevelV0::Sensitive,
+							json!({
+								"phase": "final_response",
+								"provider_id": self.provider.provider_id(),
+								"provider_api_shape": api_shape_label(&self.provider.api_shape()),
+								"model": self.provider.model(),
+								"finish_reason": outcome.response.finish_reason,
+								"text": outcome.response.text,
+							}),
+							None,
+						)
+						.await?;
+					state = state.validate_next(TurnState::ProviderResponseRecorded)?;
+
+					let assistant_message_id = self.ids.message_id();
+					let assistant_source_envelope_id = self.ids.source_envelope_id();
+					let assistant_turn_event_id = self.ids.event_id();
+					let assistant_turn_response = self
+						.append(
+							&mut trace,
+							&ctx,
+							assistant_turn_event_id.clone(),
+							RawEventType::AssistantTurnRecorded,
+							self.clock.now(),
+							kernel_producer(),
+							Some(response_event_id),
+							EntityIdsV0 {
+								message_id: Some(assistant_message_id.clone()),
+								source_envelope_id: Some(assistant_source_envelope_id.clone()),
+								..EntityIdsV0::default()
+							},
+							visibility_for(&RawEventType::AssistantTurnRecorded),
+							RedactionLevelV0::Sensitive,
+							json!({
+								"source_kind": "assistant_turn",
+								"text": outcome.response.text,
+								"summary": outcome.summary.clone().unwrap_or_else(|| outcome.response.text.clone()),
+							}),
+							None,
+						)
+						.await?;
+					state = state.validate_next(TurnState::AssistantTurnRecorded)?;
+
+					let turn_completed_fields = self.frame_fields(
 						&ctx,
-						self.ids.event_id(),
-						RawEventType::AssistantTurnRecorded,
-						self.clock.now(),
-						kernel_producer(),
-						Some(response_event_id),
+						KernelFrameKindV0::TurnCompleted,
+						Some(RawEventRef::new(
+							assistant_turn_event_id,
+							assistant_turn_response.session_seq,
+						)),
 						EntityIdsV0 {
 							message_id: Some(assistant_message_id),
-							source_envelope_id: Some(self.ids.source_envelope_id()),
+							source_envelope_id: Some(assistant_source_envelope_id),
 							..EntityIdsV0::default()
 						},
-						VisibilityV0 {
-							model: true,
-							transcript: true,
-							recall: true,
-							assemble: true,
-							..VisibilityV0::default()
-						},
-						RedactionLevelV0::Sensitive,
-						json!({
-							"source_kind": "assistant_turn",
-							"text": outcome.response.text,
-							"summary": outcome.response.text,
-						}),
-						None,
-					)
-					.await?;
-				state = state.validate_next(TurnState::AssistantTurnRecorded)?;
+						json!({ "finish_reason": outcome.response.finish_reason }),
+					);
+					self.emit(&mut trace, FrameFields {
+						causation_frame_id: Some(last_frame_id),
+						..turn_completed_fields
+					});
+					state = state.validate_next(TurnState::Completed)?;
 
-				let turn_completed_frame = self.frame_fields(
-					&ctx,
-					KernelFrameKindV0::TurnCompleted,
-					None,
-					EntityIdsV0::default(),
-					json!({ "finish_reason": outcome.response.finish_reason }),
-				);
-				self.emit(&mut trace, turn_completed_frame);
-				state = state.validate_next(TurnState::Completed)?;
+					break (outcome.response.text, state);
+				}
+			};
 
-				break (outcome.response.text, state);
-			}
-		};
+			trace.finish(terminal_state);
+			Ok(assistant_text)
+		}
+		.await;
 
-		trace.finish(terminal_state);
-		Ok(TurnOutcome { trace, assistant_text })
+		match result {
+			Ok(assistant_text) => TurnAttempt::completed(trace, assistant_text),
+			Err(failure) => {
+				trace.finish(TurnState::Failed);
+				TurnAttempt::failed(trace, failure)
+			},
+		}
 	}
 }
 
@@ -1302,11 +1509,5 @@ mod tests {
 			"openai_chat_completions"
 		);
 		assert_eq!(api_shape_label(&ProviderApiShapeV0::OpenAiResponses), "openai_responses");
-	}
-
-	#[test]
-	fn first_line_returns_the_first_line_only() {
-		assert_eq!(first_line("a\nb\nc"), "a");
-		assert_eq!(first_line(""), "");
 	}
 }

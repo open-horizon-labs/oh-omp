@@ -9,35 +9,88 @@
 //! the same fixture content the accepted C6 tests use
 //! (`slice0_tools_discovery.rs`).
 //!
-//! ## Oracle split (Dissent ruling 4)
+//! ## Byte-identity oracle (task 210's binding ruling, Option B)
 //!
-//! - The unsupported-tool path is verified by **raw-event comparison** against
-//!   `fixtures::raw_events_unsupported_tool()` plus
-//!   `validate_unsupported_tool_lifecycle` — never `project_session`, which the
-//!   accepted A4 replay pass intentionally rejects for this stream.
-//! - The successful-turn path is verified structurally: the exact `event_type`
-//!   sequence and payload shape must match
-//!   `fixtures::raw_events_successful_turn()`, and the emitted frame
-//!   `kind`/pairing sequence must match `fixtures::kernel_frame_stream()`.
-//!   Byte-identical comparison of platform-assigned fields (`session_id`,
-//!   `assemble_id`, `context_item_id`) against
-//!   `expected-session-projection.json` is out of scope for a live run of this
-//!   lane: `successor_context_platform` mints those with `Uuid::new_v4()`
-//!   inside the real `/assemble` and `create_session` handlers (see
-//!   `crates/successor-context-platform/src/ assembly.rs` and `sqlite.rs`), and
-//!   no scripted seam on this side of the HTTP boundary can pin them without
-//!   the platform itself accepting a canned response — out of C7's ownership.
-//!   `source_envelope_id` and `artifact_id` ARE pinned here: the platform's
-//!   append/artifact stores echo
-//!   `entity_ids.source_envelope_id`/`entity_ids.artifact_id` verbatim from the
-//!   request rather than minting them (a pure-echo contract, not a
-//!   platform-minted one), so this lane's `IdFactory` proposes both and they
-//!   participate in the structural comparison below like any other kernel-
-//!   minted id. Byte-identical `project_session` output against
-//!   `expected-session-projection.json` for the *canonical fixture's own*
-//!   events (not a live run) is already covered by the accepted A4 fixture-
-//!   replay test; this file additionally confirms `project_session` succeeds
-//!   (does not reject) on this lane's own freshly produced events.
+//! Both oracle tests below drive `execute_turn` through a fully
+//! [`ScriptedIdFactory`]/[`ScriptedClock`] seam -- never `RealIdFactory`/
+//! `RealClock`, which task 210 explicitly rejects for this file -- and
+//! compare the produced raw events (both tests), `project_session`
+//! projection (successful-turn only), and frames (successful-turn only)
+//! against the canonical fixtures at full DTO/byte depth, under ONE
+//! global, consistent bijection applied ONLY to the four platform-minted
+//! id classes: `session_id`, `assemble_id`, `context_item_id`, and the
+//! platform's own `AssemblyTrace` trace id (this Slice-0 lane never
+//! observes that fourth class: every `entity_ids.trace_id` this runner
+//! emits is minted by its own `IdFactory::trace_id()`, confirmed in
+//! `runner.rs`, so it participates in the literal comparison below like
+//! any other kernel-minted id). The bijection is recorded by
+//! [`IdBijection`]: fixture and produced ids map 1:1 in both directions,
+//! one mapping applied across events + projection + frames, and any
+//! unmapped id-like field that still differs fails the assertion loudly,
+//! naming the offending field.
+//!
+//! Every other field -- `event_id`, `turn_id`, `request_id`, `message_id`,
+//! `tool_call_id`, `frame_id`, kernel `trace_id`, `provider_event_id`,
+//! `error_id`, `source_envelope_id`, `artifact_id`, `catalog_id`,
+//! `causation_event_id` (after bijection), `occurred_at`, `session_seq`,
+//! event types, producers, visibility, and payloads -- is scripted to the
+//! fixture's own literal bytes and compared without normalization.
+//! `RealIdFactory`/`RealClock` are never used to drive either oracle turn
+//! (task 210's ruling explicitly rejects that design): every
+//! kernel-controlled seam is scripted so the runner reproduces the fixture's
+//! bytes deterministically.
+//!
+//! ## Ruled exclusions beyond the id bijection (tasks 212, 214)
+//!
+//! Two additional narrow exclusions apply on top of the id bijection above,
+//! and neither may be widened without a new binding ruling:
+//!
+//! 1. **`idempotency_key` (both oracles).** The canonical fixtures use
+//!    human-authored descriptive labels (e.g. `"fixture:catalog:1"`) as
+//!    structural context, not a literal production contract. Both oracles
+//!    normalize the produced `idempotency_key` to the fixture's literal value
+//!    before the byte-for-byte comparison, then separately assert the
+//!    production invariants directly against the *un-normalized* produced
+//!    value: every produced key equals the runner's disclosed derivation
+//!    (`{turn_id}:{event_id}`, or `{session_id}:{event_id}` for the turn-less
+//!    `tool_catalog.published` event), every key is unique within the session,
+//!    and re-appending an already-stored key is idempotent (the platform's
+//!    `duplicate: true` / stable `session_seq` behavior).
+//! 2. **The task-212 four-class exclusion, isolated-tail oracle only.** The
+//!    unsupported-tool oracle drives `dispatch_tool_call` directly rather than
+//!    through a full `execute_turn`, so it has no real preceding turn history
+//!    to derive `session_seq` or a first-event `causation_event_id` from. For
+//!    that fixture only, `session_seq`, the first event's `causation_event_id`,
+//!    `idempotency_key` (folded into exclusion 1 above), and `VisibilityV0` are
+//!    asserted against the runner's own production construction
+//!    (`expected_tail_visibility`, mirroring `runner::visibility_for`) rather
+//!    than the fixture's literal recorded values. This exclusion does NOT apply
+//!    to the successful-turn oracle, where all 23 events compare those fields
+//!    literally.
+//!
+//! `VisibilityV0` itself is otherwise NOT an exclusion: `runner.rs`'s
+//! `visibility_for` (task-214 ruling) constructs the exact per-event-type
+//! fixture values for every event in both fixtures, so the successful-turn
+//! oracle compares `visibility` literally with no normalization.
+//!
+//! ## Task 216: assembly-query seam, derived source ids, phase shapes
+//!
+//! Three related fixes apply on top of the byte-identity oracle above:
+//! 1. `TurnInput::assembly_query` is an explicit override for the `pre_tool`
+//!    `assembly.requested` payload's `query` field and the `/assemble` intent's
+//!    `query`. Production callers leave it `None` and the runner falls back to
+//!    `user_text` verbatim; this file's successful-turn replay supplies the
+//!    fixture-literal query (`"concept graph resolver"`), which is not the full
+//!    user prompt.
+//! 2. `post_locator`/`post_read` `assembly.requested` payloads carry
+//!    `required_source_envelope_ids`: the source-envelope ids introduced by
+//!    tool-result raw events recorded so far for the current phase, in recorded
+//!    order (`runner.rs`'s `assemble_round`).
+//! 3. `assembly.requested` payloads are phase-shaped, not uniform: `pre_tool`
+//!    is `{phase, query, max_context_tokens, max_items}`;
+//!    `post_locator`/`post_read` are `{phase, required_source_envelope_ids}`
+//!    only. No `/assemble` DTO field leaks into a raw-event payload beyond
+//!    these two shapes.
 
 use std::{
 	path::PathBuf,
@@ -52,7 +105,7 @@ use successor_context_platform::{
 };
 use successor_kernel::{
 	frame_sink::FrameSink,
-	id_factory::{Clock, IdFactory, RealClock, RealIdFactory, ScriptedClock, ScriptedIdFactory},
+	id_factory::{Clock, IdFactory, ScriptedClock, ScriptedIdFactory},
 	platform_client::{EntitlementToken, KernelPlatformClient},
 	provider::auth::{ProviderAuthOutcome, ProviderSlot},
 	runner::{
@@ -64,12 +117,7 @@ use successor_kernel::{
 	tools::catalog,
 };
 use successor_protocol::{
-	fixtures,
-	ids::{RequestId, ToolCallId, TurnId},
-	kernel_frame,
-	provider::ProviderApiShapeV0,
-	raw_event,
-	validation::validate_unsupported_tool_lifecycle,
+	fixtures, kernel_frame, raw_event, validation::validate_unsupported_tool_lifecycle,
 };
 
 const LICENSE: &str = "dev-license-c7-integration-abc123";
@@ -155,171 +203,306 @@ fn cleanup_workspace(root: &PathBuf) {
 }
 
 // ---------------------------------------------------------------------
-// Unsupported-tool oracle (Dissent ruling 4): raw-event comparison +
-// validate_unsupported_tool_lifecycle, never project_session.
+// Byte-identity bijection (task 210, Option B): normalizes exactly the
+// four platform-minted id classes so the remaining full-DTO comparison
+// can assert literal fixture bytes everywhere else.
+// ---------------------------------------------------------------------
+
+/// Records a 1:1 mapping between this run's platform-minted opaque ids
+/// (`session_id`, `assemble_id`, `context_item_id`) and the canonical
+/// fixture's own literal placeholders for the same id, so a subsequent
+/// full-struct equality assertion against the fixture only fails on
+/// genuine byte divergence in kernel-controlled fields. Fails loudly,
+/// naming the offending field, if either direction of the mapping is not
+/// injective.
+#[derive(Default)]
+struct IdBijection {
+	produced_to_fixture: std::collections::HashMap<String, String>,
+	fixture_to_produced: std::collections::HashMap<String, String>,
+}
+
+impl IdBijection {
+	fn record(&mut self, field: &str, produced: &str, fixture: &str) {
+		if let Some(existing) = self.produced_to_fixture.get(produced) {
+			assert_eq!(
+				existing, fixture,
+				"{field} bijection is not injective: produced id {produced:?} would map to both \
+				 {existing:?} and {fixture:?}"
+			);
+		} else {
+			self
+				.produced_to_fixture
+				.insert(produced.to_owned(), fixture.to_owned());
+		}
+		if let Some(existing) = self.fixture_to_produced.get(fixture) {
+			assert_eq!(
+				existing, produced,
+				"{field} bijection is not injective: fixture id {fixture:?} would map to both \
+				 {existing:?} and {produced:?}"
+			);
+		} else {
+			self
+				.fixture_to_produced
+				.insert(fixture.to_owned(), produced.to_owned());
+		}
+	}
+
+	/// Returns the produced clone of `event`, with its `session_id`
+	/// normalized to the fixture's own literal placeholder (recording the
+	/// mapping the first time this `session_id` is seen). Every other field
+	/// is left untouched for literal comparison by the caller.
+	fn normalize_session(
+		&mut self,
+		event: &raw_event::RawEventV0,
+		fixture_session_id: &str,
+	) -> raw_event::RawEventV0 {
+		self.record("session_id", event.session_id.as_str(), fixture_session_id);
+		let mut normalized = event.clone();
+		normalized.session_id =
+			successor_protocol::ids::SessionId::from_raw(fixture_session_id.to_owned());
+		normalized
+	}
+}
+
+/// Task-214 ruling: `VisibilityV0` construction is fixture-derived (see
+/// `runner::visibility_for`'s doc comment for the full per-event-type
+/// mapping table). This mirrors that construction (the function is
+/// crate-private to `successor-kernel`, so the oracle cannot import it
+/// directly), so the oracle now asserts a literal match against the
+/// canonical fixture's recorded visibility for every event in the
+/// unsupported-tool tail.
+fn expected_tail_visibility(event_type: raw_event::RawEventType) -> raw_event::VisibilityV0 {
+	match event_type {
+		raw_event::RawEventType::ProviderToolCallObserved => raw_event::VisibilityV0 {
+			model:      false,
+			transcript: false,
+			recall:     false,
+			assemble:   false,
+			share:      false,
+			debug:      true,
+		},
+		raw_event::RawEventType::ToolCallRequested => raw_event::VisibilityV0 {
+			model:      false,
+			transcript: true,
+			recall:     false,
+			assemble:   false,
+			share:      false,
+			debug:      true,
+		},
+		raw_event::RawEventType::ToolCallRejected | raw_event::RawEventType::ErrorRecorded => {
+			raw_event::VisibilityV0 {
+				model:      true,
+				transcript: true,
+				recall:     false,
+				assemble:   false,
+				share:      false,
+				debug:      true,
+			}
+		},
+		other => {
+			panic!("expected_tail_visibility: unexpected unsupported-tool tail event type {other:?}")
+		},
+	}
+}
+
+// ---------------------------------------------------------------------
+// Unsupported-tool oracle (task 210, Option B): full-DTO byte comparison
+// of the produced tail against raw-events-unsupported-tool.json, with
+// bijection for session_id only (this scenario carries no assemble_id/
+// context_item_ids/platform trace anywhere in its tail).
 // ---------------------------------------------------------------------
 
 #[tokio::test]
 async fn unsupported_tool_dispatch_matches_the_canonical_fixture_and_passes_the_lifecycle_oracle() {
 	let server = TestServer::start("unsupported-tool").await;
 	let client = server.client();
-	let session = client
-		.create_session(&successor_protocol::platform_api::CreateSessionRequestV0 {
-			workspace:  successor_protocol::platform_api::WorkspaceV0 {
-				id:        "workspace-1".to_owned(),
-				label:     "Slice 0 workspace".to_owned(),
-				root_hint: "/tmp/does-not-matter-for-this-test".to_owned(),
-			},
-			title:      "unsupported tool turn".to_owned(),
-			created_by: successor_protocol::platform_api::CreatedByV0 {
-				client_kind: "kernel".to_owned(),
-				client_id:   "successor-kernel".to_owned(),
-			},
-		})
-		.await
-		.expect("create session");
+	let workspace_root = seed_workspace("unsupported-tool");
 
-	// Scripted to match the canonical fixture's kernel-owned identifiers
-	// exactly (contract §3's `evt_`/`tool_`/`err_` prefixes).
-	let ids = ScriptedIdFactory::new([
-		"evt_10000000-0000-4000-8000-000000000001",
-		"evt_10000000-0000-4000-8000-000000000002",
-		"err_10000000-0000-4000-8000-000000000001",
-		"evt_10000000-0000-4000-8000-000000000003",
-	]);
-	let clock =
-		ScriptedClock::new(["2026-07-02T12:00:00Z", "2026-07-02T12:00:01Z", "2026-07-02T12:00:02Z"]);
-	let tool_call_id = ToolCallId::try_from("tool_10000000-0000-4000-8000-000000000001".to_owned())
-		.expect("valid tool call id");
-	let turn_id = TurnId::try_from("turn_10000000-0000-4000-8000-000000000001".to_owned())
-		.expect("valid turn id");
-	let request_id = RequestId::try_from("req_10000000-0000-4000-8000-000000000001".to_owned())
-		.expect("valid request id");
-	let ctx = TurnContext::new(session.session_id.clone(), turn_id, request_id);
+	let fixture = fixtures::raw_events_unsupported_tool();
+	assert_eq!(fixture.len(), 4, "canonical fixture is a 4-event isolated tail");
 
-	// `runner.rs`'s error-id minting is exercised via the scripted
-	// factory too; the fixture's `error.recorded.error_id` is asserted
-	// below rather than pre-declared, since `dispatch_tool_call` mints it
-	// internally.
-	let frame_sink = FrameSink::new(KernelFrameStream::new());
-	let mut trace = successor_kernel::turn_trace::TurnTrace::new();
-
-	// `dispatch_tool_call` alone appends only 3 of the fixture's 4 events
-	// (`tool_call.requested`/`.rejected`/`error.recorded`); the leading
-	// `provider_tool_call.observed` event is appended by `execute_turn`'s
-	// round loop, not by `dispatch_tool_call` in isolation (ruling 4 scopes
-	// this oracle to the tool-dispatch step, not a full turn). Driving the
-	// full lifecycle through `execute_turn` here would additionally require
-	// the turn-level events execute_turn emits before ever reaching the
-	// tool round (`tool_catalog.published`, `user_turn.recorded`,
-	// `assembly.*`, `provider_request.built`), which have no place in this
-	// fixture's isolated 4-event stream and no accumulator to recover a
-	// partial trace from `execute_turn` on the `Err` path it returns.
-	// Disclosed fallback (assignment-permitted): append the observed event
-	// directly via the same `PlatformClient` surface `execute_turn` uses,
-	// reproducing its exact shape, then drive `dispatch_tool_call` for the
-	// remaining 3.
-	let observed_event_id = successor_protocol::ids::EventId::try_from(
-		"evt_10000000-0000-4000-8000-000000000099".to_owned(),
-	)
-	.expect("valid event id");
-	let observed_request = successor_protocol::platform_api::RawEventAppendRequestV0 {
-		schema_version:     raw_event::RAW_EVENT_SCHEMA_VERSION.to_owned(),
-		event_id:           observed_event_id.clone(),
-		event_type:         raw_event::RawEventType::ProviderToolCallObserved,
-		session_id:         ctx.session_id.clone(),
-		turn_id:            Some(ctx.turn_id.clone()),
-		request_id:         ctx.request_id.clone(),
-		occurred_at:        "2026-07-02T12:00:00Z".to_owned(),
-		producer:           raw_event::RawEventProducerV0 {
-			kind: raw_event::ProducerKind::Kernel,
-			id:   "successor-kernel".to_owned(),
-		},
-		causation_event_id: None,
-		correlation_id:     ctx.request_id.clone(),
-		entity_ids:         raw_event::EntityIdsV0 {
-			tool_call_id: Some(tool_call_id.clone()),
-			..raw_event::EntityIdsV0::default()
-		},
-		visibility:         raw_event::VisibilityV0::default(),
-		redaction:          raw_event::RedactionLevelV0::Sensitive,
-		payload:            serde_json::json!({
-			"tool_name": "bash",
-			"arguments": { "command": "echo hi" },
-			"provider_tool_call_id": "toolu_01_fixture_bash",
-		}),
-		artifact:           None,
-		idempotency_key:    format!("{}:{}", ctx.turn_id.as_str(), observed_event_id.as_str()),
-	};
-	client
-		.append_event(&observed_request)
-		.await
-		.expect("append the observed event via the real platform");
-	let observed_persisted = client
-		.read_event(&observed_event_id)
-		.await
-		.expect("read back the observed event");
-	trace.push_event(observed_persisted);
+	// The preamble (catalog publish, user turn, one PreTool assemble
+	// round, the provider request) precedes the fixture's 4-event tail
+	// and has no fixture data of its own to script against; its ids only
+	// need to be validly typed, not literal, EXCEPT for turn_id/
+	// request_id/session_id, which persist onto every tail event and so
+	// must resolve to the fixture's own literal values by the time the
+	// tail is compared. `session_id` is platform-minted (`create_session`)
+	// and is bijected below rather than scripted.
+	let ids = ScriptedIdFactory::builder()
+		.event_ids([
+			"evt_00000000-0000-4000-8000-000000000e01", // tool_catalog.published (preamble)
+			"evt_00000000-0000-4000-8000-000000000e02", // user_turn.recorded (preamble)
+			"evt_00000000-0000-4000-8000-000000000e03", // assembly.requested (preamble)
+			"evt_00000000-0000-4000-8000-000000000e04", // assembly.completed (preamble)
+			"evt_00000000-0000-4000-8000-000000000e05", // provider_request.built (preamble)
+			"evt_10000000-0000-4000-8000-000000000001", // tail[0] provider_tool_call.observed
+			"evt_10000000-0000-4000-8000-000000000002", // tail[1] tool_call.requested
+			"evt_10000000-0000-4000-8000-000000000003", // tail[2] tool_call.rejected
+			"evt_10000000-0000-4000-8000-000000000004", // tail[3] error.recorded
+		])
+		.turn_id("turn_10000000-0000-4000-8000-000000000001")
+		.request_id("req_10000000-0000-4000-8000-000000000001")
+		.tool_call_ids(["tool_10000000-0000-4000-8000-000000000001"])
+		.error_ids(["err_10000000-0000-4000-8000-000000000001"])
+		.message_ids([
+			"msg_00000000-0000-4000-8000-000000000e01",
+			"msg_00000000-0000-4000-8000-000000000e02",
+		])
+		.source_envelope_ids(["src_00000000-0000-4000-8000-000000000e01"])
+		.trace_ids([
+			"trace_00000000-0000-4000-8000-000000000e00",
+			"trace_00000000-0000-4000-8000-000000000e01",
+		])
+		.provider_event_ids(["pevt_10000000-0000-4000-8000-000000000001"])
+		.catalog_ids(["catalog-fixture-unsupported-tool"])
+		.frame_ids((1..=8u32).map(|n| format!("frame_00000000-0000-4000-8000-{n:012}")))
+		.build();
+	let clock = ScriptedClock::new(
+		(0..9u32)
+			.map(|n| format!("2020-01-01T00:00:{n:02}Z"))
+			.chain([
+				"2026-06-23T12:10:00Z".to_owned(), // index 9 = tail[0]
+				"2026-06-23T12:10:01Z".to_owned(), // index 10 = tail[1]
+				"2026-06-23T12:10:02Z".to_owned(), // index 11 = tail[2]
+				"2026-06-23T12:10:03Z".to_owned(), // index 12 = tail[3]
+			])
+			.chain((100..110u32).map(|n| format!("2020-01-01T01:00:{n:02}Z"))),
+	);
 
 	let provider = ScriptedProviderExecutor::new(
 		"anthropic",
-		ProviderApiShapeV0::AnthropicMessages,
+		successor_protocol::provider::ProviderApiShapeV0::AnthropicMessages,
 		"claude-fixture",
-		[],
+		[ScriptedRound::ToolUse {
+			tool_name:             "bash".to_owned(),
+			arguments:             serde_json::json!({ "command": "echo should-not-run" }),
+			provider_tool_call_id: "toolu_01_fixture_bash".to_owned(),
+		}],
 	);
+	let frame_sink = FrameSink::new(KernelFrameStream::new());
 	let runner = TurnRunner::new(
-		client.clone(),
+		client,
 		frame_sink,
 		Arc::new(ids) as Arc<dyn IdFactory>,
 		Arc::new(clock) as Arc<dyn Clock>,
 		provider,
-		std::env::temp_dir(),
+		&workspace_root,
 	);
 
-	let _causation_event_id = successor_protocol::ids::EventId::try_from(
-		"evt_10000000-0000-4000-8000-000000000000".to_owned(),
-	)
-	.expect("valid event id");
-	let failure = runner
-		.dispatch_tool_call(
-			&mut trace,
-			&ctx,
-			&tool_call_id,
-			"bash",
-			&serde_json::json!({ "command": "echo hi" }),
-			None,
-		)
-		.await
-		.expect_err("bash is catalog-visible but stub-rejected in Slice 0");
+	let attempt = runner
+		.execute_turn(TurnInput {
+			user_text:      "Run echo should-not-run".to_owned(),
+			assembly_query: None,
+		})
+		.await;
 
+	assert!(!attempt.trace.succeeded(), "bash must not be executable in Slice 0");
+	let failure = attempt
+		.outcome
+		.expect_err("a catalog-visible, stub-rejected tool must fail the turn");
 	assert_eq!(failure, TurnFailure::ToolRejected {
 		tool_name: "bash".to_owned(),
 		reason:    catalog::stub_rejection_reason("bash"),
 	});
 
-	// Raw-event comparison against the canonical fixture (Dissent ruling
-	// 4): compare event_type sequence and tool-relevant payload fields.
-	// `session_id`/`error_id` are platform-/kernel-minted per attempt and
-	// are excluded from the literal comparison for the same reason the C1
-	// precedent rebinds `session_id` before comparing.
-	let expected = fixtures::raw_events_unsupported_tool();
-	assert_eq!(
-		trace.events().len(),
-		expected.len(),
-		"unsupported-tool dispatch must append exactly the fixture's event count"
+	let produced = attempt.trace.events();
+	assert!(
+		produced.len() >= fixture.len(),
+		"execute_turn must produce at least the unsupported-tool tail"
 	);
-	for (produced, fixture_event) in trace.events().iter().zip(expected.iter()) {
-		assert_eq!(produced.event_type, fixture_event.event_type);
-		assert_eq!(produced.entity_ids.tool_call_id, fixture_event.entity_ids.tool_call_id);
+	let tail = &produced[produced.len() - fixture.len()..];
+
+	// Bijection scope: session_id only (this tail carries no assemble_id/
+	// context_item_ids/platform trace, asserted below).
+	let mut bijection = IdBijection::default();
+	let fixture_session_id = fixture[0].session_id.as_str();
+	let preamble = &produced[..produced.len() - fixture.len()];
+	let preamble_last_seq = preamble.last().map_or(0, |event| event.session_seq);
+	let preamble_last_event_id = preamble.last().map(|event| event.event_id.clone());
+
+	// Task 212 (isolated-tail ruling): the fixture is a self-contained
+	// 4-event tail with no preceding session history, but `execute_turn`
+	// always produces a real preamble (catalog publish, user turn, one
+	// pre-tool assembly round, the initial provider request) ahead of it.
+	// Four structural-context field classes are excluded from literal
+	// fixture comparison below and replaced with production-rule
+	// assertions instead of being silently dropped:
+	//   1. `session_seq` continues the real preamble contiguously.
+	//   2. `causation_event_id` on the first tail event chains to the real
+	//      preceding preamble event (later tail events chain within the tail itself
+	//      and already match the fixture literally).
+	//   3. `idempotency_key` is the runner's `{turn_id}:{event_id}` derivation, not
+	//      the fixture's descriptive placeholder.
+	//   4. `visibility` is the runner's actual per-event-type default, not the
+	//      fixture's recorded value.
+	// Everything else -- entity ids (incl. `provider_event_id`), payload,
+	// ordering, and timestamps -- remains fixture-literal.
+	for (i, (produced_event, fixture_event)) in tail.iter().zip(fixture.iter()).enumerate() {
+		assert!(
+			produced_event.entity_ids.assemble_id.is_none()
+				&& produced_event.entity_ids.context_item_ids.is_empty(),
+			"the unsupported-tool tail carries no assembly-scoped entity ids, matching the fixture"
+		);
+
+		assert_eq!(
+			produced_event.session_seq,
+			preamble_last_seq + 1 + i as u64,
+			"{:?} session_seq must contiguously continue the real preamble",
+			produced_event.event_type
+		);
+		if i == 0 {
+			assert_eq!(
+				produced_event.causation_event_id, preamble_last_event_id,
+				"the first tail event must chain causation to the real preceding preamble event"
+			);
+		} else {
+			assert_eq!(
+				produced_event.causation_event_id, fixture_event.causation_event_id,
+				"{:?} causation_event_id must match the canonical fixture past the first tail event",
+				produced_event.event_type
+			);
+		}
+		assert_eq!(
+			produced_event.idempotency_key,
+			format!(
+				"{}:{}",
+				produced_event
+					.turn_id
+					.as_ref()
+					.expect("tail events are turn-scoped")
+					.as_str(),
+				produced_event.event_id.as_str()
+			),
+			"{:?} idempotency_key must be the runner's turn_id:event_id derivation",
+			produced_event.event_type
+		);
+		assert_eq!(
+			produced_event.visibility,
+			expected_tail_visibility(produced_event.event_type.clone()),
+			"{:?} visibility must match the runner's production default for this event type",
+			produced_event.event_type
+		);
+
+		let mut normalized = bijection.normalize_session(produced_event, fixture_session_id);
+		normalized.session_seq = fixture_event.session_seq;
+		normalized.causation_event_id = fixture_event.causation_event_id.clone();
+		normalized.idempotency_key = fixture_event.idempotency_key.clone();
+		normalized.visibility = fixture_event.visibility.clone();
+		assert_eq!(
+			&normalized, fixture_event,
+			"{:?} must match the canonical fixture byte-for-byte after session_id normalization and \
+			 the isolated-tail exclusions (task 212)",
+			produced_event.event_type
+		);
 	}
 
-	// The A4 lifecycle oracle: exercised on the fixture's own canonical
-	// stream (this lane does not own `validation.rs`, so this call
-	// documents that the produced *shape* — a 4-event
-	// observed/requested/rejected/error chain — satisfies the same
-	// oracle the fixture does, without re-deriving A4's internals here.
-	validate_unsupported_tool_lifecycle(&expected, &catalog::slice0_catalog())
-		.expect("canonical unsupported-tool fixture passes its own lifecycle oracle");
+	// The lifecycle oracle runs against the PRODUCED events, not a
+	// manually constructed request.
+	validate_unsupported_tool_lifecycle(produced, &catalog::slice0_catalog())
+		.expect("the runner's own produced unsupported-tool tail must pass the lifecycle oracle");
+
+	cleanup_workspace(&workspace_root);
 }
 
 // ---------------------------------------------------------------------
@@ -359,14 +542,14 @@ async fn out_of_root_read_arguments_produce_a_typed_failure_not_a_panic() {
 		.await
 		.expect("create session");
 
-	let ids = RealIdFactory::new();
+	let ids = successor_kernel::id_factory::RealIdFactory::new();
 	let ctx = TurnContext::new(session.session_id.clone(), ids.turn_id(), ids.request_id());
 	let tool_call_id = ids.tool_call_id();
 	let frame_sink = FrameSink::new(KernelFrameStream::new());
 	let mut trace = successor_kernel::turn_trace::TurnTrace::new();
 	let provider = ScriptedProviderExecutor::new(
 		"anthropic",
-		ProviderApiShapeV0::AnthropicMessages,
+		successor_protocol::provider::ProviderApiShapeV0::AnthropicMessages,
 		"claude-fixture",
 		[],
 	);
@@ -374,7 +557,7 @@ async fn out_of_root_read_arguments_produce_a_typed_failure_not_a_panic() {
 		client,
 		frame_sink,
 		Arc::new(ids) as Arc<dyn IdFactory>,
-		Arc::new(RealClock) as Arc<dyn Clock>,
+		Arc::new(successor_kernel::id_factory::RealClock) as Arc<dyn Clock>,
 		provider,
 		&workspace_root,
 	);
@@ -387,6 +570,7 @@ async fn out_of_root_read_arguments_produce_a_typed_failure_not_a_panic() {
 			&tool_call_id,
 			"read",
 			&serde_json::json!({ "path": "../../../etc/passwd" }),
+			None,
 			None,
 		)
 		.await;
@@ -421,36 +605,361 @@ fn runner_lifecycle_state_rejects_skipping_the_tool_dispatch_step() {
 }
 
 // ---------------------------------------------------------------------
-// Successful-turn structural replay (Dissent ruling 4).
+// Successful-turn byte-identity oracle (task 210, Option B): full-DTO
+// comparison of raw events, project_session projection, and frames
+// against the canonical fixtures, under one bijection for session_id/
+// assemble_id/context_item_id.
 // ---------------------------------------------------------------------
 
+/// Builds the [`ScriptedIdFactory`] for the successful-turn replay by
+/// deriving every fixture-observable literal value directly from the
+/// typed fixture (never hand-transcribed), in this runner's own call
+/// order (confirmed against `runner.rs`'s `execute_turn`/`assemble_round`/
+/// `dispatch_tool_call` source): `event_id` is 1:1 with the fixture's own
+/// event stream in order (every appended event, including
+/// `tool_catalog.published`, mints its id via one `event_id()` call
+/// immediately before append); `turn_id`/`request_id`/`catalog_id` are
+/// single shared values; `message_id`/`tool_call_id` interleave real,
+/// fixture-observed values with placeholders at the positions this
+/// runner mints but never persists (a tool round's own `round_message_id`
+/// is discarded, and the final round's `round_tool_call_id` is minted but
+/// unused since no tool call occurs); `provider_event_id` is minted three
+/// times (once per tool round, plus once for the final round) and persisted
+/// only on the final round's `provider_response.recorded` `entity_ids` (the two
+/// tool-round mints are never persisted); `source_envelope_id`/`artifact_id`/
+/// kernel `trace_id` are
+/// fully real, in fixture order.
+fn scripted_ids_for_successful_turn() -> ScriptedIdFactory {
+	let fixture = fixtures::raw_events_successful_turn();
+	let by_type = |t: raw_event::RawEventType| {
+		fixture
+			.iter()
+			.find(|e| e.event_type == t)
+			.unwrap_or_else(|| panic!("fixture must contain a {t:?} event"))
+	};
+
+	// Builds the [`ScriptedClock`] for the successful-turn replay. This
+	// runner's clock consumption is NOT 1:1 with raw event appends (task
+	// 211/212 root cause): `frame_fields()` mints its own
+	// `self.clock.now()` tick for every kernel frame it builds, and that
+	// tick becomes the frame's persisted `ts` directly -- except for
+	// `turn_started`, whose `ts` is overridden by the already-captured
+	// `turn_started_at` before emission, so that one tick is genuinely
+	// discarded. Confirmed against `runner.rs`'s `execute_turn`/
+	// `assemble_round`/`dispatch_tool_call`: six of this fixture's ten
+	// frames (`raw_event_appended`, `platform_assemble_started`,
+	// `platform_assemble_completed` x2, `tool_call_requested` x2,
+	// `tool_call_completed` x2, `turn_completed`) consume a tick between
+	// raw-event appends. This builds the exact interleaved sequence: each
+	// raw event's own `occurred_at` in fixture order, with a frame's own
+	// `ts` (from `kernel-frame-stream.json`) spliced in at each point
+	// `frame_fields()` is called, and a discarded placeholder for
+	// `turn_started`'s.
+	let event_ids: Vec<String> = fixture
+		.iter()
+		.map(|e| e.event_id.as_str().to_owned())
+		.collect();
+	let turn_id = fixture
+		.iter()
+		.find_map(|e| e.turn_id.as_ref())
+		.expect("at least one fixture event carries a turn_id")
+		.as_str()
+		.to_owned();
+	let request_id = fixture[0].request_id.as_str().to_owned();
+	let catalog_id = by_type(raw_event::RawEventType::ToolCatalogPublished)
+		.payload
+		.get("catalog_id")
+		.and_then(|v| v.as_str())
+		.expect("tool_catalog.published payload carries catalog_id")
+		.to_owned();
+
+	let user_turn = by_type(raw_event::RawEventType::UserTurnRecorded);
+	let provider_response = by_type(raw_event::RawEventType::ProviderResponseRecorded);
+	let assistant_turn = by_type(raw_event::RawEventType::AssistantTurnRecorded);
+	let message_ids = [
+		user_turn
+			.entity_ids
+			.message_id
+			.as_ref()
+			.expect("user_turn.recorded carries message_id")
+			.as_str()
+			.to_owned(),
+		"msg_00000000-0000-4000-8000-000000000f01".to_owned(), // round 1 (search_files): ephemeral
+		"msg_00000000-0000-4000-8000-000000000f02".to_owned(), // round 2 (read): ephemeral
+		provider_response
+			.entity_ids
+			.message_id
+			.as_ref()
+			.expect("provider_response.recorded carries message_id")
+			.as_str()
+			.to_owned(),
+		assistant_turn
+			.entity_ids
+			.message_id
+			.as_ref()
+			.expect("assistant_turn.recorded carries message_id")
+			.as_str()
+			.to_owned(),
+	];
+
+	let tool_call_events: Vec<&raw_event::RawEventV0> = fixture
+		.iter()
+		.filter(|e| e.event_type == raw_event::RawEventType::ProviderToolCallObserved)
+		.collect();
+	assert_eq!(tool_call_events.len(), 2, "the canonical fixture has exactly two tool rounds");
+	let tool_call_ids = [
+		tool_call_events[0]
+			.entity_ids
+			.tool_call_id
+			.as_ref()
+			.expect("tool_call_id")
+			.as_str()
+			.to_owned(),
+		tool_call_events[1]
+			.entity_ids
+			.tool_call_id
+			.as_ref()
+			.expect("tool_call_id")
+			.as_str()
+			.to_owned(),
+		"tool_00000000-0000-4000-8000-000000000f03".to_owned(), // final round: minted, unused
+	];
+
+	let tool_results: Vec<&raw_event::RawEventV0> = fixture
+		.iter()
+		.filter(|e| e.event_type == raw_event::RawEventType::ToolResultRecorded)
+		.collect();
+	assert_eq!(tool_results.len(), 2, "the canonical fixture has exactly two tool results");
+	let source_envelope_ids = [
+		user_turn
+			.entity_ids
+			.source_envelope_id
+			.as_ref()
+			.expect("source_envelope_id")
+			.as_str()
+			.to_owned(),
+		tool_results[0]
+			.entity_ids
+			.source_envelope_id
+			.as_ref()
+			.expect("source_envelope_id")
+			.as_str()
+			.to_owned(),
+		tool_results[1]
+			.entity_ids
+			.source_envelope_id
+			.as_ref()
+			.expect("source_envelope_id")
+			.as_str()
+			.to_owned(),
+		assistant_turn
+			.entity_ids
+			.source_envelope_id
+			.as_ref()
+			.expect("source_envelope_id")
+			.as_str()
+			.to_owned(),
+	];
+	let artifact_ids = [
+		tool_results[0]
+			.entity_ids
+			.artifact_id
+			.as_ref()
+			.expect("artifact_id")
+			.as_str()
+			.to_owned(),
+		tool_results[1]
+			.entity_ids
+			.artifact_id
+			.as_ref()
+			.expect("artifact_id")
+			.as_str()
+			.to_owned(),
+	];
+
+	let provider_requests: Vec<&raw_event::RawEventV0> = fixture
+		.iter()
+		.filter(|e| e.event_type == raw_event::RawEventType::ProviderRequestBuilt)
+		.collect();
+	assert_eq!(
+		provider_requests.len(),
+		3,
+		"the canonical fixture has exactly three provider rounds"
+	);
+	let assembly_requests: Vec<&raw_event::RawEventV0> = fixture
+		.iter()
+		.filter(|e| e.event_type == raw_event::RawEventType::AssemblyRequested)
+		.collect();
+	assert_eq!(
+		assembly_requests.len(),
+		3,
+		"the canonical fixture has exactly three assembly rounds"
+	);
+	let trace_ids = [
+		assembly_requests[0]
+			.entity_ids
+			.trace_id
+			.as_ref()
+			.expect("trace_id")
+			.as_str()
+			.to_owned(),
+		provider_requests[0]
+			.entity_ids
+			.trace_id
+			.as_ref()
+			.expect("trace_id")
+			.as_str()
+			.to_owned(),
+		assembly_requests[1]
+			.entity_ids
+			.trace_id
+			.as_ref()
+			.expect("trace_id")
+			.as_str()
+			.to_owned(),
+		provider_requests[1]
+			.entity_ids
+			.trace_id
+			.as_ref()
+			.expect("trace_id")
+			.as_str()
+			.to_owned(),
+		assembly_requests[2]
+			.entity_ids
+			.trace_id
+			.as_ref()
+			.expect("trace_id")
+			.as_str()
+			.to_owned(),
+		provider_requests[2]
+			.entity_ids
+			.trace_id
+			.as_ref()
+			.expect("trace_id")
+			.as_str()
+			.to_owned(),
+		provider_response
+			.entity_ids
+			.trace_id
+			.as_ref()
+			.expect("trace_id")
+			.as_str()
+			.to_owned(),
+	];
+
+	ScriptedIdFactory::builder()
+		.event_ids(event_ids)
+		.turn_id(turn_id)
+		.request_id(request_id)
+		.catalog_ids([catalog_id])
+		.message_ids(message_ids)
+		.tool_call_ids(tool_call_ids)
+		.provider_event_ids([
+			"pevt_00000000-0000-4000-8000-000000000001".to_owned(),
+			"pevt_00000000-0000-4000-8000-000000000002".to_owned(),
+			provider_response
+				.entity_ids
+				.provider_event_id
+				.as_ref()
+				.expect("provider_response.recorded carries provider_event_id")
+				.as_str()
+				.to_owned(),
+		])
+		.source_envelope_ids(source_envelope_ids)
+		.artifact_ids(artifact_ids)
+		.trace_ids(trace_ids)
+		.frame_ids(
+			fixtures::kernel_frame_stream()
+				.iter()
+				.map(|f| f.frame_id.as_str().to_owned()),
+		)
+		.build()
+}
+
+/// Builds the [`ScriptedClock`] for the successful-turn replay: one
+/// `occurred_at` per fixture event, in fixture order (this runner mints
+/// exactly one timestamp per raw event append, confirmed against
+/// `runner.rs`).
+/// Builds the [`ScriptedClock`] for the successful-turn replay. This
+/// runner's clock consumption is NOT 1:1 with raw event appends (task
+/// 211/212 root cause): `frame_fields()` mints its own `self.clock.now()`
+/// tick for every kernel frame it builds, and that tick becomes the
+/// frame's persisted `ts` directly -- except for `turn_started`, whose
+/// `ts` is overridden by the already-captured `turn_started_at` before
+/// emission, so that one tick is genuinely discarded. Confirmed against
+/// `runner.rs`'s `execute_turn`/`assemble_round`/`dispatch_tool_call`:
+/// six of this fixture's ten frames (`raw_event_appended`,
+/// `platform_assemble_started`, `platform_assemble_completed` x2,
+/// `tool_call_requested` x2, `tool_call_completed` x2, `turn_completed`)
+/// consume a tick between raw-event appends. This builds the exact
+/// interleaved sequence: each raw event's own `occurred_at` in fixture
+/// order, with a frame's own `ts` (from `kernel-frame-stream.json`)
+/// spliced in at each point `frame_fields()` is called, and a discarded
+/// placeholder for `turn_started`'s.
+fn scripted_clock_for_successful_turn() -> ScriptedClock {
+	let events = fixtures::raw_events_successful_turn();
+	let frames = fixtures::kernel_frame_stream();
+	let ts = |i: usize| events[i].occurred_at.clone();
+	let frame_ts = |kind: kernel_frame::KernelFrameKindV0, nth: usize| {
+		frames
+			.iter()
+			.filter(|f| f.kind == kind)
+			.nth(nth)
+			.expect("frame exists in kernel-frame-stream.json")
+			.ts
+			.clone()
+	};
+	ScriptedClock::new([
+		ts(0),
+		ts(1),
+		"1970-01-01T00:00:00Z".to_owned(),
+		frame_ts(kernel_frame::KernelFrameKindV0::RawEventAppended, 0),
+		frame_ts(kernel_frame::KernelFrameKindV0::PlatformAssembleStarted, 0),
+		ts(2),
+		ts(3),
+		frame_ts(kernel_frame::KernelFrameKindV0::PlatformAssembleCompleted, 0),
+		ts(4),
+		ts(5),
+		frame_ts(kernel_frame::KernelFrameKindV0::ToolCallRequested, 0),
+		ts(6),
+		ts(7),
+		ts(8),
+		ts(9),
+		frame_ts(kernel_frame::KernelFrameKindV0::ToolCallCompleted, 0),
+		ts(10),
+		ts(11),
+		ts(12),
+		ts(13),
+		frame_ts(kernel_frame::KernelFrameKindV0::ToolCallRequested, 1),
+		ts(14),
+		ts(15),
+		ts(16),
+		ts(17),
+		frame_ts(kernel_frame::KernelFrameKindV0::ToolCallCompleted, 1),
+		ts(18),
+		ts(19),
+		frame_ts(kernel_frame::KernelFrameKindV0::PlatformAssembleCompleted, 1),
+		ts(20),
+		ts(21),
+		ts(22),
+		frame_ts(kernel_frame::KernelFrameKindV0::TurnCompleted, 0),
+	])
+}
+
 #[tokio::test]
-async fn successful_turn_reproduces_the_fixtures_event_type_sequence_and_frame_kind_sequence() {
+async fn successful_turn_reproduces_the_fixtures_raw_events_projection_and_frames_at_full_byte_depth()
+ {
 	let server = TestServer::start("successful-turn").await;
 	let client = server.client();
 	let workspace_root = seed_workspace("successful-turn");
 
-	// Scripted so the loop deterministically walks locator -> read ->
-	// final, matching the canonical fixture's shape exactly (contract
-	// §9, Dissent ruling 5's bound).
-	let ids =
-		ScriptedIdFactory::new((1..=40u32).map(|n| format!("evt_20000000-0000-4000-8000-{n:012}")));
-	// A single shared queue can't type-check against every `IdFactory`
-	// method's distinct return type with mismatched prefixes, so instead
-	// we drive the real production `RealIdFactory` here: this test's
-	// contract is the *shape* of the produced sequence (event types,
-	// frame kinds, and their pairing), not literal byte identity against
-	// platform- and kernel-minted opaque identifiers, which the C1
-	// precedent already establishes as out of scope for this kind of
-	// cross-run comparison (`rebind_to_session`).
-	let _ = ids;
-	let real_ids = Arc::new(RealIdFactory::new());
-	let clock = Arc::new(RealClock);
+	let ids = scripted_ids_for_successful_turn();
+	let clock = scripted_clock_for_successful_turn();
 
 	let provider = ScriptedProviderExecutor::new(
 		"anthropic",
-		ProviderApiShapeV0::AnthropicMessages,
-		"claude-fixture",
+		successor_protocol::provider::ProviderApiShapeV0::AnthropicMessages,
+		"claude-sonnet-4-5",
 		[
 			ScriptedRound::ToolUse {
 				tool_name:             "search_files".to_owned(),
@@ -459,67 +968,235 @@ async fn successful_turn_reproduces_the_fixtures_event_type_sequence_and_frame_k
 			},
 			ScriptedRound::ToolUse {
 				tool_name:             "read".to_owned(),
-				arguments:             serde_json::json!({ "path": "packages/coding-agent/src/context/concept-graph.ts" }),
+				arguments:             serde_json::json!({ "path": "packages/coding-agent/src/context/concept-graph.ts", "max_bytes": 200000 }),
 				provider_tool_call_id: "toolu_01_fixture_read".to_owned(),
 			},
 			ScriptedRound::Final {
-				text: "The concept graph resolver lives in \
-				       packages/coding-agent/src/context/concept-graph.ts."
+				text:    "The concept graph resolver fixture coordinates concept context retrieval \
+				          and reports degraded/no-context conditions explicitly."
+					.to_owned(),
+				summary: "Inspected packages/coding-agent/src/context/concept-graph.ts and explained \
+				          the concept graph resolver fixture."
 					.to_owned(),
 			},
 		],
 	);
 
 	let frame_sink = FrameSink::new(KernelFrameStream::new());
-	let runner = TurnRunner::new(client, frame_sink, real_ids, clock, provider, &workspace_root);
+	let runner = TurnRunner::new(
+		client,
+		frame_sink,
+		Arc::new(ids) as Arc<dyn IdFactory>,
+		Arc::new(clock) as Arc<dyn Clock>,
+		provider,
+		&workspace_root,
+	);
 
-	let outcome = runner
+	let attempt = runner
 		.execute_turn(TurnInput {
-			user_text: "Where is the concept graph resolver defined?".to_owned(),
+			user_text:      "Find and read the concept graph resolver; explain what it does."
+				.to_owned(),
+			assembly_query: Some("concept graph resolver".to_owned()),
 		})
-		.await
+		.await;
+
+	assert!(attempt.trace.succeeded());
+	let assistant_text = attempt
+		.outcome
+		.clone()
 		.expect("a fully scripted, bounded, real-platform turn must complete");
+	assert!(!assistant_text.is_empty());
 
-	assert!(outcome.trace.succeeded());
-	assert!(!outcome.assistant_text.is_empty());
-
-	let produced_types: Vec<raw_event::RawEventType> = outcome
-		.trace
-		.events()
-		.iter()
-		.map(|event| event.event_type.clone())
-		.collect();
-	let expected_types: Vec<raw_event::RawEventType> = fixtures::raw_events_successful_turn()
-		.iter()
-		.map(|event| event.event_type.clone())
-		.collect();
+	let produced_events = attempt.trace.events();
+	let fixture_events = fixtures::raw_events_successful_turn();
 	assert_eq!(
-		produced_types, expected_types,
-		"the runner's raw event_type sequence must match the canonical successful-turn fixture \
-		 exactly"
+		produced_events.len(),
+		fixture_events.len(),
+		"produced event count must match the canonical fixture exactly"
 	);
 
-	let produced_kinds: Vec<kernel_frame::KernelFrameKindV0> = outcome
-		.trace
-		.frames()
-		.iter()
-		.map(|frame| frame.kind.clone())
-		.collect();
-	let expected_kinds: Vec<kernel_frame::KernelFrameKindV0> = fixtures::kernel_frame_stream()
-		.iter()
-		.map(|frame| frame.kind.clone())
-		.collect();
+	// Bijection scope: session_id, assemble_id, context_item_id. Every
+	// other id-like field is compared literally below.
+	let mut bijection = IdBijection::default();
+	let fixture_session_id = fixture_events[0].session_id.as_str();
+	let mut normalized_events = Vec::with_capacity(produced_events.len());
+	let mut idempotency_keys: std::collections::HashSet<String> =
+		std::collections::HashSet::with_capacity(produced_events.len());
+	for (produced_event, fixture_event) in produced_events.iter().zip(fixture_events.iter()) {
+		let mut normalized = bijection.normalize_session(produced_event, fixture_session_id);
+		if let (Some(produced_assemble), Some(fixture_assemble)) =
+			(&produced_event.entity_ids.assemble_id, &fixture_event.entity_ids.assemble_id)
+		{
+			bijection.record("assemble_id", produced_assemble.as_str(), fixture_assemble.as_str());
+			normalized.entity_ids.assemble_id = Some(successor_protocol::ids::AssembleId::from_raw(
+				fixture_assemble.as_str().to_owned(),
+			));
+		}
+		assert_eq!(
+			produced_event.entity_ids.context_item_ids.len(),
+			fixture_event.entity_ids.context_item_ids.len(),
+			"{:?} context_item_ids count must match the canonical fixture",
+			produced_event.event_type
+		);
+		let mut normalized_context_items =
+			Vec::with_capacity(produced_event.entity_ids.context_item_ids.len());
+		for (produced_item, fixture_item) in produced_event
+			.entity_ids
+			.context_item_ids
+			.iter()
+			.zip(fixture_event.entity_ids.context_item_ids.iter())
+		{
+			bijection.record("context_item_id", produced_item.as_str(), fixture_item.as_str());
+			normalized_context_items.push(successor_protocol::ids::ContextItemId::from_raw(
+				fixture_item.as_str().to_owned(),
+			));
+		}
+		normalized.entity_ids.context_item_ids = normalized_context_items;
+		if let Some(serde_json::Value::Array(ids)) = normalized.payload.get_mut("context_item_ids") {
+			for id in ids.iter_mut() {
+				if let serde_json::Value::String(s) = id
+					&& let Some(mapped) = bijection.produced_to_fixture.get(s)
+				{
+					*s = mapped.clone();
+				}
+			}
+		}
+		let expected_idempotency_key = match &produced_event.turn_id {
+			Some(turn_id) => format!("{}:{}", turn_id.as_str(), produced_event.event_id.as_str()),
+			None => {
+				format!("{}:{}", produced_event.session_id.as_str(), produced_event.event_id.as_str())
+			},
+		};
+		assert_eq!(
+			produced_event.idempotency_key, expected_idempotency_key,
+			"{:?} idempotency_key must be the runner's turn_id:event_id (session_id:event_id when \
+			 turn-less) derivation",
+			produced_event.event_type
+		);
+		assert!(
+			idempotency_keys.insert(produced_event.idempotency_key.clone()),
+			"{:?} idempotency_key {:?} must be unique within the session",
+			produced_event.event_type,
+			produced_event.idempotency_key
+		);
+		normalized.idempotency_key = fixture_event.idempotency_key.clone();
+		assert_eq!(
+			&normalized, fixture_event,
+			"{:?} must match the canonical fixture byte-for-byte after \
+			 session_id/assemble_id/context_item_id normalization",
+			produced_event.event_type
+		);
+		normalized_events.push(normalized);
+	}
+
 	assert_eq!(
-		produced_kinds, expected_kinds,
-		"the runner's emitted frame kind sequence must match kernel-frame-stream.json exactly"
+		idempotency_keys.len(),
+		produced_events.len(),
+		"every produced idempotency_key must be unique within the session"
 	);
 
-	// Sanity: `project_session` must not reject this lane's own freshly
-	// produced events (byte-identical comparison against
-	// `expected-session-projection.json` is covered separately, on the
-	// canonical fixture's own events, by the accepted A4 replay test).
-	successor_protocol::replay::project_session(outcome.trace.events())
+	// Duplicate-append idempotency (task-214 ruling): resubmitting the exact
+	// same append request must be a no-op that reports duplicate = true and
+	// returns the original session_seq rather than minting a new event.
+	let last_produced = produced_events
+		.last()
+		.expect("successful turn produces at least one event");
+	let duplicate_request = successor_protocol::platform_api::RawEventAppendRequestV0 {
+		schema_version:     last_produced.schema_version.clone(),
+		event_id:           last_produced.event_id.clone(),
+		idempotency_key:    last_produced.idempotency_key.clone(),
+		event_type:         last_produced.event_type.clone(),
+		session_id:         last_produced.session_id.clone(),
+		turn_id:            last_produced.turn_id.clone(),
+		request_id:         last_produced.request_id.clone(),
+		occurred_at:        last_produced.occurred_at.clone(),
+		producer:           last_produced.producer.clone(),
+		causation_event_id: last_produced.causation_event_id.clone(),
+		correlation_id:     last_produced.correlation_id.clone(),
+		entity_ids:         last_produced.entity_ids.clone(),
+		visibility:         last_produced.visibility.clone(),
+		redaction:          last_produced.redaction.clone(),
+		payload:            last_produced.payload.clone(),
+		artifact:           last_produced.artifact.clone(),
+	};
+	let duplicate_response = server
+		.client()
+		.append_event(&duplicate_request)
+		.await
+		.expect(
+			"re-appending an already-stored idempotency_key must succeed as a duplicate, not error",
+		);
+	assert!(
+		duplicate_response.duplicate,
+		"re-appending {:?} with the same idempotency_key must report duplicate = true",
+		last_produced.event_type
+	);
+	assert_eq!(
+		duplicate_response.session_seq, last_produced.session_seq,
+		"a duplicate append must return the original session_seq, not mint a new one"
+	);
+
+	// Frames: full byte depth against kernel-frame-stream.json, under the
+	// same bijection (frames carry `assemble_id` in `entity_ids` for the
+	// PlatformAssembleStarted/Completed kinds -- task 210's bijection
+	// scope applies here identically to the raw-events loop above, since
+	// the platform mints the same real assemble_id observed there;
+	// `context_item_ids` and `session_id` are normalized the same way).
+	let produced_frames = attempt.trace.frames();
+	let fixture_frames = fixtures::kernel_frame_stream();
+	assert_eq!(
+		produced_frames.len(),
+		fixture_frames.len(),
+		"produced frame count must match kernel-frame-stream.json exactly"
+	);
+	for (produced_frame, fixture_frame) in produced_frames.iter().zip(fixture_frames.iter()) {
+		let mut normalized_frame = produced_frame.clone();
+		normalized_frame.session_id =
+			successor_protocol::ids::SessionId::from_raw(fixture_session_id.to_owned());
+		if let (Some(produced_assemble), Some(fixture_assemble)) =
+			(&produced_frame.entity_ids.assemble_id, &fixture_frame.entity_ids.assemble_id)
+		{
+			bijection.record("assemble_id", produced_assemble.as_str(), fixture_assemble.as_str());
+			normalized_frame.entity_ids.assemble_id = Some(
+				successor_protocol::ids::AssembleId::from_raw(fixture_assemble.as_str().to_owned()),
+			);
+		}
+		let mut normalized_context_items =
+			Vec::with_capacity(produced_frame.entity_ids.context_item_ids.len());
+		for (produced_item, fixture_item) in produced_frame
+			.entity_ids
+			.context_item_ids
+			.iter()
+			.zip(fixture_frame.entity_ids.context_item_ids.iter())
+		{
+			bijection.record("context_item_id", produced_item.as_str(), fixture_item.as_str());
+			normalized_context_items.push(successor_protocol::ids::ContextItemId::from_raw(
+				fixture_item.as_str().to_owned(),
+			));
+		}
+		normalized_frame.entity_ids.context_item_ids = normalized_context_items;
+		assert_eq!(
+			&normalized_frame, fixture_frame,
+			"frame {:?} must match kernel-frame-stream.json byte-for-byte \
+			 (frame_id/raw_event_id/kind/payload/timestamp are all kernel-controlled and literal in \
+			 this lane's KernelFrameV0 shape)",
+			produced_frame.kind
+		);
+	}
+
+	// project_session on the NORMALIZED produced stream must be
+	// byte-identical to expected-session-projection.json (the ruling's
+	// third comparison target). project_session on the canonical
+	// fixture's own events is separately covered by the accepted A4
+	// fixture-replay test.
+	let produced_projection = successor_protocol::replay::project_session(&normalized_events)
 		.expect("a completed, well-formed turn's own events must project cleanly");
+	let expected_projection = fixtures::expected_session_projection();
+	assert_eq!(
+		produced_projection, expected_projection,
+		"project_session on this run's own (session_id/assemble_id/context_item_id-normalized) \
+		 events must be byte-identical to expected-session-projection.json"
+	);
 
 	cleanup_workspace(&workspace_root);
 }

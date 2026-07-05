@@ -137,87 +137,89 @@ If completed (task 243-D2PreExecutionDissent, verdict PROCEED-WITH-CONDITIONS, c
 
 ## Execute
 
-- [ ] Re-read `.oh/workstreams/successor-agent-kernel/SLICE-0-DISPATCH-MAP.md` Wave D, §6 Gate 5, §7 risk matrix, and model-binding table.
-- [ ] Re-read `.oh/workstreams/successor-agent-kernel/SLICE-0-CONTRACT.md` CLI statelessness, resume, SSE/JSON output rules, and §13 acceptance criteria.
-- [ ] Re-read `.oh/workstreams/successor-agent-kernel/SLICE-0-REVIEW-LEARNINGS.md` §1–13 in full.
-- [ ] Re-read accepted C7/C8 packets and tests, especially `slice0_kernel_contract.rs` and `slice0_kernel_rpc.rs`.
-- [ ] Re-read D1 packet and accepted D1 implementation/review evidence before beginning CLI smoke.
-- [ ] Complete required-before-execute dissent and record verdict/evidence in this packet before implementation.
-- [ ] Confirm exact existing/absent D2 test files again at execution checkout before writing tests.
-- [ ] Implement only D2-owned test files, or amend the packet first if dissent chooses to extend an existing non-owned replay suite.
-- [ ] Keep deterministic smoke provider-free or fixture/scripted-only.
-- [ ] Keep live-provider smoke opt-in and separately recorded; never make live credentials required for deterministic acceptance.
-- [ ] Add sentinel leak scan coverage for platform store, artifacts, traces, SSE, CLI stdout/stderr, JSON output, and failure diagnostics.
-- [ ] Preserve fixture sovereignty and accepted C7/C8/protocol/platform oracles.
-- [ ] Run focused D2 validation commands and capture exact exits.
-- [ ] Run or obtain orchestrator Rust check evidence appropriate for Gate 5.
-- [ ] Update this packet's review/delivery sections with observed evidence only.
+- [x] Dispatch map Wave D/§6 Gate 5/§7 + model-binding table re-read (executor preflights, tasks 244/246/250).
+- [x] Contract CLI statelessness/resume/SSE-JSON rules/§13 re-read.
+- [x] Review learnings §1–13 re-read in full.
+- [x] Accepted C7/C8 packets and `slice0_kernel_contract.rs`/`slice0_kernel_rpc.rs` read; harness construction mirrored from the RPC suite.
+- [x] D1 packet + accepted implementation read before CLI smoke; D1-owned exit buckets 2/3/4 not re-proven.
+- [x] Dissent completed and recorded BEFORE execution: task 243 at `6646a8848`, committed `aba9519bf`.
+- [x] Existing/absent files confirmed at checkout: protocol suite NO-TOUCH honored (zero edits); accepted B4 `slice0_replay.rs` untouched; three NEW D2 files created.
+- [x] Mid-lane STOP honored (learnings §11): task 244 stopped on the missing platform serve seam instead of working around; adjudication task 245 (ALLOW, Option A) granted exactly one additive `pub async fn serve(listener, license, state)` in platform `http.rs`; completion task 246 stayed inside that grant; the reopened diff passed its DEDICATED review gate (task 247 scope 1: within-change-set).
+- [x] Deterministic smoke is scripted-seams-only: real compiled CLI binary (`CARGO_BIN_EXE`, `env_clear()`) in `--kernel-url` mode against real platform + real kernel HTTP servers on ephemeral loopback with scripted provider/ID/clock; no CLI lib calls, no in-process Anthropic bootstrap.
+- [x] Live-provider smoke opt-in and separately recorded: `#[ignore]` + `SUCCESSOR_LIVE_PROVIDER_SMOKE=1` + non-empty `ANTHROPIC_API_KEY`; skipped in default runs (1 ignored); deterministic acceptance never requires credentials.
+- [x] Sentinel leak-scan coverage per ruling 243.4 ownership: CLI stdout/stderr + SSE stdout (cli_smoke); kernel HTTP/SSE bytes + kernel-produced raw-event/replay-snapshot payloads via reconnected store handles (end_to_end, incl. pre-failure persisted payloads recovered from the failing turn's own SSE frames); platform HTTP responses incl. 401, raw checkpointed SQLite DB/WAL/SHM bytes, artifacts, snapshot/replay JSON, trace-index bytes (platform_replay); failure diagnostics redacted — surface/class/offsets only, proven by firing tests (task 250).
+- [x] Fixture sovereignty preserved; C7/C8/protocol/platform oracles untouched and not duplicated.
+- [x] Focused validation quoted in `agent://244`/`agent://246`/`agent://250`: 21 CLI tests, end_to_end 3 (2 passed + live ignored) then green post-fix, platform_replay green, clippy/fmt clean across touched crates.
+- [x] Orchestrator gate `make check-rs` exit 0 at `11664f8fd`, `4eeac9478`, `16351bd35`.
+- [x] Packet review/delivery sections updated with observed evidence only (this update; closes task 247 finding 3).
 
 ## Code Review
 
-Status: pending.
+Status: completed (round 1 + fix round closed).
 
 Reviewer binding: `slice0-reviewer` / `openai-codex/gpt-5.5`, `thinking-level=high`.
 
 Review must verify:
-- [ ] Dissent completed before code execution.
-- [ ] Only D2-owned test files changed, or packet/dispatch amendment explicitly authorized any existing-suite extension.
-- [ ] Existing accepted tests were not weakened, deleted, refactored into looser assertions, or contradicted.
-- [ ] Deterministic smoke asserts contract surfaces: IDs, JSON/SSE shape, error envelopes, replay behavior, and no secret leakage.
-- [ ] Live-provider path is opt-in, env-only, redacted, and separately recorded.
-- [ ] Unsupported-tool residual law is respected; no `project_session` oracle on unsupported-tool streams.
-- [ ] Gate 5 leak scan covers platform store, artifacts, traces, SSE, and CLI output.
+- [x] Dissent completed before code execution (task 243 recorded at `aba9519bf`).
+- [x] Only D2-owned files changed + the task-245-authorized reopen; dedicated reopen gate verdict: within-change-set.
+- [x] Existing accepted tests unweakened/untouched (verified via diff; A5/B4/C7/C8/D1 suites zero edits).
+- [x] Deterministic smoke asserts contract surfaces: 3-hop ID preservation (store→frames→stdout), byte-exact SSE stdout vs directly received bytes, typed error envelope pass-through, cross-process resume/inspect freshness, replay determinism, sentinel non-leak.
+- [x] Live-provider path opt-in, env-only, redacted, separately recorded (wiring verified; run evidence = orchestrator obligation under Gate 5).
+- [x] Unsupported-tool residual law respected; no `project_session` oracle on unsupported-tool streams (grep-verified, task 248).
+- [x] Gate 5 leak scan covers all five ruled surfaces after the task-250 trace-surface addition.
 
-Verdict: pending.
+Verdict: round 1 (task 247 at `16351bd35`…`4eeac9478` scope) incorrect with three P2s — (1) platform_replay and (2) end_to_end leak-scan assertions echoed scanned payloads on failure (would print sentinels), (3) this packet's delivery section pending. Reopen gate (scope 1): within-change-set, explicit. Closures: P2 1-2 by task 250 / commit `16351bd35` — shared `assert_sentinel_absent` helper reporting surface, sentinel class, count, and byte offset/length only; firing behavior proven by temporary injected-sentinel tests whose panic output contained zero sentinel bytes (instrumentation removed); kernel trace-surface scan added in the same commit. P2 3 closed by this packet update. A5 precedent: mechanical application of named findings with empirical firing proof, not separately re-reviewed (recorded residual).
 
 ## Drift Review
 
-Status: pending.
+Status: completed.
 
 Drift reviewer binding: `slice0-drift-reviewer` / `openai-codex/gpt-5.5`, `thinking-level=high`.
 
 Drift review must verify:
-- [ ] D2 remains smoke/integration validation, not an implementation lane or contract amendment lane.
-- [ ] The smoke does not become a weaker competing oracle against accepted protocol/platform/kernel tests.
-- [ ] File collision decisions match the dissent verdict and dispatch ownership is updated if necessary.
-- [ ] D2 consumes D1 behavior rather than inventing a separate CLI/test-only path.
-- [ ] Deterministic and live evidence are separated.
+- [x] D2 stayed a validation lane; the single src change was the adjudicated task-245 reopen, not a contract amendment.
+- [x] Smoke composes accepted oracles without competing: no duplicate/looser versions of protocol/platform/kernel assertions.
+- [x] File-collision decisions match the dissent verdict (protocol no-touch; new platform_replay file; B4 untouched).
+- [x] D2 consumes real D1 behavior (spawned compiled binary, ruled grammar) — no test-only CLI path.
+- [x] Deterministic and live evidence separated (live: ignored-by-default, distinct env gates, separate packet record).
 
-Verdict: pending.
+Verdict: minor drift (task 249 at `4eeac9478`), authority boundary clear — sole gap was missing kernel trace-surface leak-scan evidence vs ruling 243.4's surface assignment; closed by task 250 / `16351bd35` (raw-event payload + replay-snapshot scans through reconnected store handles in both the full-stack and transport-failure tests). STOP-and-route pattern explicitly confirmed followed; inherited law visible (zero-event 422 asserted over HTTP, resume/inspect as separate processes never continuation, C7 oracle law not duplicated).
 
 ## Superego Review
 
-Status: pending.
+Status: completed.
 
 Superego binding: `slice0-superego-reviewer` / `openai-codex/gpt-5.5`, `thinking-level=high`.
 
 Superego must challenge:
-- [ ] Whether the smoke is strong enough to justify Gate 5 closure or merely proves happy-path execution.
-- [ ] Whether existing accepted suites were subtly weakened by additive-looking edits.
-- [ ] Whether leak-scan coverage can miss credentials in store rows, artifacts, traces, SSE, CLI stdout/stderr, JSON, or failure diagnostics.
-- [ ] Whether live-provider gating can contaminate deterministic acceptance or developer environments.
-- [ ] Whether D2 overclaims session continuation, replay behavior, or unsupported-tool projection beyond accepted law.
+- [x] Smoke strength adjudicated sufficient for Gate 5: black-box binary spawn, real stores, byte-exact SSE, cross-process freshness, failure-path coverage — not happy-path-only.
+- [x] Accepted suites verified unweakened (`git diff --name-only` over accepted suites empty).
+- [x] Leak-scan coverage adjudicated per ruling 243.4 across store rows, artifacts, traces (post task 250), SSE, CLI streams, failure diagnostics.
+- [x] Live gating cannot contaminate deterministic acceptance (ignored-by-default; env gates; no default network dependence).
+- [x] No overclaims: attach/inspect never continuation; replay claims scoped to scripted turns; unsupported-tool projection untouched.
 
-Verdict: pending.
+Verdict: ALLOW (task 248 at `4eeac9478`; full per-ruling table in `agent://248-D2SuperegoReview`). All task-243 rulings + the ten forbidden patterns adjudicated honored (the SSE measurement proxy included — instrument outside the production path, not a forbidden relay); 243.5 partially-honored solely because the live-smoke RUN evidence is a separate Gate 5/orchestrator obligation: execute behind `SUCCESSOR_LIVE_PROVIDER_SMOKE=1` + `ANTHROPIC_API_KEY` and record command/date/env-gate names/observed result (no secret values) in this packet. Governance sequence (dissent→partial→STOP→adjudication→completion→dedicated reopen gate) explicitly verified in history.
 
 ## Delivery
 
-Status: pending.
+Status: accepted (deterministic scope). Final Slice 0 acceptance additionally requires the separately-recorded live provider smoke below.
 
-To fill after execution:
+Evidence:
 - Changed files:
-  - pending
+  - NEW `crates/successor-cli/tests/slice0_cli_smoke.rs` (6 tests), NEW `crates/successor-kernel/tests/slice0_end_to_end.rs` (2 + 1 ignored live), NEW `crates/successor-context-platform/tests/slice0_platform_replay.rs`; adjudicated reopen: `crates/successor-context-platform/src/http.rs` (+1 additive `serve()`); `crates/successor-cli/Cargo.toml` granted dev-dep + `Cargo.lock`. Commits `11664f8fd` (partial + STOP), `4eeac9478` (completion + reopen), `16351bd35` (review fixes).
 - Validation evidence:
-  - pending
+  - 21 successor-cli tests green; kernel + platform suites green with live smoke ignored by default; clippy/fmt clean; `make check-rs` exit 0 at each commit.
 - Dissent evidence:
-  - pending
+  - Task 243 PROCEED-WITH-CONDITIONS recorded in this packet; seam adjudication task 245 (ALLOW, Option A) in `agent://245-D2CliSmokeSeamAdjudication`.
 - Review evidence:
-  - pending
+  - Code `agent://247-D2CodeReviewWithReopenGate` (reopen: within-change-set; three P2s closed — tasks 250 + this update); fix evidence `agent://250-D2LeakScanRedactionFix`.
 - Drift evidence:
-  - pending
+  - `agent://249-D2DriftReview` (minor drift, closed by `16351bd35`; boundary clear).
 - Superego evidence:
-  - pending
+  - `agent://248-D2SuperegoReview` (ALLOW).
 - Gate 5 leak-scan evidence:
-  - pending
+  - Sentinels `d2-memex-license-sentinel-...`/`sk-ant-d2-sentinel-...` scanned as raw bytes across: CLI stdout/stderr + SSE stdout; kernel HTTP/SSE bytes + persisted raw-event/replay-snapshot payloads (incl. pre-failure payloads on the transport-failure path); platform HTTP responses (incl. 401), checkpointed SQLite DB/WAL/SHM, artifacts, snapshot/replay JSON, trace-index. Failure diagnostics redacted (surface/class/offsets only; firing-proof in `agent://250`).
+- Live provider smoke (Gate 5 / final acceptance obligation):
+  - PENDING ORCHESTRATOR RUN — user-gated: requires `SUCCESSOR_LIVE_PROVIDER_SMOKE=1` + real `ANTHROPIC_API_KEY`; record command, date, env-gate names, observed result here (never secret values).
 - Residuals routed:
-  - pending
+  - P2 redaction closures per A5 precedent (not separately re-reviewed; firing proof recorded); SSE measurement proxy accepted as instrument (task 248); session semantics / RealIdFactory / A4 routing / zero-event 422 remain as recorded C-wave+D1 residuals for post-Slice-0 work.

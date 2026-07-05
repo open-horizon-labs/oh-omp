@@ -81,58 +81,59 @@ If completed (task 203-C7PreExecutionDissent, verdict ALLOW / PROCEED-WITH-CONDI
 ## Execute
 
 Checklist:
-- [ ] owned files only, plus explicit C8 `lib.rs` module grant and disclosed Cargo bootstrap artifacts if authorized
-- [ ] shared protocol IDs/DTOs imported from `successor-protocol`; no local RawEvent/KernelFrame/provider/tool DTO clones
-- [ ] no forbidden shortcuts: no local semantic assembly, no provider credential persistence, no inline upstream component implementations
-- [ ] tests/checks added in `crates/successor-kernel/tests/slice0_kernel_contract.rs`
-- [ ] targeted validation passed (`cargo test -p successor-kernel slice0_kernel_contract` or package-local equivalent, then orchestrator `make check-rs` before review)
-- [ ] named risks retired or routed, including lifecycle order, unsupported-tool rejection, credential no-echo, and A4 residual handling
-- [ ] model binding verified for execution agent
-- [ ] fixture sovereignty preserved; no fixture/contract edits
+- [x] owned files only (runner.rs, state_machine.rs, id_factory.rs, turn_trace.rs + granted tests/slice0_kernel_contract.rs); no Cargo changes; TurnInput assembly-query seam ruled in-scope by task 216
+- [x] shared protocol IDs/DTOs imported from `successor-protocol`; no local DTO clones (drift tasks 206/224)
+- [x] no forbidden shortcuts: no local semantic assembly, no credential persistence, no publish_with bypass (source-level guard tested), no retry/resume/RPC
+- [x] tests in granted `tests/slice0_kernel_contract.rs`: 5 contract tests incl. both replay oracles at ruled strength
+- [x] targeted validation + orchestrator `make check-rs` exit 0 at `78f672ef8` and `51253b59d`
+- [x] named risks retired or routed: lifecycle order proven byte-identically; unsupported-tool rejection proven on the PRODUCED stream; credential no-echo held; A4 residual stays routed (oracle never calls project_session on that stream)
+- [x] model binding verified (`slice0-executor`, Sonnet 5; tasks 204/205/209/211/213/215/217/220/221/222)
+- [x] fixture sovereignty preserved BY GOVERNANCE: two contradictions surfaced and resolved via approved sovereign amendments `1db794108` (search_files values, pre-C7) and `abe0fcb44` (degradation arrays; dissent task 218 + human acceptance + sovereignty ratified in task 225)
 
 Changed files:
-- Pending execution.
+- `crates/successor-kernel/src/{runner.rs, state_machine.rs, id_factory.rs, turn_trace.rs}`, new `tests/slice0_kernel_contract.rs`; commits `7703f59ec` (lane), `3504e8aa5` (oracle revision), `78f672ef8` (lint gate), `51253b59d` (doc closure)
 
 Validation evidence:
-- Pending execution.
+- Both oracles at full ruled strength: 23/23 raw events (task-210 bijection over platform-minted ids + task-214 idempotency exclusion with production assertions), 10/10 frames vs kernel-frame-stream.json, serialized project_session byte-identical to expected-session-projection.json; unsupported-tool via execute_turn with the task-212 four-class exclusion, each pinned by production-rule assertions, validate_unsupported_tool_lifecycle on the PRODUCED stream. 186+ kernel tests; `make check-rs` exit 0.
 
 ## Code Review
 
-Reviewer: `slice0-reviewer`
+Reviewer: `slice0-reviewer` (round 1 task 207 at `7703f59ec`; round 2 task 223 at `78f672ef8`)
 Reviewer model: `openai-codex/gpt-5.5:high`
-Verdict: pending
+Verdict: round 1 incorrect (two P1s), closed; round 2 PASS (`correct`, zero findings, 0.87 — reviewer re-ran the contract suite)
 
 Findings:
-- Pending execution.
+- [P1] successful-turn oracle compared only type/kind sequences, not bytes; [P1] unsupported-tool fallback validated the fixture, not the produced stream.
 
 Fixes applied:
-- Pending execution.
+- Tasks 209-222 under four binding Superego adjudications (210 bijection, 212 isolated-tail, 214 idempotency/visibility/projection_version, 216 assembly payloads); genuine runner defects fixed en route (visibility table, PROJECTION_VERSION, provider_event_id threading, context_item_ids, frame refs/causation/entity_ids at all 10 sites, phase-shaped payloads); sovereign fixture amendment #2 (`abe0fcb44`).
 
 ## Drift Review
 
 Original aim: exact Slice 0 lifecycle runner over accepted platform/provider/tool/frame seams.
-Current work: pending execution.
-Gap: pending.
-Verdict: pending
-Authority boundary: pending
+Current work: tasks 204-222 through `51253b59d`.
+Gap: round 1 (task 206) minor drift — the weakened oracle was an unrecorded acceptance-rule change; round 2 (task 224): recording gap closed — the oracle law is a documented ruling trail in the test module with production-rule assertions.
+Verdict: aligned (round 2)
+Authority boundary: clear
 
 ## Superego Review
 
-Reviewer: `slice0-superego-reviewer`
+Reviewer: `slice0-superego-reviewer` (round 1 task 208; round 2 task 225 at `78f672ef8`; adjudications tasks 210/212/214/216/218)
 Reviewer model: `openai-codex/gpt-5.5:high`
-Verdict: pending
+Verdict: round 1 REVISE, closed; round 2 REVISE on one doc-only item, closed
 
 Frame risks:
-- Pending execution.
+- Round 1: execute_turn dropped TurnTrace on failure (observability black hole) — closed: TurnAttempt threads the trace through every exit, TurnOutcome removed, fallback retired. Round 2: stale module-doc paragraph contradicting the implemented oracle — closed by `51253b59d` (doc-only, implements the named finding verbatim). Amendment #2 sovereignty RATIFIED in task 225 (byte-minimal, within ruled scope).
 
 Required corrections:
-- Pending execution.
+- All applied; evidence recorded in this update.
 
 ## Delivery
 
-Status: pending execution
+Status: accepted
 Residual risks:
-- C7 depends on every prior C lane and must execute late.
-- A4 unsupported-tool projection residual is explicitly routed here for lifecycle evidence and to A4/A2 for reopen if accepted projection still rejects; no runner workaround permitted.
+- RealIdFactory mints UUID-shaped ids via std hashing (no uuid dep permitted) — accepted Slice 0 residual for a single-tenant local kernel; revisit before any multi-tenant use.
+- A4 unsupported-tool projection semantics remain routed to A4/A2 (the oracle deliberately never calls project_session on that stream).
+- Oracle law (tasks 210/212/214/216) is durable interpretation recorded in the test module doc; future fixture adjudications must consult it.
 Human verification needed:
-- None before execution; pre-execution dissent ruling required.
+- Fixture amendment #2 human acceptance GRANTED (recorded in tasks 218/219 and commit `abe0fcb44`).

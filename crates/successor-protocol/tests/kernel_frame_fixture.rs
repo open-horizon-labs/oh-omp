@@ -459,17 +459,17 @@ fn tool_catalog_matches_canonical_fixture_shape() {
 	assert_eq!(catalog.schema_version, "kernel.tool_catalog.v0");
 	assert_eq!(catalog.catalog_id, "catalog_00000000-0000-4000-8000-000000000001");
 	assert_eq!(catalog.projection_version, "slice0.projection.v0");
-	assert_eq!(catalog.tools.len(), 34);
+	assert_eq!(catalog.tools.len(), 35);
 	assert_eq!(catalog.tools[0].name, "search_files");
 	assert_eq!(catalog.tools[0].category, "safe_read_discovery");
 	assert_eq!(catalog.tools[0].status, ToolStatusV0::Executable);
-	assert_eq!(catalog.tools[4].name, "ast_grep");
-	assert_eq!(catalog.tools[4].status, ToolStatusV0::StubRejected);
+	assert_eq!(catalog.tools[5].name, "ast_grep");
+	assert_eq!(catalog.tools[5].status, ToolStatusV0::StubRejected);
 	assert_eq!(serialized, fixture_value);
 	assert!(serialized.get("session_id").is_none());
 	assert!(serialized.get("tool_count").is_none());
 	assert!(serialized.get("metadata").is_none());
-	assert!(serialized["tools"][4].get("input_schema").is_none());
+	assert!(serialized["tools"][5].get("input_schema").is_none());
 }
 
 #[test]

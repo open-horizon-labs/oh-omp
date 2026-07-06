@@ -1,5 +1,5 @@
 //! Integration coverage for the `list_dir` tool, added per the
-//! agent://269 Lane 3 dissent ruling.
+//! `agent://269` Lane 3 dissent ruling.
 //!
 //! Exercises the crate's public surface only:
 //! `successor_kernel::tools::list_dir` and `successor_kernel::tools::catalog`.

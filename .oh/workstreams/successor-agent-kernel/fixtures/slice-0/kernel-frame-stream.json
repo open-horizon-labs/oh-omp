@@ -102,7 +102,7 @@
     "raw_event_session_seq": 15,
     "causation_frame_id": "frame_00000000-0000-4000-8000-000000000006",
     "entity_ids": { "message_id": null, "tool_call_id": "tool_00000000-0000-4000-8000-000000000002", "source_envelope_id": null, "artifact_id": null, "assemble_id": null, "context_item_ids": [], "trace_id": null, "error_id": null, "provider_event_id": null },
-    "payload": { "tool_name": "read", "arguments": { "path": "packages/coding-agent/src/context/concept-graph.ts", "max_bytes": 200000 } }
+    "payload": { "tool_name": "read", "arguments": { "path": "packages/coding-agent/src/context/concept-graph.ts" } }
   },
   {
     "schema_version": "kernel.frame.v0",

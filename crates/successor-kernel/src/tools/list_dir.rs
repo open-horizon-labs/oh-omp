@@ -105,9 +105,8 @@ struct ListDirArtifactPayload<'a> {
 /// Arguments for the `list_dir` tool.
 ///
 /// Lists the direct children of one relative directory under the
-/// workspace root (<agent://269> Lane 3 dissent ruling). Any field not
-/// listed here is rejected as a malformed argument rather than silently
-/// ignored.
+/// workspace root. Any field not listed here is rejected as a malformed
+/// argument rather than silently ignored.
 #[derive(Debug, Clone, serde::Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ListDirArgs {

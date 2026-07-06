@@ -117,9 +117,9 @@ fn map_read_io(err: std::io::Error) -> ReadRejection {
 /// Arguments for the `read` tool.
 ///
 /// Reads the full contents of a file, or an optional 1-indexed line range,
-/// under the workspace root (<agent://269> Lane 3 dissent ruling). Any
-/// field not listed here (including a legacy `max_bytes`) is rejected as a
-/// malformed argument rather than silently ignored.
+/// under the workspace root. Any field not listed here (including a
+/// legacy `max_bytes`) is rejected as a malformed argument rather than
+/// silently ignored.
 #[derive(Debug, Clone, serde::Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ReadArgs {

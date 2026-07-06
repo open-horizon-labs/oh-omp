@@ -970,7 +970,7 @@ async fn successful_turn_reproduces_the_fixtures_raw_events_projection_and_frame
 			},
 			ScriptedRound::ToolUse {
 				tool_name:             "read".to_owned(),
-				arguments:             serde_json::json!({ "path": "packages/coding-agent/src/context/concept-graph.ts", "max_bytes": 200000 }),
+				arguments:             serde_json::json!({ "path": "packages/coding-agent/src/context/concept-graph.ts" }),
 				provider_tool_call_id: "toolu_01_fixture_read".to_owned(),
 			},
 			ScriptedRound::Final {

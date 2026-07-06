@@ -370,7 +370,7 @@ fn normalize_response_extracts_finish_reason_and_text_for_every_shape() {
 /// Drift-proof contract (<agent://252-ToolSchemaAmendmentDissent>, ruling 4/6;
 /// strengthened per post-hoc review <agent://254-ToolSchemaAmendmentReview>,
 /// finding 1, closing dissent ruling 252.4's residual gap; extended per
-/// agent://269 Lane 3 dissent ruling for the new `list_dir` tool and the
+/// `agent://269` Lane 3 dissent ruling for the new `list_dir` tool and the
 /// widened `read` tool): a schema with an extra unrelated property, a
 /// missing expected property, or hand-drifted content must FAIL this test.
 /// Two independent checks enforce that:

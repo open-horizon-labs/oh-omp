@@ -78,6 +78,39 @@ fn ask_rejects_a_session_id_flag_that_does_not_exist_on_the_ruled_grammar() {
 }
 
 #[test]
+fn ask_rejects_model_combined_with_kernel_url() {
+	let output = run_cli(
+		&[
+			"ask",
+			"--workspace-root",
+			".",
+			"--prompt",
+			"hi",
+			"--kernel-url",
+			"http://127.0.0.1:1",
+			"--model",
+			"claude-sonnet-5",
+		],
+		&[],
+	);
+	assert_eq!(
+		output.status, 2,
+		"--model configures the in-process bootstrap only; combining it with --kernel-url must be a \
+		 usage error: {output:?}"
+	);
+}
+
+#[test]
+fn ask_help_documents_the_model_flag_and_its_default() {
+	let output = run_cli(&["ask", "--help"], &[]);
+	assert_eq!(output.status, 0);
+	assert!(
+		output.stdout.contains("--model") && output.stdout.contains("claude-sonnet-5"),
+		"ask --help must document the owner-authorized --model flag and its default: {output:?}"
+	);
+}
+
+#[test]
 fn ask_rejects_platform_url_combined_with_kernel_url() {
 	let output = run_cli(
 		&[

@@ -4,7 +4,7 @@
 //!
 //! Grammar is exact per the binding ruling:
 //! ```text
-//! successor-cli ask --workspace-root <path> --prompt <text> [--kernel-url <url>] [--platform-url <url>] [--format text|sse]
+//! successor-cli ask --workspace-root <path> --prompt <text> [--model <name>] [--kernel-url <url>] [--platform-url <url>] [--format text|sse]
 //! successor-cli resume --session-id <ses_...> [--kernel-url <url>] [--platform-url <url>] [--format json|text]
 //! successor-cli inspect session --session-id <ses_...> [--kernel-url <url>] [--platform-url <url>] [--format json|text]
 //! ```
@@ -21,6 +21,11 @@
 //! - An env-var alias for `--kernel-url` -- clap's `env` feature is not enabled
 //!   for this crate (ruling 4), and no `env(..)` attribute is used here, so
 //!   `--kernel-url` can only ever be set from the command line.
+//!
+//! `ask --model` is an owner-authorized post-D1 grammar widening
+//! (2026-07-06): it configures the in-process bootstrap's provider model, so
+//! it is rejected together with `--kernel-url` (an external kernel fixes its
+//! model at construction, server-side).
 
 use std::path::PathBuf;
 
@@ -95,6 +100,13 @@ pub struct AskArgs {
 	/// meaning when this invocation is the one bootstrapping the kernel.
 	#[arg(long)]
 	pub platform_url: Option<String>,
+
+	/// Anthropic model for the in-process kernel's provider factory
+	/// (owner-authorized post-D1 widening). Only meaningful when this
+	/// invocation bootstraps the kernel, so it conflicts with
+	/// `--kernel-url`.
+	#[arg(long, default_value = crate::client::DEFAULT_MODEL, conflicts_with = "kernel_url")]
+	pub model: String,
 
 	#[arg(long, value_enum, default_value_t = AskFormat::Text)]
 	pub format: AskFormat,

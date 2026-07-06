@@ -37,10 +37,11 @@ use crate::{
 	render,
 };
 
-/// Default Anthropic model for the in-process bootstrap's provider factory.
-/// Slice 0's ruled grammar has no `--model` flag; this is an internal
-/// wiring default, not a contract-facing value.
-const DEFAULT_MODEL: &str = "claude-sonnet-4-5";
+/// Default Anthropic model for the in-process bootstrap's provider factory:
+/// the clap default for `ask --model` (owner-authorized post-D1 widening,
+/// 2026-07-06) and the fixed wiring for `resume`/`inspect` bootstraps, which
+/// never run turns.
+pub const DEFAULT_MODEL: &str = "claude-sonnet-5";
 /// Default `max_tokens` for the in-process bootstrap's provider factory.
 const DEFAULT_MAX_TOKENS: u32 = 8192;
 
@@ -116,6 +117,7 @@ async fn establish_kernel(
 	kernel_url: Option<String>,
 	platform_url_override: Option<String>,
 	workspace_root: PathBuf,
+	model: String,
 ) -> Result<KernelHandle, CliFailure> {
 	if let Some(url) = kernel_url {
 		return Ok(KernelHandle {
@@ -148,7 +150,7 @@ async fn establish_kernel(
 		ids,
 		clock,
 		workspace_root,
-		DEFAULT_MODEL,
+		model,
 		DEFAULT_MAX_TOKENS,
 		process_env_lookup,
 	);
@@ -203,9 +205,10 @@ impl SseFrameAccumulator {
 /// fresh, runner-owned session (C8 session-semantics ruling -- there is no
 /// way to target an existing session here, by design).
 pub async fn run_ask(args: AskArgs) -> Result<(), u8> {
-	let handle = establish_kernel(args.kernel_url, args.platform_url, args.workspace_root)
-		.await
-		.map_err(CliFailure::report)?;
+	let handle =
+		establish_kernel(args.kernel_url, args.platform_url, args.workspace_root, args.model)
+			.await
+			.map_err(CliFailure::report)?;
 
 	let response = handle
 		.http
@@ -280,9 +283,14 @@ pub async fn run_ask(args: AskArgs) -> Result<(), u8> {
 /// `GET /v0/resume/{session_id}`. Never continues or restarts a turn.
 pub async fn run_resume(args: ResumeArgs) -> Result<(), u8> {
 	let workspace_root = current_workspace_root();
-	let handle = establish_kernel(args.kernel_url, args.platform_url, workspace_root)
-		.await
-		.map_err(CliFailure::report)?;
+	let handle = establish_kernel(
+		args.kernel_url,
+		args.platform_url,
+		workspace_root,
+		DEFAULT_MODEL.to_owned(),
+	)
+	.await
+	.map_err(CliFailure::report)?;
 	run_read_only_get(&handle, &format!("/v0/resume/{}", args.session_id), args.format).await
 }
 
@@ -291,9 +299,14 @@ pub async fn run_resume(args: ResumeArgs) -> Result<(), u8> {
 /// never continues or restarts a turn.
 pub async fn run_inspect_session(args: InspectSessionArgs) -> Result<(), u8> {
 	let workspace_root = current_workspace_root();
-	let handle = establish_kernel(args.kernel_url, args.platform_url, workspace_root)
-		.await
-		.map_err(CliFailure::report)?;
+	let handle = establish_kernel(
+		args.kernel_url,
+		args.platform_url,
+		workspace_root,
+		DEFAULT_MODEL.to_owned(),
+	)
+	.await
+	.map_err(CliFailure::report)?;
 	run_read_only_get(&handle, &format!("/v0/sessions/{}", args.session_id), args.format).await
 }
 

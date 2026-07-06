@@ -149,8 +149,18 @@ impl AnthropicAdapter {
 	}
 
 	/// Builds an adapter against `base_url` (test/proxy override).
+	///
+	/// The HTTP client binds its local socket to `0.0.0.0`, forcing IPv4
+	/// connections: temporary environment accommodation (owner-directed,
+	/// 2026-07-06) for hosts with a broken IPv6 route to the Anthropic
+	/// endpoint, where the resolver's IPv6-first connect fails in ~2ms while
+	/// IPv4 succeeds (curl -6 vs -4 differential, api.anthropic.com).
 	pub fn with_base_url(base_url: impl Into<String>, api_key: AnthropicApiKey) -> Self {
-		Self { http: reqwest::Client::new(), base_url: base_url.into(), api_key }
+		let http = reqwest::Client::builder()
+			.local_address(std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED))
+			.build()
+			.expect("IPv4-pinned reqwest client construction must succeed");
+		Self { http, base_url: base_url.into(), api_key }
 	}
 
 	/// Materializes a normalized request into the Anthropic Messages API

@@ -14,7 +14,13 @@
 //! phase, and [`TurnPhase::next`] still returns `None` after
 //! [`TurnPhase::PostRead`] — the tool-round budget is enforced by a
 //! runner-owned counter against [`MAX_EXECUTABLE_TOOL_ROUNDS`], independent
-//! of [`TurnPhase::round_index`].
+//! of [`TurnPhase::round_index`]. Because the runner pins `phase` at
+//! `PostRead` for every round beyond the third, [`TurnState::validate_next`]
+//! legalizes exactly one additional self-cycle on top of the strictly-
+//! advancing phase transitions below: `ToolCompleted(PostRead) ->
+//! Assembling(PostRead)`. No other phase may repeat itself this way — a
+//! pinned self-cycle from `PreTool` or `PostLocator` remains illegal, since
+//! only `PostRead` is ever revisited by the round loop.
 //!
 //! [`TurnState`] transitions are validated by [`TurnState::validate_next`]:
 //! illegal transitions return a typed [`IllegalTransition`] rather than
@@ -181,7 +187,14 @@ impl TurnState {
 			(Self::ProviderRequestBuilt(a), Self::ToolDispatching(b)) => a == b,
 			(Self::ProviderRequestBuilt(_), Self::ProviderResponseRecorded) => true,
 			(Self::ToolDispatching(a), Self::ToolCompleted(b)) => a == b,
-			(Self::ToolCompleted(a), Self::Assembling(b)) => a.next() == Some(b),
+			// The runner pins `phase` at `PostRead` for every tool round beyond
+			// the third (agent://256 dissent ruling, item A): `TurnPhase::next`
+			// returns `None` there, so the strictly-advancing `a.next() ==
+			// Some(b)` check alone would reject that pinned cycle. Legalize
+			// exactly that one self-cycle; every other phase must still advance.
+			(Self::ToolCompleted(a), Self::Assembling(b)) => {
+				a.next() == Some(b) || (a == TurnPhase::PostRead && b == TurnPhase::PostRead)
+			},
 			(Self::ProviderResponseRecorded, Self::AssistantTurnRecorded) => true,
 			(Self::AssistantTurnRecorded, Self::Completed) => true,
 			_ => false,

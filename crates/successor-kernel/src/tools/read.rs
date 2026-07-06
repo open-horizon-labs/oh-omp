@@ -109,6 +109,15 @@ fn map_read_io(err: std::io::Error) -> ReadRejection {
 	}
 }
 
+/// Arguments for the `read` tool: read the full contents of a file under
+/// the workspace root.
+#[derive(Debug, Clone, serde::Deserialize, schemars::JsonSchema)]
+pub struct ReadArgs {
+	/// Path to read, relative to the workspace root.
+	#[serde(default)]
+	pub path: String,
+}
+
 /// Read the whole contents of `relative_path` under the workspace rooted at
 /// `root_path`.
 ///

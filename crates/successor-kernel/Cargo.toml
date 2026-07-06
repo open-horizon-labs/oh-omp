@@ -17,6 +17,12 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Post-acceptance schema amendment (agent://252-ToolSchemaAmendmentDissent,
+# ruling 1): derives real JSON Schemas for the four executable Slice 0 tool
+# argument DTOs (`tools::{search_files,read,find,grep}`) so the published
+# tool catalog carries a non-null `input_schema` per tool. Version pinned to
+# match `successor-protocol`'s existing `schemars` dependency exactly.
+schemars = { version = "0.8", features = ["derive"] }
 thiserror = "2"
 tracing = "0.1"
 # Lane C8 `KernelLocalRpc` (Dissent ruling 1, full-RPC stage): local RPC/SSE

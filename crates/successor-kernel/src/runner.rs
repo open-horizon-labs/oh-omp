@@ -826,17 +826,14 @@ impl<P: ProviderExecutor> TurnRunner<P> {
 	) -> Result<(WireJson, RawEventArtifactRef), String> {
 		match tool_name {
 			"search_files" => {
-				let query = arguments
-					.get("query")
-					.and_then(WireJson::as_str)
-					.unwrap_or_default();
-				let max_matches = arguments
-					.get("max_matches")
-					.and_then(WireJson::as_u64)
-					.unwrap_or(20) as usize;
-				let result =
-					tools::search_files::search_files(&self.workspace_root, query, max_matches)
-						.map_err(|err| err.to_string())?;
+				let args: tools::search_files::SearchFilesArgs =
+					serde_json::from_value(arguments.clone()).map_err(|err| err.to_string())?;
+				let result = tools::search_files::search_files(
+					&self.workspace_root,
+					&args.query,
+					args.max_matches,
+				)
+				.map_err(|err| err.to_string())?;
 				let preview = result
 					.matches
 					.first()
@@ -853,19 +850,17 @@ impl<P: ProviderExecutor> TurnRunner<P> {
 				))
 			},
 			"read" => {
-				let path = arguments
-					.get("path")
-					.and_then(WireJson::as_str)
-					.unwrap_or_default();
-				let content =
-					tools::read::read(&self.workspace_root, path).map_err(|err| err.to_string())?;
+				let args: tools::read::ReadArgs =
+					serde_json::from_value(arguments.clone()).map_err(|err| err.to_string())?;
+				let content = tools::read::read(&self.workspace_root, &args.path)
+					.map_err(|err| err.to_string())?;
 				let text = String::from_utf8_lossy(&content.bytes).into_owned();
 				let preview = text.strip_suffix('\n').unwrap_or(&text);
 				Ok((
 					json!({
 						"source_kind": "tool_result",
 						"tool_name": "read",
-						"path": path,
+						"path": args.path,
 						"truncated": false,
 						"preview": preview,
 					}),
@@ -879,11 +874,9 @@ impl<P: ProviderExecutor> TurnRunner<P> {
 				))
 			},
 			"find" => {
-				let glob = arguments
-					.get("glob")
-					.and_then(WireJson::as_str)
-					.unwrap_or("**/*");
-				let result = tools::find::find(&self.workspace_root, glob, 2_000)
+				let args: tools::find::FindArgs =
+					serde_json::from_value(arguments.clone()).map_err(|err| err.to_string())?;
+				let result = tools::find::find(&self.workspace_root, &args.glob, 2_000)
 					.map_err(|err| err.to_string())?;
 				Ok((
 					json!({ "source_kind": "tool_result", "tool_name": "find", "matches": result.entries }),
@@ -897,11 +890,9 @@ impl<P: ProviderExecutor> TurnRunner<P> {
 				))
 			},
 			"grep" => {
-				let pattern = arguments
-					.get("pattern")
-					.and_then(WireJson::as_str)
-					.unwrap_or_default();
-				let result = tools::grep::grep(&self.workspace_root, pattern, 2_000)
+				let args: tools::grep::GrepArgs =
+					serde_json::from_value(arguments.clone()).map_err(|err| err.to_string())?;
+				let result = tools::grep::grep(&self.workspace_root, &args.pattern, 2_000)
 					.map_err(|err| err.to_string())?;
 				Ok((
 					json!({ "source_kind": "tool_result", "tool_name": "grep", "matches": result.matches }),

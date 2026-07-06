@@ -4,10 +4,89 @@
   "published_at": "2026-06-23T12:00:00Z",
   "projection_version": "slice0.projection.v0",
   "tools": [
-    { "name": "search_files", "category": "safe_read_discovery", "status": "executable", "description": "Locate likely files under the session workspace root." },
-    { "name": "read", "category": "safe_read_discovery", "status": "executable", "description": "Read a relative file under the session workspace root." },
-    { "name": "find", "category": "safe_read_discovery", "status": "executable", "description": "Bounded file listing under the session workspace root." },
-    { "name": "grep", "category": "safe_read_discovery", "status": "executable", "description": "Bounded text search under the session workspace root." },
+    {
+      "name": "search_files",
+      "category": "safe_read_discovery",
+      "status": "executable",
+      "description": "Locate likely files under the session workspace root.",
+      "input_schema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "title": "SearchFilesArgs",
+        "description": "Arguments for the `search_files` tool: a bounded lexical/filename search over the workspace root.",
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "Query terms used to rank candidate file paths. An empty query returns a well-formed empty result set.",
+            "default": ""
+          },
+          "max_matches": {
+            "type": "integer",
+            "format": "uint",
+            "minimum": 0.0,
+            "description": "Maximum number of ranked matches to return.",
+            "default": 20
+          }
+        }
+      }
+    },
+    {
+      "name": "read",
+      "category": "safe_read_discovery",
+      "status": "executable",
+      "description": "Read a relative file under the session workspace root.",
+      "input_schema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "title": "ReadArgs",
+        "description": "Arguments for the `read` tool: read the full contents of a file under the workspace root.",
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Path to read, relative to the workspace root.",
+            "default": ""
+          }
+        }
+      }
+    },
+    {
+      "name": "find",
+      "category": "safe_read_discovery",
+      "status": "executable",
+      "description": "Bounded file listing under the session workspace root.",
+      "input_schema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "title": "FindArgs",
+        "description": "Arguments for the `find` tool: bounded filename discovery under the workspace root.",
+        "type": "object",
+        "properties": {
+          "glob": {
+            "type": "string",
+            "description": "Glob pattern to match relative to the workspace root.",
+            "default": "**/*"
+          }
+        }
+      }
+    },
+    {
+      "name": "grep",
+      "category": "safe_read_discovery",
+      "status": "executable",
+      "description": "Bounded text search under the session workspace root.",
+      "input_schema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "title": "GrepArgs",
+        "description": "Arguments for the `grep` tool: bounded regex line search under the workspace root.",
+        "type": "object",
+        "properties": {
+          "pattern": {
+            "type": "string",
+            "description": "Regex pattern to search for.",
+            "default": ""
+          }
+        }
+      }
+    },
     { "name": "ast_grep", "category": "code_intelligence", "status": "stub_rejected" },
     { "name": "ast_edit", "category": "code_intelligence", "status": "stub_rejected" },
     { "name": "lsp", "category": "code_intelligence", "status": "stub_rejected" },

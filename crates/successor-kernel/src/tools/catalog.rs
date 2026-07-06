@@ -6,7 +6,8 @@
 //! surface [`successor_protocol::fixtures::tool_catalog`]. This module
 //! invents no local schema version, catalog id, tool count, or per-tool
 //! metadata beyond what that fixture specifies — [`slice0_catalog`] is a
-//! thin, typed accessor over it, not a re-derivation.
+//! thin, typed accessor over it, not a re-derivation — with one exception:
+//! `input_schema` (see [`executable_input_schema`]).
 //!
 //! Of the 34 cataloged tools, four are `executable`: `search_files`,
 //! `read`, `find`, and `grep`. This lane implements only `read`
@@ -24,6 +25,21 @@
 //! bash-specific text is hand-authored separately from that template. The
 //! accompanying [`REJECTION_POLICY`] and [`REJECTION_ERROR_CODE`] constants
 //! are likewise taken verbatim from that same fixture.
+//!
+//! ## Post-acceptance amendment: real `input_schema` (<agent://252-ToolSchemaAmendmentDissent>)
+//!
+//! Real Anthropic rejects a tools array whose entries carry
+//! `input_schema: null` with an HTTP 400. [`slice0_catalog`] therefore
+//! overlays a real JSON Schema onto each of the four `executable` tools,
+//! derived directly from the same kernel-local argument DTOs
+//! (`tools::{search_files,read,find,grep}::*Args`) that
+//! [`crate::runner`]'s `execute_tool` deserializes against — never a
+//! hand-authored schema literal. The canonical fixture is amended
+//! (byte-for-byte, generated from that same `schemars` output, never
+//! hand-typed) to carry the identical schema bytes, so
+//! [`slice0_catalog_matches_the_canonical_fixture_exactly`] keeps proving
+//! the two stay in lockstep. `stub_rejected` tools keep `input_schema:
+//! None`, exactly as the fixture pins them.
 
 use successor_protocol::tool_catalog::{ToolCatalogV0, ToolStatusV0};
 
@@ -39,7 +55,26 @@ pub const REJECTION_ERROR_CODE: &str = "tool_not_executable_in_slice0";
 /// `fixtures/slice-0/tool-catalog.json` (34 tools; schema
 /// `kernel.tool_catalog.v0`).
 pub fn slice0_catalog() -> ToolCatalogV0 {
-	successor_protocol::fixtures::tool_catalog()
+	let mut catalog = successor_protocol::fixtures::tool_catalog();
+	for tool in &mut catalog.tools {
+		tool.input_schema = executable_input_schema(&tool.name);
+	}
+	catalog
+}
+
+/// The JSON Schema for an executable Slice 0 tool's arguments, derived
+/// directly from the kernel-local DTO that `execute_tool` deserializes
+/// against (<agent://252-ToolSchemaAmendmentDissent>, ruling 1/4). `None`
+/// for every non-executable (`stub_rejected`/`policy_rejected`) tool.
+fn executable_input_schema(tool_name: &str) -> Option<serde_json::Value> {
+	let schema = match tool_name {
+		"search_files" => schemars::schema_for!(super::search_files::SearchFilesArgs),
+		"read" => schemars::schema_for!(super::read::ReadArgs),
+		"find" => schemars::schema_for!(super::find::FindArgs),
+		"grep" => schemars::schema_for!(super::grep::GrepArgs),
+		_ => return None,
+	};
+	Some(serde_json::to_value(schema).expect("tool argument schema must serialize to JSON"))
 }
 
 /// Look up a single tool's catalog status by name.

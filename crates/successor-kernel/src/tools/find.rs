@@ -210,6 +210,21 @@ struct FindArtifactPayload<'a> {
 	entries: &'a [FindMatch],
 }
 
+/// Arguments for the `find` tool: bounded filename discovery under the
+/// workspace root.
+#[derive(Debug, Clone, serde::Deserialize, schemars::JsonSchema)]
+pub struct FindArgs {
+	/// Glob pattern to match relative to the workspace root.
+	#[serde(default = "FindArgs::default_glob")]
+	pub glob: String,
+}
+
+impl FindArgs {
+	fn default_glob() -> String {
+		"**/*".to_owned()
+	}
+}
+
 /// Bounded filename discovery: match `glob_pattern` against every regular,
 /// non-symlink file under `root_path`.
 ///

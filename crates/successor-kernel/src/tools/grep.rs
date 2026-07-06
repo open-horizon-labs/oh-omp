@@ -116,6 +116,15 @@ struct GrepArtifactPayload<'a> {
 	matches: &'a [GrepMatch],
 }
 
+/// Arguments for the `grep` tool: bounded regex line search under the
+/// workspace root.
+#[derive(Debug, Clone, serde::Deserialize, schemars::JsonSchema)]
+pub struct GrepArgs {
+	/// Regex pattern to search for.
+	#[serde(default)]
+	pub pattern: String,
+}
+
 /// Bounded regex line search: scan every regular, non-symlink,
 /// non-binary-looking file under `root_path`.
 ///

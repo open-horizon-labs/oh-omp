@@ -83,6 +83,9 @@ impl AppState<AnthropicProviderExecutor> {
 	/// `provider_auth_lookup` is normally
 	/// [`crate::config::process_env_lookup`]; tests may inject a map lookup
 	/// instead.
+	/// The same lookup also resolves the optional
+	/// [`crate::config::ANTHROPIC_BASE_URL_ENV`] gateway override; when set,
+	/// the per-attempt adapter posts to `{base}/v1/messages`.
 	#[allow(
 		clippy::too_many_arguments,
 		reason = "one required field per production wiring input; a config struct would just move \
@@ -102,8 +105,14 @@ impl AppState<AnthropicProviderExecutor> {
 			let outcome =
 				resolve_provider_auth(ProviderSlot::Anthropic, |name| provider_auth_lookup(name));
 			let credential = require_provider_credential(&outcome)?.clone();
+			let messages_url = provider_auth_lookup(crate::config::ANTHROPIC_BASE_URL_ENV)
+				.filter(|base| !base.trim().is_empty())
+				.map_or_else(
+					|| crate::provider::anthropic::DEFAULT_ANTHROPIC_MESSAGES_URL.to_owned(),
+					|base| format!("{}/v1/messages", base.trim_end_matches('/')),
+				);
 			Ok(AnthropicProviderExecutor::new(
-				AnthropicAdapter::new(credential),
+				AnthropicAdapter::with_base_url(messages_url, credential),
 				model.clone(),
 				max_tokens,
 			))

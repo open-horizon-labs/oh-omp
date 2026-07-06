@@ -51,6 +51,15 @@ pub const PLATFORM_URL_ENV: &str = "SUCCESSOR_CONTEXT_PLATFORM_URL";
 /// (`http://127.0.0.1:7332/v0`).
 pub const DEFAULT_PLATFORM_URL: &str = "http://127.0.0.1:7332/v0";
 
+/// Optional env var overriding the Anthropic Messages endpoint base URL.
+///
+/// For gateway/proxy deployments: when set and non-empty, the kernel posts to
+/// `{ANTHROPIC_BASE_URL}/v1/messages` instead of the default
+/// [`crate::provider::anthropic::DEFAULT_ANTHROPIC_MESSAGES_URL`]. Resolved
+/// through the same injected env lookup as provider auth (never read directly
+/// from the process environment by callers that inject a lookup).
+pub const ANTHROPIC_BASE_URL_ENV: &str = "ANTHROPIC_BASE_URL";
+
 /// Config error for the platform entitlement plane (Dissent ruling 5).
 ///
 /// Distinct by construction from

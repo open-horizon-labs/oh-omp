@@ -388,12 +388,14 @@ async fn live_smoke_against_the_real_anthropic_messages_api_produces_a_replayabl
 
 	let server = TestServer::start("live").await;
 	let workspace = seed_workspace("live");
+	let provider_model = std::env::var("SUCCESSOR_LIVE_PROVIDER_MODEL")
+		.unwrap_or_else(|_| "claude-opus-4-8".to_owned());
 	let state = AppState::with_anthropic(
 		server.client(),
 		Arc::new(RealIdFactory::new()),
 		Arc::new(RealClock),
 		workspace.clone(),
-		"claude-sonnet-4-5",
+		provider_model.clone(),
 		8192,
 		|name| std::env::var(name).ok(),
 	);
@@ -420,8 +422,10 @@ async fn live_smoke_against_the_real_anthropic_messages_api_produces_a_replayabl
 	assert!(!frames.is_empty(), "expected at least one kernel frame from the live round trip");
 	let terminal_kind = frames.last().expect("non-empty").kind.as_str().to_owned();
 	assert!(
-		terminal_kind == "turn_completed" || terminal_kind == "turn_failed",
-		"expected a normalized terminal frame kind, got {terminal_kind}"
+		terminal_kind == "turn_completed",
+		"live smoke must prove one COMPLETED real provider round trip (Gate 5 criterion 4); a typed \
+		 failure terminal would mask auth/endpoint misconfiguration; got terminal frame kind \
+		 {terminal_kind}"
 	);
 
 	let session_id = frames.first().expect("non-empty").session_id.clone();

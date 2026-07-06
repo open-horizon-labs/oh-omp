@@ -16,9 +16,15 @@
 //! request/tool-call/tool-result projections directly to the fixture as
 //! the single source of truth.
 
-use successor_kernel::provider::projection::{
-	ProjectionError, ProviderBuildInputV0, build_provider_request, normalize_response,
-	normalize_tool_call, project_request_body, project_tool_call, project_tool_result,
+use successor_kernel::{
+	provider::projection::{
+		ProjectionError, ProviderBuildInputV0, build_provider_request, normalize_response,
+		normalize_tool_call, project_request_body, project_tool_call, project_tool_result,
+	},
+	tools::{
+		catalog::slice0_catalog, find::FindArgs, grep::GrepArgs, read::ReadArgs,
+		search_files::SearchFilesArgs,
+	},
 };
 use successor_protocol::{
 	fixtures,
@@ -351,4 +357,94 @@ fn normalize_response_extracts_finish_reason_and_text_for_every_shape() {
 		assert_eq!(response.text, "Read completed.", "text mismatch for {shape:?}");
 		assert_eq!(response.event_type, fixture.normalized_response.event_type);
 	}
+}
+
+/// Drift-proof contract (<agent://252-ToolSchemaAmendmentDissent>, ruling 4/6):
+/// real Anthropic rejects a tools array whose entries carry
+/// `input_schema: null` with an HTTP 400. This asserts the Slice 0
+/// catalog's Anthropic projection never regresses to that shape (or to a
+/// placeholder `{"type":"object"}` with no properties, which would
+/// silently defeat the point) for any executable tool.
+#[test]
+fn every_executable_tool_in_the_anthropic_projection_carries_a_real_non_null_object_schema() {
+	let catalog = slice0_catalog();
+	let projected =
+		project_request_body(&ProviderApiShapeV0::AnthropicMessages, USER_TEXT, &catalog);
+	let tools = projected
+		.get("tools")
+		.and_then(serde_json::Value::as_array)
+		.expect("Anthropic projection must carry a tools array");
+	assert!(!tools.is_empty(), "Slice 0 must publish at least one executable tool");
+
+	let placeholder = serde_json::json!({ "type": "object" });
+
+	for tool in tools {
+		let name = tool
+			.get("name")
+			.and_then(serde_json::Value::as_str)
+			.expect("tool name must be a string");
+		let schema = tool
+			.get("input_schema")
+			.unwrap_or_else(|| panic!("tool {name} must carry an input_schema key"));
+		assert!(!schema.is_null(), "tool {name} must not publish input_schema: null");
+		assert_ne!(schema, &placeholder, "tool {name} must not publish a bare placeholder schema");
+		assert_eq!(
+			schema.get("type").and_then(serde_json::Value::as_str),
+			Some("object"),
+			"tool {name} schema must be a JSON Schema object"
+		);
+		let properties = schema
+			.get("properties")
+			.and_then(serde_json::Value::as_object)
+			.unwrap_or_else(|| panic!("tool {name} schema must declare properties"));
+		assert!(!properties.is_empty(), "tool {name} schema must declare at least one property");
+	}
+}
+
+/// Drift-proof contract (<agent://252-ToolSchemaAmendmentDissent>, ruling 6):
+/// round-trips representative valid and invalid argument JSON through the
+/// same kernel-local DTOs `execute_tool` deserializes against, so a future
+/// change to those DTOs (or to the fixture-published schema) cannot
+/// silently diverge from what the executor actually accepts.
+#[test]
+fn tool_argument_dtos_round_trip_valid_json_and_reject_malformed_json_through_the_same_error_class_execute_tool_uses()
+ {
+	let search: SearchFilesArgs =
+		serde_json::from_value(serde_json::json!({ "query": "concept graph", "max_matches": 5 }))
+			.expect("well-formed search_files arguments must deserialize");
+	assert_eq!(search.query, "concept graph");
+	assert_eq!(search.max_matches, 5);
+
+	let search_defaults: SearchFilesArgs = serde_json::from_value(serde_json::json!({}))
+		.expect("missing search_files arguments must fall back to defaults, not error");
+	assert_eq!(search_defaults.query, "");
+	assert_eq!(search_defaults.max_matches, 20);
+
+	let read: ReadArgs =
+		serde_json::from_value(serde_json::json!({ "path": "a.txt", "max_bytes": 200_000 })).expect(
+			"a read call carrying the documented but executor-ignored max_bytes field must still \
+			 deserialize",
+		);
+	assert_eq!(read.path, "a.txt");
+
+	let find: FindArgs = serde_json::from_value(serde_json::json!({}))
+		.expect("missing find arguments must fall back to the default glob, not error");
+	assert_eq!(find.glob, "**/*");
+
+	let grep: GrepArgs = serde_json::from_value(serde_json::json!({ "pattern": "TODO" }))
+		.expect("well-formed grep arguments must deserialize");
+	assert_eq!(grep.pattern, "TODO");
+
+	// A malformed argument type is rejected, not silently coerced to a
+	// default. `execute_tool` maps this failure exactly the way it maps
+	// every other tool-execution failure: `.map_err(|err| err.to_string())`,
+	// so the error class downstream (`TurnFailure::Protocol(String)`) is
+	// identical regardless of whether the failure came from argument
+	// parsing or from tool execution itself.
+	let rejected: Result<SearchFilesArgs, String> =
+		serde_json::from_value(serde_json::json!({ "max_matches": "not-a-number" }))
+			.map_err(|err| err.to_string());
+	let message = rejected
+		.expect_err("a non-numeric max_matches must be rejected, not silently defaulted to 20");
+	assert!(!message.is_empty());
 }

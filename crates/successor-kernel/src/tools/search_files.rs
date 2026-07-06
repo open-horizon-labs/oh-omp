@@ -122,6 +122,25 @@ fn content_preview(workspace_root: &WorkspaceRoot, relative: &str) -> String {
 	truncate_preview(first_non_empty).0
 }
 
+/// Arguments for the `search_files` tool: a bounded lexical/filename
+/// search over the workspace root.
+#[derive(Debug, Clone, serde::Deserialize, schemars::JsonSchema)]
+pub struct SearchFilesArgs {
+	/// Query terms used to rank candidate file paths. An empty query
+	/// returns a well-formed empty result set.
+	#[serde(default)]
+	pub query:       String,
+	/// Maximum number of ranked matches to return.
+	#[serde(default = "SearchFilesArgs::default_max_matches")]
+	pub max_matches: usize,
+}
+
+impl SearchFilesArgs {
+	const fn default_max_matches() -> usize {
+		20
+	}
+}
+
 /// Bounded lexical/filename search: score every regular, non-symlink file
 /// under `root_path`.
 ///

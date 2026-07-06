@@ -4463,6 +4463,7 @@ dependencies = [
  "globset",
  "regex",
  "reqwest",
+ "schemars",
  "serde",
  "serde_json",
  "successor-context-platform",

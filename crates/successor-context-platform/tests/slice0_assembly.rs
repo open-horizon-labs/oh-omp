@@ -37,7 +37,7 @@ use successor_protocol::{
 	artifact::ArtifactV0,
 	error::ProtocolViolationCode,
 	fixtures,
-	ids::{AssembleId, SessionId, SourceEnvelopeId},
+	ids::{AssembleId, RequestId, SessionId, SourceEnvelopeId, TurnId},
 	platform_api::{
 		AssembleRequestV0, AssemblyResponseV0, AssemblyTraceV0, ContextItemV0,
 		CreateSessionRequestV0, CreatedByV0, RawEventAppendRequestV0, WorkspaceV0,
@@ -540,4 +540,82 @@ async fn get_trace_evicts_the_oldest_entry_once_the_cache_cap_is_exceeded() {
 		service.get_trace(newest).is_some(),
 		"the most recently assembled trace must remain cached"
 	);
+}
+
+// ---------------------------------------------------------------------
+// Continuation (contract §9/§11 amendment, ruling 270): B5's lexical/
+// recency retrieval must surface a session's own prior-turn context on a
+// second turn's `pre_tool` assemble call, instead of the always-empty
+// `no_context` degradation the canonical single-turn fixture pins.
+// ---------------------------------------------------------------------
+
+#[tokio::test]
+async fn assemble_pre_tool_on_a_continuation_turn_surfaces_the_prior_turns_artifact() {
+	let (service, session_id) = seeded_service("continuation-context").await;
+
+	let mut request = request_for(fixtures::assemble_request_pre_tool(), &session_id);
+	request.turn_id =
+		TurnId::try_from("turn_continuation_second".to_owned()).expect("well-formed turn id literal");
+	request.request_id = RequestId::try_from("req_continuation_second".to_owned())
+		.expect("well-formed request id literal");
+
+	let response = service
+		.assemble(&request)
+		.await
+		.expect("continuation assemble must succeed");
+
+	assert!(
+		!response.context_items.is_empty(),
+		"a continuation turn's pre_tool assemble must surface the prior turn's artifact, not \
+		 degrade to no_context: {response:?}"
+	);
+	assert!(
+		response.context_items.iter().any(|item| item.included),
+		"at least one recent-source context item must fit the default budget"
+	);
+	assert!(
+		!response.degradation.iter().any(|d| d.code == "no_context"),
+		"a session with a prior artifact must not report no_context: {:?}",
+		response.degradation
+	);
+	assert!(
+		response
+			.degradation
+			.iter()
+			.any(|d| d.code == "embeddings_unavailable"),
+		"Slice 0 has no embedding backend regardless of recency retrieval succeeding"
+	);
+
+	let trace = service
+		.get_trace(&response.assemble_id)
+		.expect("trace must be present for a just-produced id");
+	assert_eq!(trace.stages.len(), 1);
+	assert_eq!(trace.stages[0].name, "retrieve_recent_sources");
+	assert!(
+		trace.stages[0].output_count >= 1,
+		"the retrieve_recent_sources stage must report the surfaced item(s)"
+	);
+}
+
+#[tokio::test]
+async fn assemble_pre_tool_is_deterministic_across_repeated_continuation_calls() {
+	// Same B5 recency-retrieval path as the continuation test above, but
+	// asserting the determinism contract already pinned for the
+	// required-sources path (see `assemble_is_deterministic_across_repeated_calls`)
+	// also holds for the newly-non-trivial retrieve_recent_sources path.
+	let (service, session_id) = seeded_service("continuation-determinism").await;
+	let request = request_for(fixtures::assemble_request_pre_tool(), &session_id);
+
+	let first = service
+		.assemble(&request)
+		.await
+		.expect("first assemble must succeed");
+	let second = service
+		.assemble(&request)
+		.await
+		.expect("second assemble must succeed");
+
+	assert_context_items_match(&first.context_items, &second.context_items);
+	assert_eq!(first.trace.stages, second.trace.stages);
+	assert_eq!(first.degradation, second.degradation);
 }

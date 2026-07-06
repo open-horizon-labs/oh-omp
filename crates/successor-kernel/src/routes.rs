@@ -212,8 +212,14 @@ pub async fn submit_turn<P: ProviderExecutor + Send + Sync + 'static>(
 		provider,
 		state.workspace_root.clone(),
 	);
+	let session_id = request.session_id.clone();
 	let input: TurnInput = request.into();
-	let mut task = tokio::spawn(async move { runner.execute_turn(input).await });
+	let mut task = tokio::spawn(async move {
+		match session_id {
+			Some(session_id) => runner.continue_turn(input, session_id).await,
+			None => runner.execute_turn(input).await,
+		}
+	});
 
 	// Gate: race the turn's first frame against the turn task finishing
 	// outright. Only the former commits us to an SSE response.

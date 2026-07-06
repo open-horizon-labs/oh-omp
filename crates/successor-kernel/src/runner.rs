@@ -1173,6 +1173,27 @@ impl<P: ProviderExecutor> TurnRunner<P> {
 	/// constructing `self.provider`; this method assumes `self.provider`
 	/// is ready to send requests.
 	pub async fn execute_turn(&self, input: TurnInput) -> TurnAttempt {
+		self.run_turn(input, None).await
+	}
+
+	/// Continues an existing session (contract §9/§11 continuation amendment,
+	/// ruling 270) instead of minting a fresh one. The session's raw-event
+	/// `session_seq` continues from its prior tail, and this turn's first
+	/// event (`tool_catalog.published`) chains its `causation_event_id` to
+	/// that tail rather than starting a new causation chain. Continuing into
+	/// a session with no prior raw events fails closed with
+	/// [`TurnFailure::Protocol`] before any event is appended. This is never
+	/// resume or attach (contract §11): it drives a genuine new turn
+	/// lifecycle appended to the same session stream.
+	pub async fn continue_turn(&self, input: TurnInput, session_id: SessionId) -> TurnAttempt {
+		self.run_turn(input, Some(session_id)).await
+	}
+
+	async fn run_turn(
+		&self,
+		input: TurnInput,
+		continue_session_id: Option<SessionId>,
+	) -> TurnAttempt {
 		let mut trace = TurnTrace::new();
 		// Finding 1 (C7 review): thread the accumulated trace through every
 		// exit path, success or failure, instead of discarding it on the
@@ -1183,24 +1204,41 @@ impl<P: ProviderExecutor> TurnRunner<P> {
 		let result: Result<String, TurnFailure> = async {
 			let mut state = TurnState::NotStarted;
 
-			let session = self
-				.platform
-				.create_session(&CreateSessionRequestV0 {
-					workspace:  WorkspaceV0 {
-						id:        "workspace-1".to_owned(),
-						label:     "Slice 0 workspace".to_owned(),
-						root_hint: self.workspace_root.display().to_string(),
-					},
-					title:      "Slice 0 turn".to_owned(),
-					created_by: CreatedByV0 {
-						client_kind: "kernel".to_owned(),
-						client_id:   "successor-kernel".to_owned(),
-					},
-				})
-				.await
-				.map_err(Self::map_transport)?;
+			let (session_id, catalog_causation_event_id) = if let Some(existing_session_id) =
+				continue_session_id
+			{
+				let snapshot = self
+					.platform
+					.read_snapshot(&existing_session_id)
+					.await
+					.map_err(Self::map_transport)?;
+				let tail_event_id = snapshot.raw_event_ids.last().cloned().ok_or_else(|| {
+					TurnFailure::Protocol(format!(
+						"session {existing_session_id} has no prior raw events; continuation requires a session with at least one completed turn"
+					))
+				})?;
+				(existing_session_id, Some(tail_event_id))
+			} else {
+				let session = self
+					.platform
+					.create_session(&CreateSessionRequestV0 {
+						workspace:  WorkspaceV0 {
+							id:        "workspace-1".to_owned(),
+							label:     "Slice 0 workspace".to_owned(),
+							root_hint: self.workspace_root.display().to_string(),
+						},
+						title:      "Slice 0 turn".to_owned(),
+						created_by: CreatedByV0 {
+							client_kind: "kernel".to_owned(),
+							client_id:   "successor-kernel".to_owned(),
+						},
+					})
+					.await
+					.map_err(Self::map_transport)?;
+				(session.session_id, None)
+			};
 			let ctx = TurnContext {
-				session_id: session.session_id,
+				session_id,
 				turn_id:    self.ids.turn_id(),
 				request_id: self.ids.request_id(),
 			};
@@ -1221,7 +1259,7 @@ impl<P: ProviderExecutor> TurnRunner<P> {
 				request_id:         ctx.request_id.clone(),
 				occurred_at:        self.clock.now(),
 				producer:           kernel_producer(),
-				causation_event_id: None,
+				causation_event_id: catalog_causation_event_id,
 				correlation_id:     ctx.request_id.clone(),
 				entity_ids:         EntityIdsV0::default(),
 				visibility:         visibility_for(&RawEventType::ToolCatalogPublished),

@@ -618,7 +618,7 @@ Happy path:
 
 ```text
 1.  stream frame: turn_started
-2.  raw event: tool_catalog.published (first turn/session or catalog change)
+2.  raw event: tool_catalog.published (once per submitted turn -- see the continuation amendment below; never suppressed on a continuation turn)
 3.  raw event: user_turn.recorded
 4.  raw event: assembly.requested phase=pre_tool
 5.  platform /assemble phase=pre_tool
@@ -648,6 +648,15 @@ Happy path:
 ```
 
 A path-explicit prompt may skip `search_files`, but fixtures must cover the richer locator+read path.
+
+**Continuation (amended by the agent://270 dissent ruling, PROCEED-WITH-CONDITIONS.)** A submitted turn either starts a fresh, runner-owned session (`session_id` absent from the submit-turn request; unchanged Slice 0 default, byte-identical) or continues an existing session (`session_id` present and naming a session with at least one prior raw event). Continuation is a second (or later) full run of the happy path above, appended to the *same* session's raw-event stream, not a shortened or alternate lifecycle:
+
+- The full 28-step happy path repeats verbatim for the continuation turn, including step 2 (`tool_catalog.published`): it is emitted once per *submitted turn*, unconditionally, never suppressed because the session already has a catalog event from an earlier turn.
+- Raw-event `session_seq` continues monotonically from the continued session's prior tail; it is never reset to 1 for the new turn.
+- The continuation turn's first raw event (`tool_catalog.published`) chains its `causation_event_id` to the continued session's prior tail event, instead of the fresh-session `causation_event_id: null` start of a causal chain.
+- A `turn_id`/`request_id` pair is freshly minted for the continuation turn; it is never reused from a prior turn in the same session.
+- Continuing into a session with no prior raw events (never submitted to) fails closed with a typed error before the turn's first frame, exactly like any other pre-stream failure; it never silently starts a fresh session in its place.
+- Prior-turn context enters the continuation turn's provider request through platform `/assemble` only (contract §13 item 3: the kernel never constructs semantic context by parsing transcript text). `/assemble`'s `retrieve_recent_sources` stage (used whenever a phase call carries no `required_source_envelope_ids`) ranks the session's own prior artifact-bearing raw events by recency and surfaces them as context items, excluding the current turn's own artifacts (which do not exist yet at `pre_tool` time in production, and would otherwise double the fresh-session canonical fixture's fixture-pinned zero-item shape). A session with no prior artifacts (the canonical `pre_tool` fixture's shape) still degrades to zero context items.
 
 Unsupported tool path:
 
@@ -698,6 +707,8 @@ On resume:
 6. No local session-file copy is required.
 
 A second kernel/client can inspect/resume platform session state but cannot use the first kernel’s provider credentials.
+
+Resume and attach remain read-only: they inspect or rebuild projections from platform state and never submit a turn, append a raw event, or drive a new turn lifecycle. **Continuation is not resume or attach (amended by the agent://270 dissent ruling, PROCEED-WITH-CONDITIONS.)** `ask --session-id <existing>` submits a genuine new turn (`POST /v0/turns` with `session_id` set) against an existing session; it is a write path through the ordinary submit-turn RPC and turn lifecycle (§9), never a read-only resume/attach call, and never bypasses `/assemble` to reconstruct context from a resumed snapshot or replayed transcript directly.
 
 ## 12. Fixture contract
 

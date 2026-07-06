@@ -214,7 +214,9 @@ pub async fn run_ask(args: AskArgs) -> Result<(), u8> {
 		.http
 		.post(format!("{}/v0/turns", handle.base_url))
 		.header(CONTENT_TYPE, "application/json")
-		.body(serde_json::json!({ "user_text": args.prompt }).to_string())
+		.body(
+			serde_json::json!({ "user_text": args.prompt, "session_id": args.session_id }).to_string(),
+		)
 		.send()
 		.await
 		.map_err(|err| {

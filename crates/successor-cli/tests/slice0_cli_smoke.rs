@@ -735,3 +735,75 @@ fn ask_format_sse_stdout_is_byte_exact_against_a_direct_subscription_to_the_real
 
 	drop(runtime);
 }
+
+// ---------------------------------------------------------------------
+// Continuation (contract §9/§11 amendment, ruling 270): `ask --session-id`
+// against a real, separately-started platform and kernel -- the live
+// two-turn demo the ruling requires, proving the black-box binary genuinely
+// continues a session end-to-end, not just against an in-process double.
+// ---------------------------------------------------------------------
+
+#[test]
+fn ask_with_session_id_continues_a_real_session_across_two_separate_cli_invocations() {
+	let harness = Harness::start(
+		"continuation-live",
+		successful_round("second turn reply from the scripted provider"),
+	);
+
+	let first = run_cli(
+		&[
+			"ask",
+			"--workspace-root",
+			env!("CARGO_MANIFEST_DIR"),
+			"--prompt",
+			"remember the number 42",
+			"--format",
+			"sse",
+			"--kernel-url",
+			&harness.kernel_base_url(),
+		],
+		&[],
+	);
+	assert_eq!(first.status, 0, "the first turn must complete successfully: {first:?}");
+	let first_session_id = extract_session_id(&first.stdout);
+
+	let second = run_cli(
+		&[
+			"ask",
+			"--workspace-root",
+			env!("CARGO_MANIFEST_DIR"),
+			"--prompt",
+			"continue please",
+			"--format",
+			"sse",
+			"--session-id",
+			&first_session_id,
+			"--kernel-url",
+			&harness.kernel_base_url(),
+		],
+		&[],
+	);
+	assert_eq!(
+		second.status, 0,
+		"a continuation turn against a real, separately-started platform and kernel must complete \
+		 successfully: {second:?}"
+	);
+	let second_session_id = extract_session_id(&second.stdout);
+	assert_eq!(
+		second_session_id, first_session_id,
+		"a continuation turn must report the SAME session_id end to end, never mint a new one"
+	);
+
+	// Ground truth, independent of the cli: the platform's own raw-event log
+	// for this session must now span both turns' events.
+	let events_url =
+		format!("{}/v0/sessions/{first_session_id}/events", harness.platform_base_url());
+	let events_body = http_get_body_authenticated(&events_url, LICENSE);
+	let events_text = std::str::from_utf8(&events_body).expect("events body is utf8");
+	assert_eq!(
+		events_text.matches("\"tool_catalog.published\"").count(),
+		2,
+		"tool_catalog.published must fire once per submitted turn, not be suppressed on \
+		 continuation, and not fire more than once per turn: {events_text}"
+	);
+}

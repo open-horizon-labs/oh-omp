@@ -88,7 +88,9 @@ use successor_protocol::{
 use uuid::Uuid;
 
 use crate::{
-	artifacts::SqliteArtifactStore, error::PlatformResult, source_index::find_source_provenance,
+	artifacts::SqliteArtifactStore,
+	error::PlatformResult,
+	source_index::{build_session_indexes, find_source_provenance},
 	store::RawEventAppendStore,
 };
 
@@ -105,17 +107,39 @@ const SEVERITY_INFO: &str = "info";
 const RECOVERY_METHOD_PLATFORM_ARTIFACT: &str = "platform_artifact";
 
 /// [`AssemblyTraceStageV0::input_count`] for the `retrieve_recent_sources`
-/// stage. Slice 0 has no recent-source index (Dissent ruling 2), so this
-/// stage always evaluates exactly one candidate window -- the request's
-/// own query intent -- regardless of session content. Both canonical
-/// fixtures only exercise the always-zero-results shape of this stage, so
-/// this fixed value (rather than one derived from per-session state) is a
-/// disclosed, unpinned choice, not an invented special case.
+/// stage when the session has no prior artifact-bearing raw events (the
+/// canonical `pre_tool` fixture's shape). Slice 0 has no recent-source
+/// index (Dissent ruling 2), so this fixed value stands in for "one
+/// candidate window" when there is nothing to rank. Both canonical
+/// fixtures only exercise this always-zero-results shape, so the fixed
+/// value here is a disclosed, unpinned choice, not an invented special
+/// case. When the session DOES have prior artifact-bearing events (a
+/// continuation turn, contract §9/§11 amendment, ruling 270),
+/// `input_count` instead reports the real candidate count considered by
+/// B5's recency retrieval below.
 const RETRIEVE_RECENT_SOURCES_INPUT_COUNT: u64 = 1;
 
 const NOTE_NO_PRIOR_TOOL_ARTIFACTS: &str = "No prior tool artifacts for this session.";
 const NOTE_NO_REQUIRED_SOURCES_RESOLVED: &str = "No required source artifacts were resolved.";
 const NOTE_INCLUDED_REQUIRED_READ_ARTIFACT: &str = "Included required read artifact.";
+const NOTE_INCLUDED_RECENT_SESSION_ARTIFACT: &str =
+	"Included one recent artifact from a prior turn in this session.";
+
+/// Builds the `retrieve_recent_sources` stage's `notes` from how many
+/// context items B5's recency retrieval resolved (`output_count`). The
+/// zero case (`output_count == 0`) is fixture-pinned (`assemble-response-
+/// pre-tool.json`, a fresh session with no prior artifact-bearing raw
+/// events); the singular and plural cases are disclosed, unpinned
+/// generalizations that only fire on a continuation turn whose session
+/// already has prior tool-result artifacts (contract §9/§11 amendment,
+/// ruling 270), not invented special-casing.
+fn retrieve_recent_sources_stage_notes(output_count: u64) -> Vec<String> {
+	match output_count {
+		0 => vec![NOTE_NO_PRIOR_TOOL_ARTIFACTS.to_owned()],
+		1 => vec![NOTE_INCLUDED_RECENT_SESSION_ARTIFACT.to_owned()],
+		n => vec![format!("Included {n} recent artifacts from prior turns in this session.")],
+	}
+}
 
 /// Builds the `required_sources` stage's `notes` from how many context
 /// items it resolved (`output_count`). Only the singular case
@@ -204,6 +228,18 @@ impl<E: RawEventAppendStore> AssemblyServiceV0<E> {
 		let mut dropped = Vec::new();
 
 		let stage = if request.required_source_envelope_ids.is_empty() {
+			// B5's lexical/recency retrieval (contract §9/§11 continuation
+			// amendment, ruling 270): rank this session's artifact-bearing raw
+			// events by recency (`session_seq` descending) and surface as many as
+			// fit the budget. A fresh session with no prior artifact-bearing
+			// events (the canonical `pre_tool` fixture's shape) yields an empty
+			// candidate list and reproduces the prior always-empty behaviour
+			// byte-for-byte.
+			let mut candidates = build_session_indexes(&self.events, &request.session_id)
+				.await?
+				.artifacts;
+			candidates.sort_by_key(|candidate| std::cmp::Reverse(candidate.session_seq));
+
 			degradation.push(DegradationV0 {
 				code:     DEGRADATION_EMBEDDINGS_UNAVAILABLE.to_owned(),
 				message:  "Embedding backend unavailable in Slice 0; deterministic lexical retrieval \
@@ -211,18 +247,85 @@ impl<E: RawEventAppendStore> AssemblyServiceV0<E> {
 					.to_owned(),
 				severity: SEVERITY_WARNING.to_owned(),
 			});
-			degradation.push(DegradationV0 {
-				code:     DEGRADATION_NO_CONTEXT.to_owned(),
-				message:  "No relevant prior context before local discovery tools run.".to_owned(),
-				severity: SEVERITY_INFO.to_owned(),
-			});
+
+			let mut considered = 0u64;
+			let mut included_items = 0u64;
+			let mut included_tokens = 0u64;
+			for candidate in &candidates {
+				let Some(source_envelope_id) = candidate.source_envelope_id.clone() else {
+					continue;
+				};
+				let Some(event) = self.events.read_event(&candidate.event_id).await? else {
+					continue;
+				};
+				// Recency retrieval surfaces prior TURNS' artifacts (contract §9/§11
+				// continuation amendment, ruling 270), never the current turn's own
+				// tool results: a `pre_tool` call happens before the current turn's
+				// first tool runs, so in production none of the current turn's own
+				// artifacts exist yet at call time. This also keeps the canonical
+				// `pre_tool` fixture byte-identical: that fixture's own session
+				// already has its (single) turn's artifacts fully persisted before
+				// the fixture replays that same turn's pinned `pre_tool` request.
+				if event.turn_id.as_ref() == Some(&request.turn_id) {
+					continue;
+				}
+				considered += 1;
+				let artifact = self
+					.artifacts
+					.require_artifact(&candidate.artifact_id)
+					.await?;
+				let source_kind = event
+					.payload
+					.get("source_kind")
+					.and_then(Value::as_str)
+					.unwrap_or("unknown")
+					.to_owned();
+				let rendered_text = derive_rendered_text(&artifact);
+				let token_estimate = estimate_tokens(&rendered_text);
+				let included = included_items < request.budget.max_items
+					&& included_tokens.saturating_add(token_estimate)
+						<= request.budget.max_context_tokens;
+				if included {
+					included_items += 1;
+					included_tokens += token_estimate;
+				}
+				context_items.push(ContextItemV0 {
+					context_item_id: new_context_item_id(),
+					source_envelope_id,
+					artifact_id: candidate.artifact_id.clone(),
+					source_kind,
+					title: derive_title(&event, &artifact),
+					rendered_text,
+					score: 1.0,
+					token_estimate,
+					included,
+					recovery: ContextItemRecoveryV0 {
+						method: RECOVERY_METHOD_PLATFORM_ARTIFACT.to_owned(),
+						id:     candidate.artifact_id.as_str().to_owned(),
+					},
+				});
+			}
+
+			if context_items.is_empty() {
+				degradation.push(DegradationV0 {
+					code:     DEGRADATION_NO_CONTEXT.to_owned(),
+					message:  "No relevant prior context before local discovery tools run.".to_owned(),
+					severity: SEVERITY_INFO.to_owned(),
+				});
+			}
+
+			let output_count = context_items.len() as u64;
 			AssemblyTraceStageV0 {
-				name:         STAGE_RETRIEVE_RECENT_SOURCES.to_owned(),
-				started_at:   created_at.clone(),
+				name: STAGE_RETRIEVE_RECENT_SOURCES.to_owned(),
+				started_at: created_at.clone(),
 				completed_at: created_at.clone(),
-				input_count:  RETRIEVE_RECENT_SOURCES_INPUT_COUNT,
-				output_count: 0,
-				notes:        vec![NOTE_NO_PRIOR_TOOL_ARTIFACTS.to_owned()],
+				input_count: if considered == 0 {
+					RETRIEVE_RECENT_SOURCES_INPUT_COUNT
+				} else {
+					considered
+				},
+				output_count,
+				notes: retrieve_recent_sources_stage_notes(output_count),
 			}
 		} else {
 			degradation.push(DegradationV0 {

@@ -35,6 +35,7 @@ use successor_protocol::{
 	ids::{MessageId, ToolCallId},
 	kernel_frame::{KernelFrameKindV0, KernelFrameV0},
 	provider::ProviderApiShapeV0,
+	raw_event::RawEventType,
 	tool_catalog::ToolCatalogV0,
 };
 use tower::ServiceExt;
@@ -788,6 +789,7 @@ fn submit_turn_request_converts_into_a_turn_input() {
 	let request = SubmitTurnRequest {
 		user_text:      "hello".to_owned(),
 		assembly_query: Some("hello, but override".to_owned()),
+		session_id:     None,
 	};
 	let input: successor_kernel::runner::TurnInput = request.into();
 	assert_eq!(input.user_text, "hello");
@@ -905,6 +907,340 @@ async fn attach_session_maps_an_unknown_session_id_to_a_kernel_rpc_error_envelop
 		envelope.code, "kernel_rpc.platform_unavailable",
 		"attach maps every platform-rejected read_snapshot call through the same C1 error seam as \
 		 the other routes -- there is no attach-specific error code"
+	);
+
+	cleanup_workspace(&workspace);
+}
+
+// ---------------------------------------------------------------------
+// Continuation (contract §9/§11 amendment, ruling 270): `session_id` on
+// `SubmitTurnRequest` reuses an existing session's raw-event stream instead
+// of minting a fresh one. `session_seq` continues monotonically and the new
+// turn's first event chains its `causation_event_id` to the prior tail;
+// `tool_catalog.published` still fires once for the new turn, never
+// suppressed.
+// ---------------------------------------------------------------------
+
+#[tokio::test]
+async fn submit_turn_with_session_id_continues_the_existing_session_and_chains_causation() {
+	let server = TestServer::start("continuation").await;
+	let workspace = seed_workspace("continuation");
+	let session_id = seed_populated_session(&server, &workspace).await;
+
+	let client = server.client();
+	let page_before = client
+		.read_session_events(&session_id, None, None)
+		.await
+		.expect("read the seeded session's events");
+	assert!(!page_before.events.is_empty(), "the seeded session must already have raw events");
+	let prior_tail = page_before
+		.events
+		.last()
+		.expect("seeded session has a tail event")
+		.clone();
+	let prior_turn_id = prior_tail
+		.turn_id
+		.clone()
+		.expect("seeded turn's tail event is turn-scoped");
+
+	let state = scripted_state(server.client(), workspace.clone(), vec![ScriptedRound::Final {
+		text:    "continuation reply".to_owned(),
+		summary: "continuation reply".to_owned(),
+	}]);
+	let router = build_router(state);
+
+	let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+		.await
+		.expect("bind the kernel listener");
+	let addr = listener
+		.local_addr()
+		.expect("bound listener has a local addr");
+	let serve_handle = tokio::spawn(async move {
+		let _ = axum::serve(listener, router).await;
+	});
+
+	let http = reqwest::Client::new();
+	let response = http
+		.post(format!("http://{addr}/v0/turns"))
+		.header(reqwest::header::CONTENT_TYPE, "application/json")
+		.body(
+			serde_json::json!({ "user_text": "continue please", "session_id": session_id })
+				.to_string(),
+		)
+		.send()
+		.await
+		.expect("submit the continuation turn");
+	assert_eq!(response.status(), reqwest::StatusCode::OK);
+	let body = String::from_utf8(
+		response
+			.bytes()
+			.await
+			.expect("collect the full sse body")
+			.to_vec(),
+	)
+	.expect("sse body is utf8");
+
+	let mut saw_terminal = false;
+	for record in body.split("\n\n").filter(|record| !record.is_empty()) {
+		let data_line = record
+			.lines()
+			.find_map(|line| line.strip_prefix("data: "))
+			.expect("every kernel_frame record carries a data: line");
+		let frame: KernelFrameV0 =
+			serde_json::from_str(data_line).expect("data payload decodes as a KernelFrameV0");
+		assert_eq!(
+			frame.session_id, session_id,
+			"a continuation turn's frames must carry the continued session's id, never a new one"
+		);
+		assert_ne!(
+			frame.turn_id, prior_turn_id,
+			"a continuation turn must mint its own turn_id, distinct from the turn it continues"
+		);
+		if frame.kind == KernelFrameKindV0::TurnCompleted
+			|| frame.kind == KernelFrameKindV0::TurnFailed
+		{
+			saw_terminal = true;
+		}
+	}
+	assert!(saw_terminal, "the continuation turn must reach its own terminal frame");
+
+	let page_after = client
+		.read_session_events(&session_id, None, None)
+		.await
+		.expect("read the session's events after continuation");
+	assert!(
+		page_after.events.len() > page_before.events.len(),
+		"continuation must append new raw events to the same session stream"
+	);
+	let new_events = &page_after.events[page_before.events.len()..];
+	let first_new_event = new_events
+		.first()
+		.expect("continuation appended at least one event");
+	assert_eq!(
+		first_new_event.session_seq,
+		prior_tail.session_seq + 1,
+		"raw-event session_seq must continue monotonically across the turn boundary, never reset"
+	);
+	assert_eq!(
+		first_new_event.causation_event_id,
+		Some(prior_tail.event_id.clone()),
+		"the first event of a continuation turn must chain its causation_event_id to the prior \
+		 session's tail event, not start a fresh causation chain"
+	);
+	assert!(
+		new_events
+			.iter()
+			.any(|event| event.event_type == RawEventType::ToolCatalogPublished),
+		"tool_catalog.published must still be emitted once per submitted turn on continuation, \
+		 never suppressed"
+	);
+	assert!(
+		new_events
+			.iter()
+			.filter_map(|event| event.turn_id.as_ref())
+			.all(|turn_id| *turn_id != prior_turn_id),
+		"every new event must belong to the new turn, not the continued turn"
+	);
+
+	serve_handle.abort();
+	cleanup_workspace(&workspace);
+}
+
+#[tokio::test]
+async fn submit_turn_with_an_unknown_session_id_fails_closed_without_creating_a_session() {
+	let server = TestServer::start("continuation-unknown").await;
+	let workspace = seed_workspace("continuation-unknown");
+	let state = scripted_state(server.client(), workspace.clone(), vec![ScriptedRound::Final {
+		text:    "hi".to_owned(),
+		summary: "hi".to_owned(),
+	}]);
+	let router = build_router(state);
+
+	let request = Request::builder()
+		.method("POST")
+		.uri("/v0/turns")
+		.header("content-type", "application/json")
+		.body(Body::from(
+			serde_json::json!({
+				"user_text": "continue please",
+				"session_id": "ses_does-not-exist-0000",
+			})
+			.to_string(),
+		))
+		.expect("build a continuation request against an unknown session id");
+	let response = router
+		.oneshot(request)
+		.await
+		.expect("router handles the request");
+	// Unlike a mid-stream turn failure (surfaced as a terminal SSE frame within
+	// an already-committed 200), continuing into a session that does not
+	// exist fails before the turn's first frame -- the Gate in `submit_turn`
+	// converts it straight into an HTTP-level `KernelRpcError` (contract §9/
+	// §11 continuation amendment, ruling 270), exactly like any other
+	// pre-stream failure.
+	assert_eq!(
+		response.status(),
+		StatusCode::UNPROCESSABLE_ENTITY,
+		"continuing into an unknown session must fail closed as a typed HTTP error before any frame \
+		 streams, not silently create a fresh session"
+	);
+	let envelope: ErrorEnvelopeV0 =
+		serde_json::from_slice(&body_bytes(response).await).expect("body decodes as an envelope");
+	assert_eq!(envelope.code, "kernel_rpc.turn_failed");
+
+	cleanup_workspace(&workspace);
+}
+
+#[tokio::test]
+async fn submit_turn_with_session_id_into_a_zero_event_session_fails_closed() {
+	let server = TestServer::start("continuation-zero-event").await;
+	let workspace = seed_workspace("continuation-zero-event");
+	let state = scripted_state(server.client(), workspace.clone(), vec![ScriptedRound::Final {
+		text:    "hi".to_owned(),
+		summary: "hi".to_owned(),
+	}]);
+	let router = build_router(state);
+
+	// A session created via `POST /v0/sessions` (C1) and never submitted to
+	// has zero raw events -- a real instance of the shape ruling 270 requires
+	// continuation to reject, distinct from an unknown session id entirely.
+	let create_request = Request::builder()
+		.method("POST")
+		.uri("/v0/sessions")
+		.header("content-type", "application/json")
+		.body(Body::from(serde_json::json!({ "title": "zero event session" }).to_string()))
+		.expect("build a create-session request");
+	let create_response = router
+		.clone()
+		.oneshot(create_request)
+		.await
+		.expect("router handles it");
+	assert_eq!(create_response.status(), StatusCode::OK);
+	let created: successor_protocol::platform_api::CreateSessionResponseV0 =
+		serde_json::from_slice(&body_bytes(create_response).await)
+			.expect("decodes as CreateSessionResponseV0");
+
+	let request = Request::builder()
+		.method("POST")
+		.uri("/v0/turns")
+		.header("content-type", "application/json")
+		.body(Body::from(
+			serde_json::json!({ "user_text": "continue please", "session_id": created.session_id })
+				.to_string(),
+		))
+		.expect("build a continuation request against a zero-event session");
+	let response = router
+		.oneshot(request)
+		.await
+		.expect("router handles the request");
+	assert_eq!(
+		response.status(),
+		StatusCode::UNPROCESSABLE_ENTITY,
+		"continuing into a session with no prior raw events must fail closed as a typed error \
+		 (contract §9/§11 continuation amendment, ruling 270)"
+	);
+	let envelope: ErrorEnvelopeV0 =
+		serde_json::from_slice(&body_bytes(response).await).expect("body decodes as an envelope");
+	assert_eq!(envelope.code, "kernel_rpc.turn_failed");
+	// The platform's own snapshot replay already fails closed on a
+	// zero-event session (a pre-existing, already-recorded residual: task
+	// 235's "bare zero-event sessions 422 on snapshot replay") before
+	// `run_turn`'s own `raw_event_ids.is_empty()` guard is ever reached. Either
+	// path satisfies ruling 270's "fail closed, typed error" requirement; this
+	// asserts the one actually observed, rather than the one the kernel-level
+	// guard would produce if the platform ever stopped erroring here first.
+	assert!(
+		envelope.message.contains("empty raw-event stream"),
+		"continuing into a zero-event session must fail with a message identifying the empty \
+		 stream, not a generic failure: {envelope:?}"
+	);
+
+	cleanup_workspace(&workspace);
+}
+
+#[tokio::test]
+async fn replaying_a_two_turn_session_stream_is_deterministic_and_spans_both_turns() {
+	// Contract §9/§11 continuation amendment (ruling 270): replay/projection
+	// is turn-agnostic already (`project_session` validates only that
+	// `session_seq` is dense from 1, and derives `last_turn_id` from the
+	// last turn-scoped event) -- this asserts that invariant actually holds
+	// across a real two-turn continuation stream, not just in isolation.
+	let server = TestServer::start("replay-two-turn").await;
+	let workspace = seed_workspace("replay-two-turn");
+	let session_id = seed_populated_session(&server, &workspace).await;
+	let client = server.client();
+	let page_before = client
+		.read_session_events(&session_id, None, None)
+		.await
+		.expect("read the seeded session's events");
+	let prior_turn_id = page_before
+		.events
+		.last()
+		.expect("seeded tail event")
+		.turn_id
+		.clone()
+		.expect("turn-scoped");
+
+	let state = scripted_state(server.client(), workspace.clone(), vec![ScriptedRound::Final {
+		text:    "second turn reply".to_owned(),
+		summary: "second turn reply".to_owned(),
+	}]);
+	let router = build_router(state);
+	let request = Request::builder()
+		.method("POST")
+		.uri("/v0/turns")
+		.header("content-type", "application/json")
+		.body(Body::from(
+			serde_json::json!({ "user_text": "continue please", "session_id": session_id })
+				.to_string(),
+		))
+		.expect("build the continuation request");
+	let response = router
+		.oneshot(request)
+		.await
+		.expect("router handles the request");
+	assert_eq!(response.status(), StatusCode::OK);
+	let _ = body_bytes(response).await;
+
+	let page_after = client
+		.read_session_events(&session_id, None, None)
+		.await
+		.expect("read the session's events after continuation");
+	assert!(page_after.events.len() > page_before.events.len());
+
+	let first_projection = successor_protocol::replay::project_session(&page_after.events).expect(
+		"projecting the combined two-turn stream must succeed, not hit the empty-stream path",
+	);
+	let second_projection = successor_protocol::replay::project_session(&page_after.events)
+		.expect("a second, independent projection of the same stream must also succeed");
+	assert_eq!(
+		first_projection, second_projection,
+		"projecting the same combined raw-event stream twice must be byte-for-byte deterministic"
+	);
+
+	assert_ne!(
+		first_projection.session.last_turn_id, prior_turn_id,
+		"last_turn_id must be the continuation's own turn, not the turn it continued"
+	);
+	let user_messages = first_projection
+		.transcript
+		.iter()
+		.filter(|entry| entry.role == successor_protocol::projection::MessageRole::User)
+		.count();
+	let assistant_messages = first_projection
+		.transcript
+		.iter()
+		.filter(|entry| entry.role == successor_protocol::projection::MessageRole::Assistant)
+		.count();
+	assert_eq!(
+		user_messages, 2,
+		"the accumulated transcript must include both turns' user messages: {:?}",
+		first_projection.transcript
+	);
+	assert_eq!(
+		assistant_messages, 2,
+		"the accumulated transcript must include both turns' assistant messages: {:?}",
+		first_projection.transcript
 	);
 
 	cleanup_workspace(&workspace);

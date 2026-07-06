@@ -34,6 +34,7 @@
 use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
+use successor_protocol::ids::SessionId;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -47,9 +48,13 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
-	/// Start a turn. Always creates a fresh, runner-owned session -- there
-	/// is no `--session-id` on this command (C8 session-semantics ruling:
-	/// submitting a turn is never "continuing" an existing session).
+	/// Start a turn. Absent `--session-id`, always creates a fresh,
+	/// runner-owned session (unchanged Slice 0 default). With
+	/// `--session-id <existing>` (contract §9/§11 continuation amendment,
+	/// ruling 270; D1 grammar widened for this purpose only), continues
+	/// that session instead: the kernel appends this turn to its existing
+	/// raw-event stream rather than minting a new one. This is never resume
+	/// or attach -- it drives a genuine new turn lifecycle.
 	Ask(AskArgs),
 	/// Read back the accumulated event history and provider-auth status of
 	/// an existing session.
@@ -97,6 +102,16 @@ fn parse_absolute_workspace_root(value: &str) -> Result<PathBuf, String> {
 	}
 }
 
+/// Rejects a malformed `--session-id` as a clap usage error (exit code 2) at
+/// parse time, before any turn is submitted (D1 grammar widening, contract
+/// §9/§11 continuation amendment, ruling 270), mirroring
+/// `parse_absolute_workspace_root`'s validate-before-request precedent.
+fn parse_session_id(value: &str) -> Result<SessionId, String> {
+	SessionId::try_from(value.to_owned()).map_err(|_| {
+		format!("--session-id `{value}` is not a well-formed session id (expected `ses_...`)")
+	})
+}
+
 #[derive(Debug, Args)]
 pub struct AskArgs {
 	/// Workspace root the in-process kernel bootstraps its tool execution
@@ -132,6 +147,13 @@ pub struct AskArgs {
 
 	#[arg(long, value_enum, default_value_t = AskFormat::Text)]
 	pub format: AskFormat,
+
+	/// Continue an existing session instead of starting a fresh one
+	/// (contract §9/§11 continuation amendment, ruling 270). Validated as a
+	/// well-formed session id before the turn is submitted; the kernel
+	/// separately rejects unknown or zero-event sessions at submit time.
+	#[arg(long, value_parser = parse_session_id)]
+	pub session_id: Option<SessionId>,
 }
 
 #[derive(Debug, Args)]

@@ -62,11 +62,13 @@ fn run_cli(args: &[&str], env: &[(&str, &str)]) -> CliOutput {
 
 // ---------------------------------------------------------------------
 // Grammar: forbidden shapes are rejected as ordinary clap usage errors
-// (exit code 2), per dissent ruling 2.
+// (exit code 2), per dissent ruling 2. `ask --session-id` is a narrow,
+// owner-authorized widening of this pinned grammar (contract §9/§11
+// continuation amendment, ruling 270) -- accepted, not forbidden.
 // ---------------------------------------------------------------------
 
 #[test]
-fn ask_rejects_a_session_id_flag_that_does_not_exist_on_the_ruled_grammar() {
+fn ask_accepts_a_well_formed_session_id_flag_as_a_grammar_widening() {
 	let output = run_cli(
 		&[
 			"ask",
@@ -76,18 +78,53 @@ fn ask_rejects_a_session_id_flag_that_does_not_exist_on_the_ruled_grammar() {
 			"hi",
 			"--session-id",
 			"ses_whatever",
+			"--kernel-url",
+			"http://127.0.0.1:1",
+		],
+		&[],
+	);
+	assert_eq!(
+		output.status, 4,
+		"a well-formed --session-id must be accepted by the grammar and fail only at transport (the \
+		 ruled --kernel-url is unreachable), not as a clap usage error: {output:?}"
+	);
+	assert!(
+		!output.stderr.contains("unexpected argument"),
+		"--session-id must no longer be an unrecognized argument on ask (ruling 270): {output:?}"
+	);
+}
+
+#[test]
+fn ask_rejects_a_malformed_session_id_before_submitting_the_turn() {
+	let output = run_cli(
+		&[
+			"ask",
+			"--workspace-root",
+			env!("CARGO_MANIFEST_DIR"),
+			"--prompt",
+			"hi",
+			"--session-id",
+			"not-a-session-id",
 		],
 		&[],
 	);
 	assert_eq!(
 		output.status, 2,
-		"unrecognized --session-id on ask must be a usage error: {output:?}"
+		"a malformed --session-id must be rejected before any turn is submitted: {output:?}"
 	);
 	assert!(
-		output
-			.stderr
-			.contains("unexpected argument '--session-id' found"),
-		"the usage error must name the unrecognized --session-id flag, not just exit 2: {output:?}"
+		output.stderr.contains("not-a-session-id") && output.stderr.contains("session id"),
+		"the usage error must name the malformed --session-id value, not just exit 2: {output:?}"
+	);
+}
+
+#[test]
+fn ask_help_documents_the_session_id_continuation_flag() {
+	let output = run_cli(&["ask", "--help"], &[]);
+	assert_eq!(output.status, 0);
+	assert!(
+		output.stdout.contains("--session-id"),
+		"ask --help must document the ruling-270 --session-id continuation flag: {output:?}"
 	);
 }
 

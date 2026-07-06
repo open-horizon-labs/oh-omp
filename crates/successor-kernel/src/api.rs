@@ -41,15 +41,31 @@ pub type SessionAttachResponse = SessionSnapshotV0;
 
 /// Request body for `POST /v0/turns`. Converts directly into the accepted C7
 /// [`TurnInput`]; carries no field `TurnInput` does not already have.
+///
+/// `session_id` is optional (contract §9/§11 continuation amendment, ruling
+/// 270): absent, `POST /v0/turns` starts a fresh runner-owned session,
+/// byte-identical to pre-continuation Slice 0 behaviour. Present, it names an
+/// existing session to continue -- the runner reuses that session, continues
+/// its raw-event `session_seq`, and chains this turn's first event's
+/// `causation_event_id` from the session's prior tail. This is never resume
+/// or attach (those stay read-only): it drives a genuine new turn lifecycle,
+/// appended to the same session stream.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SubmitTurnRequest {
 	pub user_text:      String,
 	#[serde(default)]
 	pub assembly_query: Option<String>,
+	#[serde(default)]
+	pub session_id:     Option<SessionId>,
 }
 
 impl From<SubmitTurnRequest> for TurnInput {
+	/// Drops `session_id`: it never enters `TurnInput` (which stays
+	/// byte-identical to pre-continuation Slice 0), it is threaded directly
+	/// from the route handler into [`crate::runner::TurnRunner::continue_turn`]
+	/// instead, to avoid rippling a new mandatory field into every existing
+	/// `TurnInput` construction site across the workspace.
 	fn from(value: SubmitTurnRequest) -> Self {
 		Self { user_text: value.user_text, assembly_query: value.assembly_query }
 	}

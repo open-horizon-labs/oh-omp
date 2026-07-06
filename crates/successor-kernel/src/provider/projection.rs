@@ -272,12 +272,28 @@ fn truncate_at_char_boundary(text: &str, max_bytes: usize) -> &str {
 /// Only `item.included` items are considered (items the platform's own
 /// budget already excluded are never injected). The remaining items are
 /// ordered deterministically by `score` descending, tie-broken by
-/// `context_item_id` ascending, then rendered in that order until
-/// [`CONTEXT_BLOCK_BYTE_BUDGET`] bytes is reached. If an item would
-/// overflow the budget, its `rendered_text` is truncated at a valid `char`
-/// boundary to fit (or the item is dropped entirely if even its header
-/// does not fit), [`CONTEXT_BLOCK_TRUNCATED_MARKER`] is appended exactly
-/// once, and every item after the truncation point is dropped.
+/// `context_item_id` ascending, then rendered in that order until the
+/// budget is reached.
+///
+/// The budget bounds the *entire* rendered block -- opening delimiter,
+/// headers, item bodies, the truncation marker (only present when
+/// truncation occurs), and the closing delimiter -- not just the items and
+/// headers. Whether truncation will be needed is not known until packing
+/// completes, so both [`CONTEXT_BLOCK_CLOSE`] and
+/// [`CONTEXT_BLOCK_TRUNCATED_MARKER`] are reserved out of
+/// [`CONTEXT_BLOCK_BYTE_BUDGET`] up front, before any item is packed, even
+/// on the path that turns out not to need the marker. This costs at most
+/// `CONTEXT_BLOCK_TRUNCATED_MARKER.len()` bytes of otherwise-usable
+/// capacity in the untruncated case, but it is the only way to guarantee
+/// the *total* rendered block never exceeds the budget on every path: a
+/// fully-included block never carries the marker, and a truncated block
+/// carries exactly one marker, in both cases within budget.
+///
+/// If an item would overflow the reserved per-item budget, its
+/// `rendered_text` is truncated at a valid `char` boundary to fit (or the
+/// item is dropped entirely if even its header does not fit),
+/// [`CONTEXT_BLOCK_TRUNCATED_MARKER`] is appended exactly once, and every
+/// item after the truncation point is dropped.
 ///
 /// Returns an empty [`RenderedContextBlock::text`] when there are no
 /// included items, so callers get byte-identical passthrough behavior for
@@ -296,6 +312,14 @@ pub fn render_context_block(items: &[ContextItemV0]) -> RenderedContextBlock {
 		return RenderedContextBlock { text: String::new(), injected_context_item_ids: Vec::new() };
 	}
 
+	// Reserve the close delimiter and the truncation marker out of the budget
+	// before packing any item (see the doc comment above for why both are
+	// reserved unconditionally rather than only once truncation is known to
+	// occur).
+	let packing_budget = CONTEXT_BLOCK_BYTE_BUDGET
+		.saturating_sub(CONTEXT_BLOCK_CLOSE.len())
+		.saturating_sub(CONTEXT_BLOCK_TRUNCATED_MARKER.len());
+
 	let mut body = String::from(CONTEXT_BLOCK_OPEN);
 	let mut injected_context_item_ids = Vec::new();
 	let mut truncated = false;
@@ -303,15 +327,15 @@ pub fn render_context_block(items: &[ContextItemV0]) -> RenderedContextBlock {
 	for item in ordered {
 		let header = context_item_header(item);
 		let entry_len = header.len() + item.rendered_text.len() + CONTEXT_ITEM_CLOSE.len();
-		if body.len() + entry_len <= CONTEXT_BLOCK_BYTE_BUDGET {
+		if body.len() + entry_len <= packing_budget {
 			body.push_str(&header);
 			body.push_str(&item.rendered_text);
 			body.push_str(CONTEXT_ITEM_CLOSE);
 			injected_context_item_ids.push(item.context_item_id.clone());
 			continue;
 		}
-		if body.len() + header.len() < CONTEXT_BLOCK_BYTE_BUDGET {
-			let remaining = CONTEXT_BLOCK_BYTE_BUDGET - body.len() - header.len();
+		if body.len() + header.len() < packing_budget {
+			let remaining = packing_budget - body.len() - header.len();
 			body.push_str(&header);
 			body.push_str(truncate_at_char_boundary(&item.rendered_text, remaining));
 			injected_context_item_ids.push(item.context_item_id.clone());

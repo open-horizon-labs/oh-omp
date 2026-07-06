@@ -695,3 +695,117 @@ fn render_context_block_orders_deterministically_and_truncates_mid_item_with_the
 		 bytes of B were offered) nor fully dropped (0 bytes); got {b_count} bytes of B"
 	);
 }
+
+// ---------------------------------------------------------------------
+// Review task 281 P1 fix: `render_context_block`'s per-item byte-budget
+// accounting checked item/header bytes against `CONTEXT_BLOCK_BYTE_BUDGET`
+// only, then appended the truncation marker and the closing delimiter
+// *after* that check -- so the total rendered block could exceed the
+// advertised budget by the marker's and/or the close delimiter's length.
+// These regression tests assert the *entire* rendered block (open
+// delimiter + headers + items + marker if truncated + close) never
+// exceeds the budget, both in a clearly-truncated path and at the exact
+// packing boundary where the pre-fix code would have emitted precisely
+// `CONTEXT_BLOCK_BYTE_BUDGET` bytes of items+header alone.
+// ---------------------------------------------------------------------
+
+#[test]
+fn render_context_block_truncated_path_stays_within_the_byte_budget_including_marker_and_close() {
+	// Mirrors the private `CONTEXT_BLOCK_CLOSE` constant in
+	// `provider::projection`; asserting on it here (from outside the crate)
+	// proves the closing delimiter survives, byte-for-byte, inside the
+	// budget rather than being appended past it.
+	const EXPECTED_CONTEXT_BLOCK_CLOSE: &str = "[/assembled context]\n\n";
+
+	// Wildly oversized relative to the budget: this item alone forces
+	// truncation. Before the fix, the packing check bounded only the open
+	// delimiter + header + item text against `CONTEXT_BLOCK_BYTE_BUDGET`,
+	// then appended the truncation marker and the closing delimiter *after*
+	// that check -- so the rendered block could exceed the advertised
+	// budget by `CONTEXT_BLOCK_TRUNCATED_MARKER.len()` plus the close
+	// delimiter's length.
+	let oversized =
+		context_item_fixture("ctx_oversized1", 1.0, "X".repeat(CONTEXT_BLOCK_BYTE_BUDGET * 4));
+
+	let rendered = render_context_block(&[oversized]);
+
+	assert!(
+		rendered.text.len() <= CONTEXT_BLOCK_BYTE_BUDGET,
+		"the *entire* rendered block (open delimiter + item + truncation marker + close delimiter) \
+		 must fit within CONTEXT_BLOCK_BYTE_BUDGET ({CONTEXT_BLOCK_BYTE_BUDGET}); got {} bytes",
+		rendered.text.len()
+	);
+	assert_eq!(
+		rendered
+			.text
+			.matches(CONTEXT_BLOCK_TRUNCATED_MARKER)
+			.count(),
+		1,
+		"a truncated block must carry the truncation marker exactly once"
+	);
+	assert!(
+		rendered.text.ends_with(EXPECTED_CONTEXT_BLOCK_CLOSE),
+		"the closing delimiter must be present and intact at the end of the block"
+	);
+	assert_eq!(
+		rendered.injected_context_item_ids,
+		vec![ContextItemId::try_from("ctx_oversized1".to_owned()).unwrap()],
+		"the oversized item must still be reported as injected (truncated, not dropped), matching \
+		 the text actually emitted"
+	);
+}
+
+#[test]
+fn render_context_block_total_bytes_never_exceed_the_budget_at_the_packing_boundary() {
+	// Binary search for the largest single-item `rendered_text` length that
+	// still fits without triggering truncation. This finds the exact
+	// packing boundary independent of any private constant: before the
+	// fix, an item sized to reach that boundary produced a body of exactly
+	// `CONTEXT_BLOCK_BYTE_BUDGET` bytes of items+header *before* the
+	// always-appended closing delimiter was appended, overflowing the
+	// advertised budget. This proves the fix holds on both sides of the
+	// boundary: the largest block that still fits without truncation, and
+	// the smallest block that is truncated by exactly one extra byte.
+	let render_single = |text_len: usize| {
+		let item = context_item_fixture("ctx_boundary1", 1.0, "Z".repeat(text_len));
+		render_context_block(&[item])
+	};
+
+	let mut fits = 0usize;
+	let mut overflows = CONTEXT_BLOCK_BYTE_BUDGET;
+	while fits + 1 < overflows {
+		let mid = fits + (overflows - fits) / 2;
+		if render_single(mid)
+			.text
+			.contains(CONTEXT_BLOCK_TRUNCATED_MARKER)
+		{
+			overflows = mid;
+		} else {
+			fits = mid;
+		}
+	}
+
+	let at_boundary = render_single(fits);
+	assert!(
+		!at_boundary.text.contains(CONTEXT_BLOCK_TRUNCATED_MARKER),
+		"the largest text length found by the search must not itself be truncated"
+	);
+	assert!(
+		at_boundary.text.len() <= CONTEXT_BLOCK_BYTE_BUDGET,
+		"a fully-included block at the packing boundary must still fit within \
+		 CONTEXT_BLOCK_BYTE_BUDGET ({CONTEXT_BLOCK_BYTE_BUDGET}); got {} bytes",
+		at_boundary.text.len()
+	);
+
+	let just_over = render_single(overflows);
+	assert!(
+		just_over.text.contains(CONTEXT_BLOCK_TRUNCATED_MARKER),
+		"one byte past the packing boundary must trigger truncation"
+	);
+	assert!(
+		just_over.text.len() <= CONTEXT_BLOCK_BYTE_BUDGET,
+		"a truncated block one byte past the packing boundary must still fit within \
+		 CONTEXT_BLOCK_BYTE_BUDGET ({CONTEXT_BLOCK_BYTE_BUDGET}); got {} bytes",
+		just_over.text.len()
+	);
+}

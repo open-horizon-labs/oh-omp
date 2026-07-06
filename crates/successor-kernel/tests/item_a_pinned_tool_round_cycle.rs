@@ -338,6 +338,34 @@ async fn tool_round_past_the_budget_still_fails_with_tool_budget_exhausted_not_i
 		),
 	}
 
+	// <agent://256> item A review finding (P1, item 1): exceeding the live
+	// per-turn tool-call maximum must still emit `tool_call.rejected`
+	// followed by `error.recorded` before the turn fails (contract §9
+	// amendment, commit 1e0b8ca98) -- reusing the same raw-event machinery
+	// `dispatch_tool_call` uses for a catalog-visible, stub-rejected tool.
+	// Pre-fix, the budget check returned `Err(TurnFailure::ToolBudgetExhausted)`
+	// immediately with no event appended for this round at all, so this
+	// assertion fails against that behavior and only passes once the two
+	// events are appended before the early return.
+	let event_types: Vec<&str> = attempt
+		.trace
+		.events()
+		.iter()
+		.map(|event| event.event_type.as_str())
+		.collect();
+	assert!(
+		event_types.len() >= 2,
+		"expected at least a `tool_call.rejected` and `error.recorded` raw event on the over-budget \
+		 path; got {event_types:?}"
+	);
+	assert_eq!(
+		&event_types[event_types.len() - 2..],
+		["tool_call.rejected", "error.recorded"],
+		"expected the persisted raw-event trail to end with `tool_call.rejected` immediately \
+		 followed by `error.recorded` before the turn_failed terminal (contract §9 amendment for \
+		 exceeding the live per-turn tool budget); got {event_types:?}"
+	);
+
 	cleanup_workspace(&workspace_root);
 }
 

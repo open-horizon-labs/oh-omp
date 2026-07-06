@@ -51,6 +51,20 @@ pub const REJECTION_POLICY: &str = "slice0_read_only";
 /// taken verbatim from `fixtures/slice-0/raw-events-unsupported-tool.json`.
 pub const REJECTION_ERROR_CODE: &str = "tool_not_executable_in_slice0";
 
+/// Policy label for an over-budget tool-call rejection.
+///
+/// Attached to the raw-event trail when a provider requests a tool call
+/// after the live per-turn tool-call maximum
+/// (`state_machine::MAX_EXECUTABLE_TOOL_ROUNDS`) is already exhausted
+/// (<agent://256> dissent ruling, item A; contract §9 amendment). Distinct
+/// from [`REJECTION_POLICY`]: this rejects a request for budget reasons,
+/// not because the named tool is stub-rejected in the catalog.
+pub const TOOL_BUDGET_REJECTION_POLICY: &str = "slice0_tool_budget_exhausted";
+
+/// Stable error code paired with [`TOOL_BUDGET_REJECTION_POLICY`] on the
+/// `error.recorded` event for an over-budget tool-call rejection.
+pub const TOOL_BUDGET_REJECTION_ERROR_CODE: &str = "tool_budget_exhausted_in_slice0";
+
 /// The canonical Slice 0 tool catalog, exactly as pinned by
 /// `fixtures/slice-0/tool-catalog.json` (34 tools; schema
 /// `kernel.tool_catalog.v0`).
@@ -101,6 +115,20 @@ pub fn tool_status(tool_name: &str) -> Option<ToolStatusV0> {
 /// pure string template over whatever tool name Slice 0 rejects.
 pub fn stub_rejection_reason(tool_name: &str) -> String {
 	format!("{tool_name} is catalog-visible but not executable in Slice 0")
+}
+
+/// Rejection reason for an over-budget tool-call.
+///
+/// Explains that the tool call was requested after the live per-turn
+/// tool-call maximum was already exhausted (<agent://256> dissent ruling,
+/// item A; contract §9 amendment). Parameterized by
+/// `state_machine::MAX_EXECUTABLE_TOOL_ROUNDS` so the wording stays
+/// accurate if that bound changes.
+pub fn tool_budget_exhausted_reason(tool_name: &str, max_executable_tool_rounds: u8) -> String {
+	format!(
+		"tool `{tool_name}` was requested after the Slice 0 per-turn tool-call maximum of \
+		 {max_executable_tool_rounds} executable rounds was already exhausted"
+	)
 }
 
 #[cfg(test)]

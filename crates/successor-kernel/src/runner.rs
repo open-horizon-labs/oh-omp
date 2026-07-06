@@ -1352,6 +1352,70 @@ impl<P: ProviderExecutor> TurnRunner<P> {
 
 				if let Some((tool_call, _metadata)) = outcome.tool_call {
 					if executed_tool_rounds >= MAX_EXECUTABLE_TOOL_ROUNDS {
+						// <agent://256> item A (contract §9 amendment, commit 1e0b8ca98): a
+						// provider tool call past the live per-turn maximum must still
+						// emit `tool_call.rejected` + `error.recorded` before the turn
+						// fails, reusing `dispatch_tool_call`'s stub-rejection machinery
+						// (same producers/visibility/payload shape). No `tool_call.requested`
+						// precedes this: the budget check rejects the call before it is
+						// ever requested/observed, so causation chains to the last real
+						// preceding event (`provider_request.built`).
+						let tool_name = tool_call.tool_name.as_str();
+						let reason =
+							catalog::tool_budget_exhausted_reason(tool_name, MAX_EXECUTABLE_TOOL_ROUNDS);
+						let rejected_event_id = self.ids.event_id();
+						let error_id = self.ids.error_id();
+						self
+							.append(
+								&mut trace,
+								&ctx,
+								rejected_event_id.clone(),
+								RawEventType::ToolCallRejected,
+								self.clock.now(),
+								kernel_producer(),
+								Some(causation.clone()),
+								EntityIdsV0 {
+									tool_call_id: Some(round_tool_call_id.clone()),
+									error_id: Some(error_id.clone()),
+									..EntityIdsV0::default()
+								},
+								visibility_for(&RawEventType::ToolCallRejected),
+								RedactionLevelV0::Sensitive,
+								json!({ "tool_name": tool_name, "policy": catalog::TOOL_BUDGET_REJECTION_POLICY, "reason": reason }),
+								None,
+							)
+							.await?;
+
+						self
+							.append(
+								&mut trace,
+								&ctx,
+								self.ids.event_id(),
+								RawEventType::ErrorRecorded,
+								self.clock.now(),
+								kernel_producer(),
+								Some(rejected_event_id),
+								EntityIdsV0 {
+									tool_call_id: Some(round_tool_call_id.clone()),
+									error_id: Some(error_id.clone()),
+									..EntityIdsV0::default()
+								},
+								visibility_for(&RawEventType::ErrorRecorded),
+								RedactionLevelV0::Sensitive,
+								json!({
+									"schema_version": successor_protocol::error::ERROR_SCHEMA_VERSION,
+									"error_id": error_id.as_str(),
+									"code": catalog::TOOL_BUDGET_REJECTION_ERROR_CODE,
+									"message": format!("Tool {tool_name} was requested after the Slice 0 per-turn tool-call maximum was already exhausted."),
+									"recoverable": true,
+									"retryable": false,
+									"correlation_id": ctx.request_id.as_str(),
+									"details": { "tool_name": tool_name, "policy": catalog::TOOL_BUDGET_REJECTION_POLICY },
+								}),
+								None,
+							)
+							.await?;
+
 						return Err(TurnFailure::ToolBudgetExhausted);
 					}
 					executed_tool_rounds += 1;

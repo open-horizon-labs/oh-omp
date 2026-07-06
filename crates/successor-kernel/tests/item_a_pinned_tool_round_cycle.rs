@@ -24,6 +24,7 @@ use successor_kernel::{
 	frame_sink::FrameSink,
 	id_factory::{Clock, IdFactory, RealClock, RealIdFactory},
 	platform_client::{EntitlementToken, KernelPlatformClient},
+	provider::projection,
 	runner::{
 		ProviderExecutor, ProviderRoundOutcome, ScriptedProviderExecutor, ScriptedRound, TurnInput,
 		TurnRunner,
@@ -115,9 +116,10 @@ fn cleanup_workspace(root: &PathBuf) {
 	let _ = std::fs::remove_dir_all(root);
 }
 
-/// Wraps an inner [`ProviderExecutor`], recording every `round_text` it is
-/// called with (in call order) into `rounds_seen` before delegating to the
-/// inner executor unchanged.
+/// Wraps an inner [`ProviderExecutor`], recording the effective text each
+/// round is called with (the turn's `user_text`, plus the completed tool
+/// rounds' bounded result text once any exist) into `rounds_seen` before
+/// delegating to the inner executor unchanged.
 struct RecordingProviderExecutor {
 	inner:       ScriptedProviderExecutor,
 	rounds_seen: Arc<Mutex<Vec<String>>>,
@@ -138,19 +140,32 @@ impl ProviderExecutor for RecordingProviderExecutor {
 
 	async fn send_round(
 		&self,
-		round_text: &str,
+		user_text: &str,
+		completed_rounds: &[projection::CompletedToolRoundV0],
 		catalog: &ToolCatalogV0,
 		message_id: MessageId,
 		tool_call_id: ToolCallId,
 	) -> Result<ProviderRoundOutcome, TurnFailure> {
+		let effective_round_text = if completed_rounds.is_empty() {
+			user_text.to_owned()
+		} else {
+			format!(
+				"{user_text}\n{}",
+				completed_rounds
+					.iter()
+					.map(|round| round.result_text.as_str())
+					.collect::<Vec<_>>()
+					.join("\n")
+			)
+		};
 		self
 			.rounds_seen
 			.lock()
 			.expect("rounds_seen mutex poisoned")
-			.push(round_text.to_owned());
+			.push(effective_round_text);
 		self
 			.inner
-			.send_round(round_text, catalog, message_id, tool_call_id)
+			.send_round(user_text, completed_rounds, catalog, message_id, tool_call_id)
 			.await
 	}
 }

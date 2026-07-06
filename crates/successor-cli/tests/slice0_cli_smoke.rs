@@ -292,7 +292,7 @@ fn ask_over_a_real_platform_and_kernel_completes_with_a_terminal_success_frame()
 		&[
 			"ask",
 			"--workspace-root",
-			".",
+			env!("CARGO_MANIFEST_DIR"),
 			"--prompt",
 			"hi",
 			"--kernel-url",
@@ -357,7 +357,7 @@ fn session_id_is_preserved_from_the_platform_store_through_kernel_frames_to_cli_
 		&[
 			"ask",
 			"--workspace-root",
-			".",
+			env!("CARGO_MANIFEST_DIR"),
 			"--prompt",
 			"hi",
 			"--format",
@@ -403,7 +403,7 @@ fn separate_resume_and_inspect_cli_processes_each_freshly_reflect_the_live_kerne
 		&[
 			"ask",
 			"--workspace-root",
-			".",
+			env!("CARGO_MANIFEST_DIR"),
 			"--prompt",
 			"hi",
 			"--format",
@@ -489,7 +489,7 @@ fn kernel_url_mode_never_leaks_or_depends_on_injected_sentinel_secrets() {
 		&[
 			"ask",
 			"--workspace-root",
-			".",
+			env!("CARGO_MANIFEST_DIR"),
 			"--prompt",
 			"hi",
 			"--kernel-url",
@@ -711,7 +711,7 @@ fn ask_format_sse_stdout_is_byte_exact_against_a_direct_subscription_to_the_real
 		&[
 			"ask",
 			"--workspace-root",
-			".",
+			env!("CARGO_MANIFEST_DIR"),
 			"--prompt",
 			"hi",
 			"--format",

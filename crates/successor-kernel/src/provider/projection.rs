@@ -764,4 +764,105 @@ mod tests {
 				.expect("the first tool_use block normalizes");
 		assert_eq!(tool_call.tool_name, "read");
 	}
+
+	#[test]
+	fn project_conversation_request_body_with_no_completed_rounds_matches_project_request_body_for_every_shape()
+	 {
+		let catalog = catalog_with(vec![]);
+		let user_text = "what is in this workspace?";
+
+		for shape in [
+			ProviderApiShapeV0::AnthropicMessages,
+			ProviderApiShapeV0::OpenAiChatCompletions,
+			ProviderApiShapeV0::OpenAiResponses,
+		] {
+			let plain = project_request_body(&shape, user_text, &catalog);
+			let conversation = project_conversation_request_body(&shape, user_text, &[], &catalog);
+			assert_eq!(
+				conversation, plain,
+				"empty completed_rounds must not change the {shape:?} request body"
+			);
+		}
+	}
+
+	#[test]
+	fn project_conversation_request_body_pins_the_openai_chat_completions_continuation_message_shape()
+	 {
+		let catalog = catalog_with(vec![]);
+		let completed_rounds = vec![CompletedToolRoundV0 {
+			provider_tool_call_id: "call_shape_openai_chat_001".to_owned(),
+			tool_name:             "read".to_owned(),
+			arguments:             serde_json::json!({ "path": "a.txt" }),
+			result_text:           "file contents".to_owned(),
+		}];
+
+		let body = project_conversation_request_body(
+			&ProviderApiShapeV0::OpenAiChatCompletions,
+			"what is in this workspace?",
+			&completed_rounds,
+			&catalog,
+		);
+
+		assert_eq!(
+			body["messages"],
+			serde_json::json!([
+				{ "role": "user", "content": "what is in this workspace?" },
+				{
+					"role": "assistant",
+					"tool_calls": [{
+						"id": "call_shape_openai_chat_001",
+						"type": "function",
+						"function": {
+							"name": "read",
+							"arguments": "{\"path\":\"a.txt\"}",
+						},
+					}],
+				},
+				{
+					"role": "tool",
+					"tool_call_id": "call_shape_openai_chat_001",
+					"content": "file contents",
+				},
+			])
+		);
+	}
+
+	#[test]
+	fn project_conversation_request_body_pins_the_openai_responses_continuation_message_shape() {
+		let catalog = catalog_with(vec![]);
+		let completed_rounds = vec![CompletedToolRoundV0 {
+			provider_tool_call_id: "call_shape_openai_resp_001".to_owned(),
+			tool_name:             "read".to_owned(),
+			arguments:             serde_json::json!({ "path": "a.txt" }),
+			result_text:           "file contents".to_owned(),
+		}];
+
+		let body = project_conversation_request_body(
+			&ProviderApiShapeV0::OpenAiResponses,
+			"what is in this workspace?",
+			&completed_rounds,
+			&catalog,
+		);
+
+		assert_eq!(
+			body["input"],
+			serde_json::json!([
+				{
+					"role": "user",
+					"content": [{ "type": "input_text", "text": "what is in this workspace?" }],
+				},
+				{
+					"type": "function_call",
+					"call_id": "call_shape_openai_resp_001",
+					"name": "read",
+					"arguments": "{\"path\":\"a.txt\"}",
+				},
+				{
+					"type": "function_call_output",
+					"call_id": "call_shape_openai_resp_001",
+					"output": "file contents",
+				},
+			])
+		);
+	}
 }

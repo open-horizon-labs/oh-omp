@@ -26,11 +26,19 @@ series tasks 252-260 (serial cycles this protocol parallelizes).
    execution. Nothing executes under contested law.
 3. **Parallel executions** (isolated). One dispatch, N executor tasks, each in an
    isolated tree (patch mode or per-lane worktree), each bound to its own ruling
-   artifact. Every executor: checkout proof, firing proof for each new/strengthened
-   test, quoted per-package validation. No executor runs workspace-wide gates.
+   artifact. Fallback (amended after Wave 1: harness task isolation was disabled):
+   lanes MAY share the working tree only when owned file sets are pairwise
+   disjoint; the deviation is declared in the dispatch context and recorded in
+   the closure commit (Slice 0 C4/C5 shared-tree precedent). Executors then must
+   not stage/commit/reset and must expect sibling edits to appear. Every
+   executor: checkout proof, firing proof for each new/strengthened test, quoted
+   per-package validation. No executor runs workspace-wide gates.
 4. **Merge + integration gate** (orchestrator; the irreducible serial point).
    Apply lane patches in ruled dependency order onto the wave base. Then, on the
-   merged tree: `make check-rs`, full per-crate suites, byte-identity oracles, and
+   merged tree: `make check-rs`, `cargo test --workspace --all-targets` compile
+   coverage (amended after Wave 1: check-rs alone missed a trait-signature break
+   in test targets outside the lane's owned files), full per-crate suites,
+   byte-identity oracles, and
    at least one live smoke of the affected path, gated on success terminal frames
    (never exit codes alone — see the defeated-gate record in f4fdc9b00). Per-lane
    green is not merged green; the 8-round budget defect (fixed at 0ffc764be) is the

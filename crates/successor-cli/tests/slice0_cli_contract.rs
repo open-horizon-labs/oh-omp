@@ -68,12 +68,26 @@ fn run_cli(args: &[&str], env: &[(&str, &str)]) -> CliOutput {
 #[test]
 fn ask_rejects_a_session_id_flag_that_does_not_exist_on_the_ruled_grammar() {
 	let output = run_cli(
-		&["ask", "--workspace-root", ".", "--prompt", "hi", "--session-id", "ses_whatever"],
+		&[
+			"ask",
+			"--workspace-root",
+			env!("CARGO_MANIFEST_DIR"),
+			"--prompt",
+			"hi",
+			"--session-id",
+			"ses_whatever",
+		],
 		&[],
 	);
 	assert_eq!(
 		output.status, 2,
 		"unrecognized --session-id on ask must be a usage error: {output:?}"
+	);
+	assert!(
+		output
+			.stderr
+			.contains("unexpected argument '--session-id' found"),
+		"the usage error must name the unrecognized --session-id flag, not just exit 2: {output:?}"
 	);
 }
 
@@ -83,7 +97,7 @@ fn ask_rejects_model_combined_with_kernel_url() {
 		&[
 			"ask",
 			"--workspace-root",
-			".",
+			env!("CARGO_MANIFEST_DIR"),
 			"--prompt",
 			"hi",
 			"--kernel-url",
@@ -97,6 +111,13 @@ fn ask_rejects_model_combined_with_kernel_url() {
 		output.status, 2,
 		"--model configures the in-process bootstrap only; combining it with --kernel-url must be a \
 		 usage error: {output:?}"
+	);
+	assert!(
+		output.stderr.contains(
+			"the argument '--kernel-url <KERNEL_URL>' cannot be used with '--model <MODEL>'"
+		),
+		"the usage error must name the conflicting --kernel-url/--model flags, not just exit 2: \
+		 {output:?}"
 	);
 }
 
@@ -116,7 +137,7 @@ fn ask_rejects_platform_url_combined_with_kernel_url() {
 		&[
 			"ask",
 			"--workspace-root",
-			".",
+			env!("CARGO_MANIFEST_DIR"),
 			"--prompt",
 			"hi",
 			"--kernel-url",
@@ -127,6 +148,14 @@ fn ask_rejects_platform_url_combined_with_kernel_url() {
 		&[],
 	);
 	assert_eq!(output.status, 2, "--platform-url with --kernel-url must be rejected: {output:?}");
+	assert!(
+		output.stderr.contains(
+			"the argument '--kernel-url <KERNEL_URL>' cannot be used with '--platform-url \
+			 <PLATFORM_URL>'"
+		),
+		"the usage error must name the conflicting --kernel-url/--platform-url flags, not just exit \
+		 2: {output:?}"
+	);
 }
 
 #[test]
@@ -172,11 +201,27 @@ fn inspect_session_rejects_platform_url_combined_with_kernel_url() {
 
 #[test]
 fn ask_rejects_format_json_because_ask_streams_frames_not_a_single_body() {
-	let output =
-		run_cli(&["ask", "--workspace-root", ".", "--prompt", "hi", "--format", "json"], &[]);
+	let output = run_cli(
+		&[
+			"ask",
+			"--workspace-root",
+			env!("CARGO_MANIFEST_DIR"),
+			"--prompt",
+			"hi",
+			"--format",
+			"json",
+		],
+		&[],
+	);
 	assert_eq!(
 		output.status, 2,
 		"ask --format json is not a valid value for this grammar: {output:?}"
+	);
+	assert!(
+		output
+			.stderr
+			.contains("invalid value 'json' for '--format <FORMAT>'"),
+		"the usage error must name the offending --format value, not just exit 2: {output:?}"
 	);
 }
 
@@ -469,7 +514,7 @@ fn ask_against_an_unreachable_platform_surfaces_the_kernels_json_error_envelope_
 		&[
 			"ask",
 			"--workspace-root",
-			".",
+			env!("CARGO_MANIFEST_DIR"),
 			"--prompt",
 			"hi",
 			"--kernel-url",
@@ -553,7 +598,7 @@ fn ask_format_sse_is_byte_for_byte_pass_through_and_exit_code_follows_the_termin
 		&[
 			"ask",
 			"--workspace-root",
-			".",
+			env!("CARGO_MANIFEST_DIR"),
 			"--prompt",
 			"hi",
 			"--kernel-url",

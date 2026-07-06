@@ -24,7 +24,7 @@ use successor_kernel::{
 	http::{AppState, build_router},
 	id_factory::{RealClock, RealIdFactory},
 	platform_client::{EntitlementToken, KernelPlatformClient},
-	provider::auth::ProviderSlot,
+	provider::{auth::ProviderSlot, projection},
 	runner::{ProviderExecutor, ProviderRoundOutcome, ScriptedProviderExecutor, ScriptedRound},
 	sse::render_kernel_frame_sse,
 	state_machine::TurnFailure,
@@ -161,7 +161,8 @@ impl ProviderExecutor for BarrierGatedExecutor {
 
 	async fn send_round(
 		&self,
-		round_text: &str,
+		user_text: &str,
+		completed_rounds: &[projection::CompletedToolRoundV0],
 		catalog: &ToolCatalogV0,
 		message_id: MessageId,
 		tool_call_id: ToolCallId,
@@ -169,7 +170,7 @@ impl ProviderExecutor for BarrierGatedExecutor {
 		self.barrier.wait().await;
 		self
 			.inner
-			.send_round(round_text, catalog, message_id, tool_call_id)
+			.send_round(user_text, completed_rounds, catalog, message_id, tool_call_id)
 			.await
 	}
 }

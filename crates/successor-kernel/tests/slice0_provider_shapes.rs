@@ -18,8 +18,9 @@
 
 use successor_kernel::{
 	provider::projection::{
-		ProjectionError, ProviderBuildInputV0, build_provider_request, normalize_response,
-		normalize_tool_call, project_request_body, project_tool_call, project_tool_result,
+		CONTEXT_BLOCK_BYTE_BUDGET, CONTEXT_BLOCK_TRUNCATED_MARKER, ProjectionError,
+		ProviderBuildInputV0, build_provider_request, normalize_response, normalize_tool_call,
+		project_request_body, project_tool_call, project_tool_result, render_context_block,
 	},
 	tools::{
 		catalog::slice0_catalog, find::FindArgs, grep::GrepArgs, list_dir::ListDirArgs,
@@ -28,7 +29,8 @@ use successor_kernel::{
 };
 use successor_protocol::{
 	fixtures,
-	ids::{ArtifactId, MessageId, ToolCallId},
+	ids::{ArtifactId, ContextItemId, MessageId, SourceEnvelopeId, ToolCallId},
+	platform_api::{ContextItemRecoveryV0, ContextItemV0},
 	provider::{NormalizedToolResultV0, ProviderApiShapeV0, ProviderWireShapeV0},
 	provider_shape_fixture::ProviderShapeNormalizationFixtureV0,
 	tool_catalog::{ToolCatalogV0, ToolDefinitionV0, ToolStatusV0},
@@ -580,4 +582,116 @@ fn tool_argument_dtos_round_trip_valid_json_and_reject_malformed_json_through_th
 	let message = rejected
 		.expect_err("a non-numeric max_matches must be rejected, not silently defaulted to 20");
 	assert!(!message.is_empty());
+}
+
+// ---------------------------------------------------------------------
+// Ruling agent://277-ContextInjectionDissent (PROCEED-WITH-CONDITIONS):
+// `render_context_block`'s empty-assembled-context passthrough and its
+// deterministic ordering/truncation bounds.
+// ---------------------------------------------------------------------
+
+fn context_item_fixture(id: &str, score: f64, rendered_text: String) -> ContextItemV0 {
+	ContextItemV0 {
+		context_item_id: ContextItemId::try_from(id.to_owned()).unwrap(),
+		source_envelope_id: SourceEnvelopeId::try_from("src_test".to_owned()).unwrap(),
+		artifact_id: ArtifactId::try_from("art_test".to_owned()).unwrap(),
+		source_kind: "tool_result".to_owned(),
+		title: "test fixture".to_owned(),
+		rendered_text,
+		score,
+		token_estimate: 1,
+		included: true,
+		recovery: ContextItemRecoveryV0 {
+			method: "platform_artifact".to_owned(),
+			id:     id.to_owned(),
+		},
+	}
+}
+
+#[test]
+fn render_context_block_of_no_included_items_is_empty_and_a_byte_identical_passthrough() {
+	let mut excluded =
+		context_item_fixture("ctx_excluded1", 1.0, "should never be injected".to_owned());
+	excluded.included = false;
+
+	let empty = render_context_block(&[]);
+	assert_eq!(empty.text, "", "no context items at all must render an empty block");
+	assert!(empty.injected_context_item_ids.is_empty());
+
+	let none_included = render_context_block(&[excluded]);
+	assert_eq!(
+		none_included.text, "",
+		"items the platform's own budget excluded (`included: false`) must never be injected"
+	);
+	assert!(none_included.injected_context_item_ids.is_empty());
+
+	let combined = format!("{}{}", empty.text, USER_TEXT);
+	assert_eq!(
+		combined, USER_TEXT,
+		"prepending an empty rendered context block must be a byte-identical passthrough, matching \
+		 the empty-`completed_rounds` equivalence `project_conversation_request_body` already gives \
+		 against `project_request_body`"
+	);
+}
+
+#[test]
+fn render_context_block_orders_deterministically_and_truncates_mid_item_with_the_exact_marker() {
+	// A higher `score` must win over a lexicographically smaller id: score is
+	// the primary ordering key, `context_item_id` is only the tie-breaker.
+	let ordering_probe = [
+		context_item_fixture("ctx_low_score", 0.1, "low score content".to_owned()),
+		context_item_fixture("ctx_high_score", 0.9, "high score content".to_owned()),
+	];
+	let ordering = render_context_block(&ordering_probe);
+	assert_eq!(
+		ordering
+			.injected_context_item_ids
+			.iter()
+			.map(ContextItemId::as_str)
+			.collect::<Vec<_>>(),
+		vec!["ctx_high_score", "ctx_low_score"],
+		"score must order descending regardless of id"
+	);
+
+	// Two items tied on score order by ascending id, and an oversized item
+	// must be truncated mid-item at the pinned byte budget with the exact
+	// marker appended once; anything after the truncation point is dropped
+	// entirely, proven here by `ctx_ccc3` never appearing at all.
+	let item_a = context_item_fixture("ctx_aaa1", 1.0, "A".repeat(100));
+	let item_b = context_item_fixture("ctx_bbb2", 1.0, "B".repeat(CONTEXT_BLOCK_BYTE_BUDGET));
+	let item_c = context_item_fixture("ctx_ccc3", 1.0, "C".repeat(50));
+	let rendered = render_context_block(&[item_c, item_b, item_a]);
+
+	assert_eq!(
+		rendered
+			.injected_context_item_ids
+			.iter()
+			.map(ContextItemId::as_str)
+			.collect::<Vec<_>>(),
+		vec!["ctx_aaa1", "ctx_bbb2"],
+		"tied scores must order by ascending context_item_id, and the item after the truncation \
+		 point (`ctx_ccc3`) must be dropped entirely rather than partially injected"
+	);
+	assert!(
+		rendered.text.contains(&"A".repeat(100)),
+		"the fully-included item's content must be present in full"
+	);
+	assert!(
+		!rendered.text.contains('C'),
+		"an item dropped entirely by truncation must not appear at all, not even partially"
+	);
+	assert_eq!(
+		rendered
+			.text
+			.matches(CONTEXT_BLOCK_TRUNCATED_MARKER)
+			.count(),
+		1,
+		"the truncation marker must appear exactly once"
+	);
+	let b_count = rendered.text.matches('B').count();
+	assert!(
+		b_count > 0 && b_count < CONTEXT_BLOCK_BYTE_BUDGET,
+		"the truncated item's content must be cut, not fully included ({CONTEXT_BLOCK_BYTE_BUDGET} \
+		 bytes of B were offered) nor fully dropped (0 bytes); got {b_count} bytes of B"
+	);
 }

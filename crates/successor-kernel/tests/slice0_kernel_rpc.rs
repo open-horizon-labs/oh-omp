@@ -7,7 +7,7 @@
 //! without any network call.
 
 use std::sync::{
-	Arc,
+	Arc, Mutex,
 	atomic::{AtomicBool, AtomicU64, Ordering},
 };
 
@@ -204,6 +204,50 @@ fn barrier_gated_state(
 	)
 }
 
+/// Wraps a [`ScriptedProviderExecutor`] and records the exact `user_text`
+/// each `send_round` call receives, in call order, so a test can inspect
+/// what actually reached the provider boundary for a given round -- for
+/// example, to prove the assembled-context block ruled by
+/// `agent://277-ContextInjectionDissent` reaches round 1 of a continuation
+/// turn's provider request.
+struct RecordingProviderExecutor {
+	inner: ScriptedProviderExecutor,
+	log:   Arc<Mutex<Vec<String>>>,
+}
+
+impl ProviderExecutor for RecordingProviderExecutor {
+	fn provider_id(&self) -> &str {
+		self.inner.provider_id()
+	}
+
+	fn api_shape(&self) -> ProviderApiShapeV0 {
+		self.inner.api_shape()
+	}
+
+	fn model(&self) -> &str {
+		self.inner.model()
+	}
+
+	async fn send_round(
+		&self,
+		user_text: &str,
+		completed_rounds: &[projection::CompletedToolRoundV0],
+		catalog: &ToolCatalogV0,
+		message_id: MessageId,
+		tool_call_id: ToolCallId,
+	) -> Result<ProviderRoundOutcome, TurnFailure> {
+		self
+			.log
+			.lock()
+			.expect("recording log mutex")
+			.push(user_text.to_owned());
+		self
+			.inner
+			.send_round(user_text, completed_rounds, catalog, message_id, tool_call_id)
+			.await
+	}
+}
+
 /// Runs one real scripted turn directly against the accepted C7 runner (not
 /// through this lane's own routes) and returns the resulting session id.
 /// `TurnRunner::execute_turn` always creates its own platform session, so a
@@ -240,6 +284,68 @@ async fn seed_populated_session(
 		.frames()
 		.first()
 		.expect("the seeding turn published at least one frame")
+		.session_id
+		.clone()
+}
+
+/// Distinctive marker written into the seeded workspace and read back by
+/// [`seed_session_with_a_read_artifact`]'s scripted `read` tool round, so a
+/// later continuation turn's hydrated context can be recognized by content
+/// rather than by id.
+const CONTEXT_INJECTION_MARKER: &str = "marker-4f9c2a-turn-one-file-contents";
+
+fn seed_workspace_with_marker(label: &str) -> std::path::PathBuf {
+	let root = seed_workspace(label);
+	std::fs::write(root.join("marker.txt"), CONTEXT_INJECTION_MARKER)
+		.expect("write the marker file");
+	root
+}
+
+/// Runs one real scripted turn (a `read` tool round over `marker.txt`,
+/// followed by a `Final` round) directly against the accepted C7 runner, so
+/// the session has a real platform artifact a later continuation turn's
+/// recency retrieval can hydrate. Unlike [`seed_populated_session`], this
+/// turn's raw events carry a backing artifact.
+async fn seed_session_with_a_read_artifact(
+	server: &TestServer,
+	workspace: &std::path::Path,
+) -> successor_protocol::ids::SessionId {
+	let frame_stream = KernelFrameStream::new();
+	let runner = successor_kernel::runner::TurnRunner::new(
+		server.client(),
+		successor_kernel::frame_sink::FrameSink::new(frame_stream),
+		Arc::new(RealIdFactory::new()),
+		Arc::new(RealClock),
+		ScriptedProviderExecutor::new(
+			"scripted",
+			ProviderApiShapeV0::AnthropicMessages,
+			"scripted-model",
+			vec![
+				ScriptedRound::ToolUse {
+					tool_name:             "read".to_owned(),
+					arguments:             serde_json::json!({ "path": "marker.txt" }),
+					provider_tool_call_id: "call_seed_read".to_owned(),
+				},
+				ScriptedRound::Final {
+					text:    "read the marker file".to_owned(),
+					summary: "read the marker file".to_owned(),
+				},
+			],
+		),
+		workspace,
+	);
+	let attempt = runner
+		.execute_turn(successor_kernel::runner::TurnInput {
+			user_text:      "please read marker.txt".to_owned(),
+			assembly_query: None,
+		})
+		.await;
+	assert!(attempt.outcome.is_ok(), "the artifact-seeding turn must succeed: {attempt:?}");
+	attempt
+		.trace
+		.frames()
+		.first()
+		.expect("the artifact-seeding turn published at least one frame")
 		.session_id
 		.clone()
 }
@@ -1043,6 +1149,111 @@ async fn submit_turn_with_session_id_continues_the_existing_session_and_chains_c
 	);
 
 	serve_handle.abort();
+	cleanup_workspace(&workspace);
+}
+
+// ---------------------------------------------------------------------
+// Ruling agent://277-ContextInjectionDissent (PROCEED-WITH-CONDITIONS): a
+// continuation turn's round 1 provider request must actually carry the
+// prior turn's hydrated assembled context inside the first user message,
+// not merely reference it by id. `provider_request.built`'s reported
+// `context_item_ids` must never diverge from what was actually injected.
+// ---------------------------------------------------------------------
+
+#[tokio::test]
+async fn continuation_turn_round_one_injects_the_prior_turns_hydrated_context_into_the_first_user_message()
+ {
+	let server = TestServer::start("ctx-injection").await;
+	let workspace = seed_workspace_with_marker("ctx-injection");
+	let session_id = seed_session_with_a_read_artifact(&server, &workspace).await;
+
+	let page_before = server
+		.client()
+		.read_session_events(&session_id, None, None)
+		.await
+		.expect("read the session's events after seeding");
+
+	let log: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+	let runner = successor_kernel::runner::TurnRunner::new(
+		server.client(),
+		successor_kernel::frame_sink::FrameSink::new(KernelFrameStream::new()),
+		Arc::new(RealIdFactory::new()),
+		Arc::new(RealClock),
+		RecordingProviderExecutor {
+			inner: ScriptedProviderExecutor::new(
+				"scripted",
+				ProviderApiShapeV0::AnthropicMessages,
+				"scripted-model",
+				vec![ScriptedRound::Final {
+					text:    "continuation reply".to_owned(),
+					summary: "continuation reply".to_owned(),
+				}],
+			),
+			log:   Arc::clone(&log),
+		},
+		&workspace,
+	);
+	let attempt = runner
+		.continue_turn(
+			successor_kernel::runner::TurnInput {
+				user_text:      "continue please".to_owned(),
+				assembly_query: None,
+			},
+			session_id.clone(),
+		)
+		.await;
+	assert!(attempt.outcome.is_ok(), "the continuation turn must succeed: {attempt:?}");
+
+	let page_after = server
+		.client()
+		.read_session_events(&session_id, None, None)
+		.await
+		.expect("read the session's events after the continuation turn");
+	let new_events = &page_after.events[page_before.events.len()..];
+	let provider_request_built = new_events
+		.iter()
+		.find(|event| event.event_type == RawEventType::ProviderRequestBuilt)
+		.expect("turn 2 must append a provider_request.built raw event");
+	let context_item_ids: Vec<String> = provider_request_built
+		.entity_ids
+		.context_item_ids
+		.iter()
+		.map(|id| id.as_str().to_owned())
+		.collect();
+	assert!(
+		!context_item_ids.is_empty(),
+		"turn 2 round 1's provider_request.built must report the ids it actually injected, not an \
+		 empty set, once the seeded session has a real prior-turn artifact to hydrate"
+	);
+
+	let round_one_user_text = {
+		let recorded = log.lock().expect("recording log mutex");
+		recorded
+			.first()
+			.expect("round 1 of turn 2 must call send_round at least once")
+			.clone()
+	};
+	assert!(
+		round_one_user_text.contains(CONTEXT_INJECTION_MARKER),
+		"turn 2 round 1's provider user text must carry turn 1's hydrated context (the marker \
+		 file's rendered_text), proving the assembled context actually reached the provider request \
+		 instead of dying at the runner/provider seam (agent://277-ContextInjectionDissent); got: \
+		 {round_one_user_text:?}"
+	);
+	assert!(
+		round_one_user_text.ends_with("continue please"),
+		"the assembled context block must be prepended before the user's own turn text, never \
+		 replacing or following it; got: {round_one_user_text:?}"
+	);
+	for id in &context_item_ids {
+		assert!(
+			round_one_user_text.contains(&format!("id={id}")),
+			"every id reported on provider_request.built must actually appear in the injected \
+			 context block, never diverge from what was injected; missing {id:?} in \
+			 {round_one_user_text:?}"
+		);
+	}
+
 	cleanup_workspace(&workspace);
 }
 

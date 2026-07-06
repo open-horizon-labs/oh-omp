@@ -33,7 +33,8 @@
 
 use serde_json::Value as WireJson;
 use successor_protocol::{
-	ids::{ArtifactId, MessageId, RequestId, ToolCallId, TurnId},
+	ids::{ArtifactId, ContextItemId, MessageId, RequestId, ToolCallId, TurnId},
+	platform_api::ContextItemV0,
 	provider::{
 		NormalizedProviderRequestV0, NormalizedResponseV0, NormalizedToolCallV0,
 		NormalizedToolResultV0, PROVIDER_REQUEST_BUILT_EVENT_TYPE,
@@ -200,6 +201,131 @@ pub fn project_request_body(
 			})).collect::<Vec<_>>(),
 		}),
 	}
+}
+
+/// Kernel-side byte budget for the assembled-context injection block.
+///
+/// Built by [`render_context_block`]. Applied on top of, and independent
+/// from, the platform assembler's own token/item assemble-request budget:
+/// an item can be `included` by the platform and still be dropped or
+/// truncated here if the rendered block would not fit a single provider
+/// request.
+pub const CONTEXT_BLOCK_BYTE_BUDGET: usize = 8_192;
+
+/// Stable marker appended when the assembled-context block is truncated.
+///
+/// [`render_context_block`] appends this exactly once, and only once, when
+/// truncating the block to fit [`CONTEXT_BLOCK_BYTE_BUDGET`]. Pinned by
+/// tests -- do not change this text without updating every test asserting
+/// on it.
+pub const CONTEXT_BLOCK_TRUNCATED_MARKER: &str = "\n[assembled context truncated]\n";
+
+const CONTEXT_BLOCK_OPEN: &str =
+	"[assembled context: read-only prior-turn material, not a tool result]\n";
+const CONTEXT_BLOCK_CLOSE: &str = "[/assembled context]\n\n";
+const CONTEXT_ITEM_CLOSE: &str = "\n[/context_item]\n";
+
+/// Result of projecting assembled [`ContextItemV0`] values into a block.
+///
+/// Values typically come from
+/// `successor_protocol::platform_api::AssemblyResponseV0::context_items`.
+/// The read-only block is what [`render_context_block`] prepends to the
+/// first user message.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RenderedContextBlock {
+	/// Text to prepend to the first user message's text, before the user's
+	/// own turn text. Empty when there is nothing to inject; callers must
+	/// then pass the user's turn text through unchanged (byte-identical
+	/// passthrough for the empty-assembled-context case).
+	pub text: String,
+	/// Ids of the context items that appear, in full or truncated, in
+	/// `text`, in injection order. Callers must report exactly this set as
+	/// the injected ids (for example on `provider_request.built`'s
+	/// `context_item_ids`); it never diverges from what `text` contains.
+	pub injected_context_item_ids: Vec<ContextItemId>,
+}
+
+fn context_item_header(item: &ContextItemV0) -> String {
+	format!(
+		"[context_item id={} source={} artifact={}]\n",
+		item.context_item_id.as_str(),
+		item.source_kind,
+		item.artifact_id.as_str(),
+	)
+}
+
+fn truncate_at_char_boundary(text: &str, max_bytes: usize) -> &str {
+	if text.len() <= max_bytes {
+		return text;
+	}
+	let mut end = max_bytes;
+	while end > 0 && !text.is_char_boundary(end) {
+		end -= 1;
+	}
+	&text[..end]
+}
+
+/// Projects `items` (typically `AssemblyResponseV0::context_items`) into
+/// the pinned read-only assembled-context block described on
+/// [`RenderedContextBlock`].
+///
+/// Only `item.included` items are considered (items the platform's own
+/// budget already excluded are never injected). The remaining items are
+/// ordered deterministically by `score` descending, tie-broken by
+/// `context_item_id` ascending, then rendered in that order until
+/// [`CONTEXT_BLOCK_BYTE_BUDGET`] bytes is reached. If an item would
+/// overflow the budget, its `rendered_text` is truncated at a valid `char`
+/// boundary to fit (or the item is dropped entirely if even its header
+/// does not fit), [`CONTEXT_BLOCK_TRUNCATED_MARKER`] is appended exactly
+/// once, and every item after the truncation point is dropped.
+///
+/// Returns an empty [`RenderedContextBlock::text`] when there are no
+/// included items, so callers get byte-identical passthrough behavior for
+/// the documented empty-assembled-context case.
+#[must_use]
+pub fn render_context_block(items: &[ContextItemV0]) -> RenderedContextBlock {
+	let mut ordered: Vec<&ContextItemV0> = items.iter().filter(|item| item.included).collect();
+	ordered.sort_by(|a, b| {
+		b.score
+			.partial_cmp(&a.score)
+			.unwrap_or(std::cmp::Ordering::Equal)
+			.then_with(|| a.context_item_id.as_str().cmp(b.context_item_id.as_str()))
+	});
+
+	if ordered.is_empty() {
+		return RenderedContextBlock { text: String::new(), injected_context_item_ids: Vec::new() };
+	}
+
+	let mut body = String::from(CONTEXT_BLOCK_OPEN);
+	let mut injected_context_item_ids = Vec::new();
+	let mut truncated = false;
+
+	for item in ordered {
+		let header = context_item_header(item);
+		let entry_len = header.len() + item.rendered_text.len() + CONTEXT_ITEM_CLOSE.len();
+		if body.len() + entry_len <= CONTEXT_BLOCK_BYTE_BUDGET {
+			body.push_str(&header);
+			body.push_str(&item.rendered_text);
+			body.push_str(CONTEXT_ITEM_CLOSE);
+			injected_context_item_ids.push(item.context_item_id.clone());
+			continue;
+		}
+		if body.len() + header.len() < CONTEXT_BLOCK_BYTE_BUDGET {
+			let remaining = CONTEXT_BLOCK_BYTE_BUDGET - body.len() - header.len();
+			body.push_str(&header);
+			body.push_str(truncate_at_char_boundary(&item.rendered_text, remaining));
+			injected_context_item_ids.push(item.context_item_id.clone());
+		}
+		truncated = true;
+		break;
+	}
+
+	if truncated {
+		body.push_str(CONTEXT_BLOCK_TRUNCATED_MARKER);
+	}
+	body.push_str(CONTEXT_BLOCK_CLOSE);
+
+	RenderedContextBlock { text: body, injected_context_item_ids }
 }
 
 /// A tool round already completed within the current turn's provider

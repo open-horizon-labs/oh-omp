@@ -1370,11 +1370,26 @@ impl<P: ProviderExecutor> TurnRunner<P> {
 				causation = assemble_completed_event_id;
 				last_frame_id = assemble_last_frame_id;
 
-				let context_item_ids: Vec<ContextItemId> = assembly_response
-					.context_items
-					.iter()
-					.map(|item| item.context_item_id.clone())
-					.collect();
+				// Only the first round of a turn (`TurnPhase::PreTool`) injects the
+				// assembled-context block into the first user message. Later rounds
+				// within the same turn already carry their own just-completed tool
+				// activity via `completed_rounds` (the tool-use/tool-result message
+				// pair), so no text is injected there, and the reported ids keep
+				// their pre-existing unfiltered value so same-turn required-source
+				// hydration (already reflected in `completed_rounds`, not in this
+				// block) continues to be observable on `provider_request.built`.
+				let (context_item_ids, provider_user_text): (Vec<ContextItemId>, String) = if phase.is_first() {
+					let rendered_context = projection::render_context_block(&assembly_response.context_items);
+					(
+						rendered_context.injected_context_item_ids,
+						format!("{}{}", rendered_context.text, input.user_text),
+					)
+				} else {
+					(
+						assembly_response.context_items.iter().map(|item| item.context_item_id.clone()).collect(),
+						input.user_text.clone(),
+					)
+				};
 				let mut request_payload = json!({
 					"phase": phase.provider_request_label(),
 					"provider_id": self.provider.provider_id(),
@@ -1421,7 +1436,7 @@ impl<P: ProviderExecutor> TurnRunner<P> {
 				let outcome = self
 					.provider
 					.send_round(
-						&input.user_text,
+						&provider_user_text,
 						&completed_rounds,
 						&catalog,
 						round_message_id.clone(),

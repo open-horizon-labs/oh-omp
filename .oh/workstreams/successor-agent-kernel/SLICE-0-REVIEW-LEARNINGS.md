@@ -175,3 +175,15 @@ Corollary: entity producer/reference semantics must be derived from canonical fi
 ### 13. Split verification is the orchestrator's gate, not the executor's
 
 Executor assignments restrict validation to `cargo test -p <crate>` by design. Therefore the orchestrator MUST run `make check-rs` on every returned lane before dispatching review gates. Workspace-lint failures found there (doc-paragraph lints, fmt drift) are assignment-framing gaps — fix forward without treating them as agent-discipline failures, and never present a lane to reviewers before the workspace gate is green.
+
+## Lessons from the post-acceptance provider-path correction (2026-07-06)
+
+### 14. A live-path oracle that tolerates typed failure terminals proves nothing
+
+The Gate 5 live provider smoke asserted "a valid normalized terminal frame" and accepted `turn_completed` OR `turn_failed`. A typed provider-auth failure is a valid normalized terminal frame, so the smoke recorded a masked 401 as a Gate 5 pass (D2 packet, original 2026-07-05 record). Three real defects hid behind it: the gateway base URL was never consumed, the hardcoded model was stale for the environment, and executable tools were advertised with `input_schema: null` (real Anthropic rejects the request with HTTP 400 before the model runs). Deterministic suites could not catch any of these because scripted providers never validate request bodies.
+
+Rules:
+- A test whose purpose is "prove path X works" must assert the SUCCESS terminal of path X, never a disjunction that a failure also satisfies. Failure-tolerant assertions are for failure-path tests.
+- Anything only a real counterparty validates (request body shapes, auth header semantics, model names) needs at least one oracle on the real path; scripted seams prove protocol composition, not counterparty acceptance.
+- Schema/content advertised to a counterparty must be derived from the same types that validate it locally (schemars from the executor's own arg DTOs), so advertisement and validation cannot drift; a bare `{"type":"object"}` placeholder must fail the projection contract test.
+- When a governance record's evidence is later invalidated, correct the record in place with the diagnosis and the genuine rerun — do not delete or overwrite the history (D2 packet CORRECTED RECORD precedent, `987c22621`).

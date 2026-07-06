@@ -22,6 +22,7 @@ import {
 	truncateDiffByHunk,
 } from "../tools/render-utils";
 import { Hasher, type RenderCache, renderStatusLine, truncateToWidth } from "../tui";
+import type { HashlineDeltaContextBlock, HashlineRemappedAnchor } from "./hashline";
 import type { HashlineToolEdit } from "./index";
 import type { DiffError, DiffResult, Operation } from "./types";
 
@@ -60,6 +61,10 @@ export interface EditToolDetails {
 	op?: Operation;
 	/** New path after move/rename (patch mode only) */
 	move?: string;
+	/** Fresh hashline context emitted after a hashline edit */
+	hashlineDeltaContext?: HashlineDeltaContextBlock[];
+	/** Stale anchors remapped through this edit's journal */
+	hashlineRemappedAnchors?: HashlineRemappedAnchor[];
 	/** Structured output metadata */
 	meta?: OutputMeta;
 }

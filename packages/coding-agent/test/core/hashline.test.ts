@@ -1,12 +1,15 @@
 import { describe, expect, it } from "bun:test";
 import {
+	analyzeHashlineEdit,
 	applyHashlineEdits,
 	buildCompactHashlineDiffPreview,
+	buildHashlineDeltaContext,
 	computeLineHash,
 	formatHashLines,
 	HashlineMismatchError,
 	hashlineParseText,
 	parseTag,
+	remapHashlineEdits,
 	streamHashLinesFromLines,
 	streamHashLinesFromUtf8,
 	stripNewLinePrefixes,
@@ -917,6 +920,77 @@ describe("buildCompactHashlineDiffPreview", () => {
 		expect(preview.preview).toContain(` 3#${computeLineHash(3, "bravo")}|bravo`);
 		expect(preview.preview).toContain(` 4#${computeLineHash(4, "charlie")}|charlie`);
 		expect(preview.preview).not.toContain(` 2#${computeLineHash(2, "bravo")}|bravo`);
+	});
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// hashline edit analysis — remaps and fresh delta context
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe("hashline edit analysis", () => {
+	it("remaps stale anchors after an insertion and applies the follow-up edit", () => {
+		const content = "alpha\nbeta\ngamma";
+		const firstEdits: HashlineEdit[] = [{ op: "append_at", pos: makeTag(1, "alpha"), lines: ["inserted"] }];
+		const firstResult = applyHashlineEdits(content, firstEdits);
+		const analysis = analyzeHashlineEdit(content, firstResult.lines, firstEdits);
+		const remaps = new Map(analysis.remaps.map(remap => [remap.from, parseTag(remap.to)]));
+
+		const staleGamma = formatLineTag(3, "gamma").slice(0, "3#ZZ".length);
+		const followUpEdits: HashlineEdit[] = [{ op: "replace_line", pos: parseTag(staleGamma), lines: ["GAMMA"] }];
+		const remapped = remapHashlineEdits(followUpEdits, firstResult.lines, remaps);
+
+		expect(remapped.remappedAnchors).toEqual([
+			{ from: staleGamma, to: formatLineTag(4, "gamma").slice(0, "4#ZZ".length) },
+		]);
+		expect(applyHashlineEdits(firstResult.lines, remapped.edits).lines).toBe("alpha\ninserted\nbeta\nGAMMA");
+	});
+
+	it("remaps punctuation-only surviving lines with the new line-number-derived hash", () => {
+		const content = "{\n}\nnext";
+		const edits: HashlineEdit[] = [{ op: "prepend_at", pos: makeTag(1, "{"), lines: ["inserted"] }];
+		const result = applyHashlineEdits(content, edits);
+		const analysis = analyzeHashlineEdit(content, result.lines, edits);
+		const remaps = new Map(analysis.remaps.map(remap => [remap.from, remap.to]));
+
+		expect(remaps.get(formatLineTag(2, "}").slice(0, "2#ZZ".length))).toBe(
+			formatLineTag(3, "}").slice(0, "3#ZZ".length),
+		);
+	});
+
+	it("does not remap a removed line to identical inserted text", () => {
+		const content = "keep\nvictim\ntail";
+		const edits: HashlineEdit[] = [
+			{ op: "replace_range", pos: makeTag(2, "victim"), end: makeTag(2, "victim"), lines: ["new", "victim"] },
+		];
+		const result = applyHashlineEdits(content, edits);
+		const analysis = analyzeHashlineEdit(content, result.lines, edits);
+
+		expect(analysis.remaps.map(remap => remap.from)).not.toContain(
+			formatLineTag(2, "victim").slice(0, "2#ZZ".length),
+		);
+	});
+
+	it("builds fresh hashline context around changed lines", () => {
+		const content = "alpha\nbeta\ngamma";
+		const edits: HashlineEdit[] = [{ op: "append_at", pos: makeTag(1, "alpha"), lines: ["inserted"] }];
+		const result = applyHashlineEdits(content, edits);
+		const analysis = analyzeHashlineEdit(content, result.lines, edits);
+		const blocks = buildHashlineDeltaContext(result.lines, analysis.changedLines, { contextLines: 1, maxLines: 10 });
+
+		expect(blocks).toHaveLength(1);
+		expect(blocks[0].text).toContain(formatLineTag(1, "alpha"));
+		expect(blocks[0].text).toContain(formatLineTag(2, "inserted"));
+		expect(blocks[0].text).toContain(formatLineTag(3, "beta"));
+	});
+
+	it("keeps a changed line when fresh-context budget truncates a later hunk", () => {
+		const content = Array.from({ length: 60 }, (_, index) => `line-${index + 1}`).join("\n");
+		const blocks = buildHashlineDeltaContext(content, [10, 20, 30], { contextLines: 5, maxLines: 13 });
+
+		expect(blocks).toHaveLength(2);
+		expect(blocks[0].text).toContain(formatLineTag(10, "line-10"));
+		expect(blocks[1].text).toContain(formatLineTag(20, "line-20"));
+		expect(blocks.map(block => block.text).join("\n")).not.toContain(formatLineTag(30, "line-30"));
 	});
 });
 

@@ -12,6 +12,7 @@ import * as fs from "node:fs/promises";
 import * as nodePath from "node:path";
 import type { AgentTool, AgentToolContext, AgentToolResult, AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
 import { StringEnum } from "@oh-my-pi/pi-ai";
+import { isEnoent } from "@oh-my-pi/pi-utils";
 import { type Static, Type } from "@sinclair/typebox";
 import { renderPromptTemplate } from "../config/prompt-templates";
 import {
@@ -39,12 +40,16 @@ import { generateDiffString, generateUnifiedDiffString, replaceText } from "./di
 import { findMatch } from "./fuzzy";
 import {
 	type Anchor,
+	analyzeHashlineEdit,
 	applyHashlineEdits,
 	buildCompactHashlineDiffPreview,
+	buildHashlineDeltaContext,
 	checkBoundariesForEdits,
 	computeLineHash,
+	type HashlineAnchorRemap,
 	type HashlineEdit,
 	parseTag,
+	remapHashlineEdits,
 	verifyTags,
 } from "./hashline";
 import { detectLineEnding, normalizeToLF, restoreLineEndings, stripBom } from "./normalize";
@@ -106,6 +111,7 @@ export type PatchParams = Static<typeof patchEditSchema>;
  */
 const HASHLINE_PREFIX_RE = /^\s*(?:>>>|>>)?\s*(?:\+?\s*(?:\d+\s*#\s*|#\s*)|\+)\s*[ZPMQVRWSNKTXJBYH]{2}:/;
 const HASHLINE_PREFIX_PLUS_RE = /^\s*(?:>>>|>>)?\s*\+\s*(?:\d+\s*#\s*|#\s*)?[ZPMQVRWSNKTXJBYH]{2}:/;
+const MAX_HASHLINE_REMAPS_PER_FILE = 20_000;
 
 /** Pattern matching a unified-diff added-line `+` prefix (but not `++`). Does NOT match `-` to avoid corrupting Markdown list items. */
 const DIFF_PLUS_RE = /^[+](?![+])/;
@@ -339,6 +345,16 @@ class LspFileSystem implements FileSystem {
 	}
 }
 
+async function pathExists(path: string): Promise<boolean> {
+	try {
+		await fs.access(path);
+		return true;
+	} catch (err) {
+		if (isEnoent(err)) return false;
+		throw err;
+	}
+}
+
 function mergeDiagnosticsWithWarnings(
 	diagnostics: FileDiagnosticsResult | undefined,
 	warnings: string[],
@@ -398,6 +414,7 @@ export class EditTool implements AgentTool<TInput> {
 	readonly #fuzzyThreshold: number;
 	readonly #writethrough: WritethroughCallback;
 	readonly #editMode?: EditMode | null;
+	readonly #hashlineAnchorRemaps = new Map<string, Map<string, Anchor>>();
 
 	constructor(private readonly session: ToolSession) {
 		const {
@@ -496,6 +513,48 @@ export class EditTool implements AgentTool<TInput> {
 		}
 	}
 
+	#anchorKey(anchor: Anchor): string {
+		return `${anchor.line}#${anchor.hash}`;
+	}
+
+	#recordHashlineAnchorRemaps(path: string, remaps: readonly HashlineAnchorRemap[]): void {
+		if (remaps.length === 0) {
+			this.#hashlineAnchorRemaps.delete(path);
+			return;
+		}
+
+		const directRemaps = new Map<string, Anchor>();
+		for (const remap of remaps) {
+			directRemaps.set(remap.from, parseTag(remap.to));
+		}
+
+		const existing = this.#hashlineAnchorRemaps.get(path);
+		const composed = new Map<string, Anchor>();
+		if (existing) {
+			for (const [from, currentTarget] of existing) {
+				const updatedTarget = directRemaps.get(this.#anchorKey(currentTarget));
+				if (updatedTarget) composed.set(from, updatedTarget);
+			}
+		}
+
+		for (const [from, target] of directRemaps) {
+			composed.set(from, target);
+		}
+
+		if (composed.size === 0 || composed.size > MAX_HASHLINE_REMAPS_PER_FILE) {
+			this.#hashlineAnchorRemaps.delete(path);
+			return;
+		}
+
+		this.#hashlineAnchorRemaps.set(path, composed);
+	}
+
+	#transferHashlineAnchorRemaps(from: string, to: string): void {
+		const existing = this.#hashlineAnchorRemaps.get(from);
+		this.#hashlineAnchorRemaps.delete(from);
+		if (existing) this.#hashlineAnchorRemaps.set(to, new Map(existing));
+	}
+
 	async execute(
 		_toolCallId: string,
 		params: ReplaceParams | PatchParams | HashlineParams,
@@ -525,13 +584,14 @@ export class EditTool implements AgentTool<TInput> {
 			if (resolvedMove === absolutePath) {
 				throw new Error("move path is the same as source path");
 			}
-			const sourceExists = await fs.exists(absolutePath);
+			const sourceExists = await pathExists(absolutePath);
 			const isMoveOnly = Boolean(resolvedMove) && edits.length === 0;
 
 			if (deleteFile) {
 				if (sourceExists) {
 					await fs.unlink(absolutePath);
 				}
+				this.#hashlineAnchorRemaps.delete(absolutePath);
 				invalidateFsScanAfterDelete(absolutePath);
 				return {
 					content: [{ type: "text", text: `Deleted ${path}` }],
@@ -553,6 +613,7 @@ export class EditTool implements AgentTool<TInput> {
 				}
 				// Preserve exact bytes for move-only operations, including binary files.
 				await fs.rename(absolutePath, resolvedMove);
+				this.#transferHashlineAnchorRemaps(absolutePath, resolvedMove);
 				invalidateFsScanAfterRename(absolutePath, resolvedMove);
 				return {
 					content: [{ type: "text", text: `Moved ${path} to ${move}` }],
@@ -578,6 +639,7 @@ export class EditTool implements AgentTool<TInput> {
 					}
 				}
 				await fs.writeFile(absolutePath, lines.join("\n"));
+				this.#hashlineAnchorRemaps.delete(absolutePath);
 				return {
 					content: [{ type: "text", text: `Created ${path}` }],
 					details: {
@@ -588,7 +650,7 @@ export class EditTool implements AgentTool<TInput> {
 				};
 			}
 
-			const anchorEdits = resolveEditAnchors(edits);
+			let anchorEdits = resolveEditAnchors(edits);
 
 			const rawContent = await fs.readFile(absolutePath, "utf-8");
 			await checkAutoGeneratedFileContent(rawContent, path);
@@ -596,6 +658,13 @@ export class EditTool implements AgentTool<TInput> {
 			const originalEnding = detectLineEnding(text);
 			const originalNormalized = normalizeToLF(text);
 			let normalizedText = originalNormalized;
+
+			const remapResult = remapHashlineEdits(
+				anchorEdits,
+				normalizedText,
+				this.#hashlineAnchorRemaps.get(absolutePath) ?? new Map(),
+			);
+			anchorEdits = remapResult.edits;
 
 			// Apply anchor-based edits first (replace, append_at, prepend_at).
 			// Keep fork preflight protections: verify tags before mutation and reject shared boundaries.
@@ -683,6 +752,16 @@ export class EditTool implements AgentTool<TInput> {
 			} else {
 				invalidateFsScanAfterWrite(absolutePath);
 			}
+			if (resolvedMove && resolvedMove !== absolutePath) {
+				this.#transferHashlineAnchorRemaps(absolutePath, writePath);
+			}
+			const hashlineAnalysis = analyzeHashlineEdit(originalNormalized, result.text, anchorEdits);
+			this.#recordHashlineAnchorRemaps(writePath, hashlineAnalysis.remaps);
+			const deltaContext = buildHashlineDeltaContext(result.text, hashlineAnalysis.changedLines, {
+				contextLines: 5,
+				maxLines: 80,
+			});
+
 			const diffResult = generateDiffString(originalNormalized, result.text);
 
 			const meta = outputMeta()
@@ -693,12 +772,23 @@ export class EditTool implements AgentTool<TInput> {
 			const preview = buildCompactHashlineDiffPreview(diffResult.diff);
 			const summaryLine = `Changes: +${preview.addedLines} -${preview.removedLines}${preview.preview ? "" : " (no textual diff preview)"}`;
 			const warningsBlock = result.warnings?.length ? `\n\nWarnings:\n${result.warnings.join("\n")}` : "";
+			const remappedAnchorBlock = remapResult.remappedAnchors.length
+				? `\n\nRemapped stale anchors:\n${remapResult.remappedAnchors
+						.slice(0, 8)
+						.map(remap => `- ${remap.from} -> ${remap.to}`)
+						.join(
+							"\n",
+						)}${remapResult.remappedAnchors.length > 8 ? `\n- ... ${remapResult.remappedAnchors.length - 8} more` : ""}`
+				: "";
+			const freshAnchorBlock = deltaContext.length
+				? `\n\nFresh anchors (latest file state; use these for follow-up edits):\n${deltaContext.map(block => block.text).join("\n...\n")}`
+				: "";
 			const previewBlock = preview.preview ? `\n\nDiff preview:\n${preview.preview}` : "";
 			return {
 				content: [
 					{
 						type: "text",
-						text: `${resultText}\n${summaryLine}${previewBlock}${warningsBlock}`,
+						text: `${resultText}\n${summaryLine}${previewBlock}${freshAnchorBlock}${remappedAnchorBlock}${warningsBlock}`,
 					},
 				],
 				details: {
@@ -707,6 +797,8 @@ export class EditTool implements AgentTool<TInput> {
 					diagnostics,
 					op: "update",
 					move,
+					hashlineDeltaContext: deltaContext,
+					hashlineRemappedAnchors: remapResult.remappedAnchors,
 					meta,
 				},
 			};
@@ -823,7 +915,7 @@ export class EditTool implements AgentTool<TInput> {
 
 		const absolutePath = resolvePlanPath(this.session, path);
 
-		if (!(await fs.exists(absolutePath))) {
+		if (!(await pathExists(absolutePath))) {
 			throw new Error(`File not found: ${path}`);
 		}
 

@@ -866,6 +866,358 @@ export function applyHashlineEdits(
 	}
 }
 
+export interface HashlineAnchorRemap {
+	from: string;
+	to: string;
+	fromLine: number;
+	toLine: number;
+}
+
+export interface HashlineRemappedAnchor {
+	from: string;
+	to: string;
+}
+
+export interface HashlineRemapEditsResult {
+	edits: HashlineEdit[];
+	remappedAnchors: HashlineRemappedAnchor[];
+}
+
+export interface HashlineEditAnalysis {
+	remaps: HashlineAnchorRemap[];
+	changedLines: number[];
+}
+
+export interface HashlineDeltaContextBlock {
+	startLine: number;
+	endLine: number;
+	text: string;
+}
+
+export interface HashlineDeltaContextOptions {
+	contextLines?: number;
+	maxLines?: number;
+}
+
+type HashlineTrackedLine = {
+	kind: "line";
+	text: string;
+	originalLine: number | undefined;
+	changed: boolean;
+};
+
+type HashlineDeletionMarker = {
+	kind: "marker";
+	changed: true;
+};
+
+type HashlineTrackedEntry = HashlineTrackedLine | HashlineDeletionMarker;
+
+function anchorKey(anchor: Anchor): string {
+	return `${anchor.line}#${anchor.hash}`;
+}
+
+function cloneAnchor(anchor: Anchor): Anchor {
+	return { line: anchor.line, hash: anchor.hash };
+}
+
+function isValidAnchor(anchor: Anchor, fileLines: string[]): boolean {
+	if (anchor.line < 1 || anchor.line > fileLines.length) return false;
+	return computeLineHash(anchor.line, fileLines[anchor.line - 1]) === anchor.hash;
+}
+
+function resolveAnchorRemap(
+	anchor: Anchor,
+	fileLines: string[],
+	remaps: ReadonlyMap<string, Anchor>,
+): { anchor: Anchor; remapped?: HashlineRemappedAnchor } {
+	if (isValidAnchor(anchor, fileLines)) {
+		return { anchor: cloneAnchor(anchor) };
+	}
+
+	const from = anchorKey(anchor);
+	const mapped = remaps.get(from);
+	if (!mapped || !isValidAnchor(mapped, fileLines)) {
+		return { anchor: cloneAnchor(anchor) };
+	}
+
+	return { anchor: cloneAnchor(mapped), remapped: { from, to: anchorKey(mapped) } };
+}
+
+export function remapHashlineEdits(
+	edits: readonly HashlineEdit[],
+	currentText: string,
+	remaps: ReadonlyMap<string, Anchor>,
+): HashlineRemapEditsResult {
+	if (remaps.size === 0) {
+		return {
+			edits: edits.map(edit => ({ ...edit, lines: [...edit.lines] }) as HashlineEdit),
+			remappedAnchors: [],
+		};
+	}
+
+	const fileLines = currentText.split("\n");
+	const remappedAnchors = new Map<string, HashlineRemappedAnchor>();
+	const track = (remapped: HashlineRemappedAnchor | undefined) => {
+		if (!remapped) return;
+		remappedAnchors.set(`${remapped.from}->${remapped.to}`, remapped);
+	};
+
+	const remappedEdits = edits.map<HashlineEdit>(edit => {
+		switch (edit.op) {
+			case "replace_line": {
+				const pos = resolveAnchorRemap(edit.pos, fileLines, remaps);
+				track(pos.remapped);
+				return { ...edit, pos: pos.anchor, lines: [...edit.lines] };
+			}
+			case "replace_range": {
+				const pos = resolveAnchorRemap(edit.pos, fileLines, remaps);
+				const end = resolveAnchorRemap(edit.end, fileLines, remaps);
+				track(pos.remapped);
+				track(end.remapped);
+				return { ...edit, pos: pos.anchor, end: end.anchor, lines: [...edit.lines] };
+			}
+			case "append_at": {
+				const pos = resolveAnchorRemap(edit.pos, fileLines, remaps);
+				track(pos.remapped);
+				return { ...edit, pos: pos.anchor, lines: [...edit.lines] };
+			}
+			case "prepend_at": {
+				const pos = resolveAnchorRemap(edit.pos, fileLines, remaps);
+				track(pos.remapped);
+				return { ...edit, pos: pos.anchor, lines: [...edit.lines] };
+			}
+			case "append_file":
+			case "prepend_file":
+				return { ...edit, lines: [...edit.lines] };
+			default: {
+				const exhaustive: never = edit;
+				return exhaustive;
+			}
+		}
+	});
+
+	return { edits: remappedEdits, remappedAnchors: [...remappedAnchors.values()] };
+}
+
+function sortHashlineEditsForApplication(edits: readonly HashlineEdit[], fileLineCount: number) {
+	const annotated = edits.map((edit, idx) => {
+		let sortLine: number;
+		let precedence: number;
+		switch (edit.op) {
+			case "replace_line":
+				sortLine = edit.pos.line;
+				precedence = 0;
+				break;
+			case "replace_range":
+				sortLine = edit.end.line;
+				precedence = 0;
+				break;
+			case "append_at":
+				sortLine = edit.pos.line;
+				precedence = 1;
+				break;
+			case "prepend_at":
+				sortLine = edit.pos.line;
+				precedence = 2;
+				break;
+			case "append_file":
+				sortLine = fileLineCount + 1;
+				precedence = 1;
+				break;
+			case "prepend_file":
+				sortLine = 0;
+				precedence = 2;
+				break;
+		}
+
+		return { edit, idx, sortLine, precedence };
+	});
+
+	annotated.sort((a, b) => b.sortLine - a.sortLine || a.precedence - b.precedence || a.idx - b.idx);
+	return annotated;
+}
+
+function changedEntries(lines: readonly string[]): HashlineTrackedLine[] {
+	return lines.map(line => ({ kind: "line", text: line, originalLine: undefined, changed: true }));
+}
+
+function textEntries(entries: readonly HashlineTrackedEntry[]): HashlineTrackedLine[] {
+	return entries.filter((entry): entry is HashlineTrackedLine => entry.kind === "line");
+}
+
+function normalizedChangedLine(line: number, lineCount: number): number {
+	return Math.min(Math.max(1, line), Math.max(1, lineCount));
+}
+
+function fallbackChangedLines(originalText: string, newText: string): number[] {
+	const oldLines = originalText.split("\n");
+	const newLines = newText.split("\n");
+	const maxPrefix = Math.min(oldLines.length, newLines.length);
+	let first = 0;
+	while (first < maxPrefix && oldLines[first] === newLines[first]) first++;
+
+	if (first === oldLines.length && first === newLines.length) return [];
+
+	let oldLast = oldLines.length - 1;
+	let newLast = newLines.length - 1;
+	while (oldLast >= first && newLast >= first && oldLines[oldLast] === newLines[newLast]) {
+		oldLast--;
+		newLast--;
+	}
+
+	const startLine = normalizedChangedLine(first + 1, newLines.length);
+	const endLine = normalizedChangedLine(Math.max(startLine, newLast + 1), newLines.length);
+	const changed: number[] = [];
+	for (let line = startLine; line <= endLine; line++) changed.push(line);
+	return changed;
+}
+
+export function analyzeHashlineEdit(
+	originalText: string,
+	newText: string,
+	edits: readonly HashlineEdit[],
+): HashlineEditAnalysis {
+	if (edits.length === 0 || originalText === newText) {
+		return { remaps: [], changedLines: [] };
+	}
+
+	const originalLines = originalText.split("\n");
+	const entries: HashlineTrackedEntry[] = originalLines.map((text, index) => ({
+		kind: "line",
+		text,
+		originalLine: index + 1,
+		changed: false,
+	}));
+
+	for (const { edit } of sortHashlineEditsForApplication(edits, originalLines.length)) {
+		switch (edit.op) {
+			case "replace_line": {
+				const originalLine = entries[edit.pos.line - 1];
+				if (originalLine?.kind === "line" && edit.lines.length === 1 && originalLine.text === edit.lines[0]) {
+					break;
+				}
+				entries.splice(edit.pos.line - 1, 1, ...changedEntries(edit.lines));
+				if (edit.lines.length === 0) entries.splice(edit.pos.line - 1, 0, { kind: "marker", changed: true });
+				break;
+			}
+			case "replace_range": {
+				const count = edit.end.line - edit.pos.line + 1;
+				entries.splice(edit.pos.line - 1, count, ...changedEntries(edit.lines));
+				if (edit.lines.length === 0) entries.splice(edit.pos.line - 1, 0, { kind: "marker", changed: true });
+				break;
+			}
+			case "append_at":
+				entries.splice(edit.pos.line, 0, ...changedEntries(edit.lines));
+				break;
+			case "prepend_at":
+				entries.splice(edit.pos.line - 1, 0, ...changedEntries(edit.lines));
+				break;
+			case "append_file":
+				if (entries.length === 1 && entries[0].kind === "line" && entries[0].text === "") {
+					entries.splice(0, 1, ...changedEntries(edit.lines));
+				} else {
+					entries.splice(entries.length, 0, ...changedEntries(edit.lines));
+				}
+				break;
+			case "prepend_file":
+				if (entries.length === 1 && entries[0].kind === "line" && entries[0].text === "") {
+					entries.splice(0, 1, ...changedEntries(edit.lines));
+				} else {
+					entries.splice(0, 0, ...changedEntries(edit.lines));
+				}
+				break;
+		}
+	}
+
+	const simulatedLines = textEntries(entries);
+	const simulatedText = simulatedLines.map(entry => entry.text).join("\n");
+	if (simulatedText !== newText) {
+		return { remaps: [], changedLines: fallbackChangedLines(originalText, newText) };
+	}
+
+	const remaps: HashlineAnchorRemap[] = [];
+	const changedLines = new Set<number>();
+	let lineNumber = 0;
+	for (const entry of entries) {
+		if (entry.kind === "marker") {
+			changedLines.add(normalizedChangedLine(lineNumber + 1, simulatedLines.length));
+			continue;
+		}
+
+		lineNumber++;
+		if (entry.changed) changedLines.add(lineNumber);
+		if (entry.originalLine !== undefined && entry.text === originalLines[entry.originalLine - 1]) {
+			const from = formatLineTag(entry.originalLine, entry.text);
+			const to = formatLineTag(lineNumber, entry.text);
+			remaps.push({ from, to, fromLine: entry.originalLine, toLine: lineNumber });
+		}
+	}
+
+	return { remaps, changedLines: [...changedLines].sort((a, b) => a - b) };
+}
+
+export function buildHashlineDeltaContext(
+	text: string,
+	changedLines: readonly number[],
+	options: HashlineDeltaContextOptions = {},
+): HashlineDeltaContextBlock[] {
+	if (changedLines.length === 0) return [];
+
+	const contextLines = options.contextLines ?? 5;
+	const maxLines = options.maxLines ?? 80;
+	const fileLines = text.split("\n");
+	const sortedChanged = [...new Set(changedLines)]
+		.filter(line => line >= 1 && line <= fileLines.length)
+		.sort((a, b) => a - b);
+
+	const blocks: HashlineDeltaContextBlock[] = [];
+	let remainingLines = maxLines;
+	for (const line of sortedChanged) {
+		if (remainingLines <= 0) break;
+
+		const startLine = Math.max(1, line - contextLines);
+		const endLine = Math.min(fileLines.length, line + contextLines);
+		const previous = blocks[blocks.length - 1];
+		if (previous && startLine <= previous.endLine + 1) {
+			if (line <= previous.endLine) {
+				const extraLines = Math.min(remainingLines, Math.max(0, endLine - previous.endLine));
+				previous.endLine += extraLines;
+				remainingLines -= extraLines;
+				continue;
+			}
+
+			const requiredExtraLines = line - previous.endLine;
+			if (requiredExtraLines > remainingLines) {
+				const blockLineCount = remainingLines;
+				const blockStartLine = Math.max(
+					previous.endLine + 1,
+					Math.min(Math.max(startLine, line - blockLineCount + 1), line),
+				);
+				blocks.push({ startLine: blockStartLine, endLine: blockStartLine + blockLineCount - 1, text: "" });
+				remainingLines = 0;
+				break;
+			}
+
+			const extraLines = Math.min(remainingLines, endLine - previous.endLine);
+			previous.endLine += extraLines;
+			remainingLines -= extraLines;
+			continue;
+		}
+
+		const rangeLineCount = endLine - startLine + 1;
+		const blockLineCount = Math.min(remainingLines, rangeLineCount);
+		const blockStartLine = Math.min(Math.max(startLine, line - blockLineCount + 1), line);
+		blocks.push({ startLine: blockStartLine, endLine: blockStartLine + blockLineCount - 1, text: "" });
+		remainingLines -= blockLineCount;
+	}
+
+	return blocks.map(block => {
+		const blockText = fileLines.slice(block.startLine - 1, block.endLine).join("\n");
+		return { ...block, text: formatHashLines(blockText, block.startLine) };
+	});
+}
+
 export interface CompactHashlineDiffPreview {
 	preview: string;
 	addedLines: number;

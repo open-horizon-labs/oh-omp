@@ -1,20 +1,27 @@
-//! Regression test for the <agent://256> dissent ruling (item B): the
-//! provider round after a tool call must receive the tool's full bounded
-//! result content, not a truncated preview and not a bare `artifact:<id>`
-//! reference.
+//! Regression test for the <agent://256> dissent ruling (item B) plus the
+//! <agent://259> finding 2 / `hydration_design_adjudication` fix: the
+//! continuation round after a tool call must carry the full turn
+//! conversation -- the original user prompt, the provider's own `tool_use`
+//! block, and the tool's full bounded result content -- not a truncated
+//! preview, not a bare `artifact:<id>` reference, and not a wholesale
+//! replacement that discards the original prompt and prior rounds.
 //!
-//! This asserts directly on the `round_text` argument passed into
-//! `ProviderExecutor::send_round` (captured via a recording wrapper around
-//! `ScriptedProviderExecutor`), never on any raw event/frame byte, so it
-//! cannot perturb any fixture-pinned oracle (C7/D2).
+//! This asserts directly on the provider-native request `messages` array
+//! passed into `ProviderExecutor::send_round` (captured via a recording
+//! wrapper around `ScriptedProviderExecutor`, projected through
+//! `provider::projection::project_conversation_request_body`), never on any
+//! raw event/frame byte, so it cannot perturb any fixture-pinned oracle
+//! (C7/D2).
 //!
-//! Before the fix, every round's `round_text` was `&input.user_text`
-//! unconditionally (`runner.rs`'s `execute_turn`), so the post-`read`
-//! round never carried the file body at all: `round_text` stayed
-//! `"what package is this?"` and never contained the manifest body. This
-//! test fails against that behavior and passes once `round_text` is
-//! replaced by `ToolDispatchSuccess::provider_result_text` after each
-//! successful tool dispatch.
+//! Before the fix, `runner.rs`'s `execute_turn` collapsed every round to a
+//! single `round_text` string, replaced wholesale by
+//! `ToolDispatchSuccess::provider_result_text` after each tool dispatch: the
+//! post-`read` round carried only the tool result, with the original
+//! prompt and the provider's own `tool_use` call gone entirely. This test
+//! fails against that behavior (round 1 would carry a single bare-string
+//! message, not `[user prompt, assistant tool_use, user tool_result]`) and
+//! passes once the runner threads `completed_rounds` through `send_round`
+//! instead.
 
 use std::{
 	path::PathBuf,
@@ -31,6 +38,7 @@ use successor_kernel::{
 	frame_sink::FrameSink,
 	id_factory::{Clock, IdFactory, RealClock, RealIdFactory},
 	platform_client::{EntitlementToken, KernelPlatformClient},
+	provider::projection,
 	runner::{
 		ProviderExecutor, ProviderRoundOutcome, ScriptedProviderExecutor, ScriptedRound, TurnInput,
 		TurnRunner,
@@ -122,14 +130,15 @@ fn cleanup_workspace(root: &PathBuf) {
 	let _ = std::fs::remove_dir_all(root);
 }
 
-/// Wraps an inner [`ProviderExecutor`], recording every `round_text` it is
-/// called with (in call order) into `rounds_seen` before delegating to the
-/// inner executor unchanged. The inner `ScriptedProviderExecutor` ignores
-/// its `round_text` argument entirely, so wrapping it cannot perturb the
-/// scripted rounds it plays back.
+/// Wraps an inner [`ProviderExecutor`], recording the provider-native
+/// request `messages` array for every round it is called with (in call
+/// order) into `rounds_seen`, before delegating to the inner executor
+/// unchanged. The inner `ScriptedProviderExecutor` ignores both its
+/// `user_text` and `completed_rounds` arguments entirely, so wrapping it
+/// cannot perturb the scripted rounds it plays back.
 struct RecordingProviderExecutor {
 	inner:       ScriptedProviderExecutor,
-	rounds_seen: Arc<Mutex<Vec<String>>>,
+	rounds_seen: Arc<Mutex<Vec<Vec<serde_json::Value>>>>,
 }
 
 impl ProviderExecutor for RecordingProviderExecutor {
@@ -147,19 +156,30 @@ impl ProviderExecutor for RecordingProviderExecutor {
 
 	async fn send_round(
 		&self,
-		round_text: &str,
+		user_text: &str,
+		completed_rounds: &[projection::CompletedToolRoundV0],
 		catalog: &ToolCatalogV0,
 		message_id: MessageId,
 		tool_call_id: ToolCallId,
 	) -> Result<ProviderRoundOutcome, TurnFailure> {
+		let body = projection::project_conversation_request_body(
+			&self.inner.api_shape(),
+			user_text,
+			completed_rounds,
+			catalog,
+		);
+		let messages = body["messages"]
+			.as_array()
+			.expect("anthropic conversation projection always emits a messages array")
+			.clone();
 		self
 			.rounds_seen
 			.lock()
 			.expect("rounds_seen mutex poisoned")
-			.push(round_text.to_owned());
+			.push(messages);
 		self
 			.inner
-			.send_round(round_text, catalog, message_id, tool_call_id)
+			.send_round(user_text, completed_rounds, catalog, message_id, tool_call_id)
 			.await
 	}
 }
@@ -225,26 +245,46 @@ async fn provider_continuation_round_after_read_carries_the_full_bounded_file_co
 		"expected exactly two provider rounds: pre-tool and post-read; got {rounds:?}"
 	);
 
-	let pre_tool_round_text = &rounds[0];
+	let round0 = &rounds[0];
+	assert_eq!(round0.len(), 1, "round 0 must carry only the original user message; got {round0:?}");
+	assert_eq!(round0[0]["role"], "user", "round 0's only message must be the user prompt");
 	assert_eq!(
-		pre_tool_round_text, "what package is this?",
-		"the first round is the original user turn and must be unchanged"
+		round0[0]["content"][0]["text"], "what package is this?",
+		"round 0 must carry the unmodified original user prompt"
 	);
 
-	let post_read_round_text = &rounds[1];
+	let round1 = &rounds[1];
+	assert_eq!(
+		round1.len(),
+		3,
+		"round 1 (post-read continuation) must carry [user prompt, assistant tool_use, user \
+		 tool_result]; got {round1:?}"
+	);
+	assert_eq!(
+		round1[0]["content"][0]["text"], "what package is this?",
+		"round 1 must still carry the original user prompt -- the pre-fix defect discarded it \
+		 entirely after the first tool hop, collapsing the round to the tool result alone"
+	);
+	assert_eq!(
+		round1[1]["role"], "assistant",
+		"round 1's second message must echo the provider's tool_use"
+	);
+	assert_eq!(round1[1]["content"][0]["type"], "tool_use");
+	assert_eq!(round1[1]["content"][0]["name"], "read");
+	assert_eq!(round1[2]["role"], "user", "round 1's third message must carry the tool_result");
+	assert_eq!(round1[2]["content"][0]["type"], "tool_result");
+	let tool_result_content = round1[2]["content"][0]["content"]
+		.as_str()
+		.expect("tool_result content is a bounded text string");
 	assert!(
-		post_read_round_text.contains(manifest_body),
-		"round N+1 (post-read) must carry the full bounded Cargo.toml body, not a preview or a bare \
-		 artifact handle; got: {post_read_round_text:?}"
+		tool_result_content.contains(manifest_body),
+		"round 1's tool_result must carry the full bounded Cargo.toml body, not a preview or a bare \
+		 artifact handle; got: {tool_result_content:?}"
 	);
 	assert!(
-		!post_read_round_text.contains("artifact:"),
-		"round N+1 must not degrade to a bare artifact handle reference; got: \
-		 {post_read_round_text:?}"
-	);
-	assert_ne!(
-		post_read_round_text, "what package is this?",
-		"round N+1 must not be the bare, unhydrated original user text (the pre-fix defect)"
+		!tool_result_content.contains("artifact:"),
+		"round 1's tool_result must not degrade to a bare artifact handle reference; got: \
+		 {tool_result_content:?}"
 	);
 
 	cleanup_workspace(&workspace_root);

@@ -245,7 +245,8 @@ fn two_independent_invocations_write_nothing_under_a_controlled_home_dir() {
 
 #[test]
 fn missing_memex_license_in_process_mode_exits_3_and_never_echoes_a_value() {
-	let output = run_cli(&["ask", "--workspace-root", ".", "--prompt", "hi"], &[]);
+	let output =
+		run_cli(&["ask", "--workspace-root", env!("CARGO_MANIFEST_DIR"), "--prompt", "hi"], &[]);
 	assert_eq!(
 		output.status, 3,
 		"missing MEMEX_LICENSE in in-process mode must be exit 3: {output:?}"
@@ -260,7 +261,15 @@ fn missing_memex_license_in_process_mode_exits_3_and_never_echoes_a_value() {
 #[test]
 fn kernel_url_unreachable_exits_4_with_no_fabricated_envelope() {
 	let output = run_cli(
-		&["ask", "--workspace-root", ".", "--prompt", "hi", "--kernel-url", "http://127.0.0.1:1"],
+		&[
+			"ask",
+			"--workspace-root",
+			env!("CARGO_MANIFEST_DIR"),
+			"--prompt",
+			"hi",
+			"--kernel-url",
+			"http://127.0.0.1:1",
+		],
 		&[],
 	);
 	assert_eq!(
@@ -282,10 +291,11 @@ fn in_process_mode_with_sentinel_secrets_never_leaks_them_on_a_platform_failure(
 	// No real platform is listening on the default platform URL in a test
 	// environment, so the turn fails at session creation (a kernel-returned
 	// JSON error envelope, after the in-process kernel genuinely came up).
-	let output = run_cli(&["ask", "--workspace-root", ".", "--prompt", "hi"], &[
-		("MEMEX_LICENSE", SENTINEL_LICENSE),
-		("ANTHROPIC_API_KEY", SENTINEL_KEY),
-	]);
+	let output =
+		run_cli(&["ask", "--workspace-root", env!("CARGO_MANIFEST_DIR"), "--prompt", "hi"], &[
+			("MEMEX_LICENSE", SENTINEL_LICENSE),
+			("ANTHROPIC_API_KEY", SENTINEL_KEY),
+		]);
 	assert_eq!(
 		output.status, 5,
 		"bootstrap succeeds (license present) but the RPC call itself fails: {output:?}"
@@ -560,4 +570,57 @@ fn ask_format_sse_is_byte_for_byte_pass_through_and_exit_code_follows_the_termin
 		output.stdout, expected_body,
 		"ask --format sse must write the received SSE bytes exactly as sent, with no re-framing"
 	);
+}
+
+// ---------------------------------------------------------------------
+// Lane 4 DX fixes (dissent ruling `262-Lane4DxFixesDissent`).
+// ---------------------------------------------------------------------
+
+#[test]
+fn ask_rejects_a_relative_workspace_root_as_a_usage_error_before_any_kernel_request() {
+	// `--kernel-url` points at a closed port that nothing is listening on: if
+	// validation ran after establish_kernel/streaming started, this would
+	// surface as a transport failure (exit 4), not a usage error (exit 2).
+	// Pinning exit 2 here is the firing proof that the relative path is
+	// rejected before any network activity is attempted.
+	let output = run_cli(
+		&[
+			"ask",
+			"--workspace-root",
+			"relative/path",
+			"--prompt",
+			"hi",
+			"--kernel-url",
+			"http://127.0.0.1:1",
+		],
+		&[],
+	);
+	assert_eq!(
+		output.status, 2,
+		"a relative --workspace-root must be a usage error before any kernel request, not a \
+		 transport failure: {output:?}"
+	);
+	assert!(output.stdout.is_empty(), "a usage error must not write anything to stdout: {output:?}");
+	assert!(
+		output.stderr.contains("--workspace-root"),
+		"the usage error must name the flag: {output:?}"
+	);
+	assert!(
+		output.stderr.contains("absolute"),
+		"the usage error must say an absolute path is required: {output:?}"
+	);
+}
+
+#[test]
+fn ask_rejects_a_relative_workspace_root_in_kernel_url_mode_with_the_same_semantics() {
+	// Same check, in-process bootstrap mode (no --kernel-url): the flag
+	// exists once in the grammar and clap validates it unconditionally, so
+	// both modes must reject identically.
+	let output = run_cli(&["ask", "--workspace-root", "relative/path", "--prompt", "hi"], &[]);
+	assert_eq!(
+		output.status, 2,
+		"in-process bootstrap mode must reject a relative root identically: {output:?}"
+	);
+	assert!(output.stderr.contains("--workspace-root"));
+	assert!(output.stderr.contains("absolute"));
 }

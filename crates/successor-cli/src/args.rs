@@ -21,6 +21,10 @@
 //! - An env-var alias for `--kernel-url` -- clap's `env` feature is not enabled
 //!   for this crate (ruling 4), and no `env(..)` attribute is used here, so
 //!   `--kernel-url` can only ever be set from the command line.
+//! - `ask --workspace-root <relative-path>` -- a custom `value_parser` rejects
+//!   it at parse time (clap usage error, exit code 2), naming the flag and
+//!   requiring an absolute path, before any kernel or platform request is made
+//!   in either mode (Lane 4 `262-Lane4DxFixesDissent`).
 //!
 //! `ask --model` is an owner-authorized post-D1 grammar widening
 //! (2026-07-06): it configures the in-process bootstrap's provider model, so
@@ -75,13 +79,31 @@ pub enum ReadFormat {
 	Text,
 }
 
+/// Rejects a relative `--workspace-root` as a clap usage error (exit code
+/// 2) at parse time, before `establish_kernel`/any kernel or platform
+/// request is made -- in both in-process-bootstrap and `--kernel-url`
+/// modes, since clap parses every argument unconditionally regardless of
+/// which mode is later selected. Previously a relative path was accepted
+/// here and only surfaced as an opaque platform 404 mid-turn.
+fn parse_absolute_workspace_root(value: &str) -> Result<PathBuf, String> {
+	let path = PathBuf::from(value);
+	if path.is_absolute() {
+		Ok(path)
+	} else {
+		Err(format!(
+			"--workspace-root requires an absolute path (got {value:?}); relative paths are rejected \
+			 before any kernel or platform request is made"
+		))
+	}
+}
+
 #[derive(Debug, Args)]
 pub struct AskArgs {
 	/// Workspace root the in-process kernel bootstraps its tool execution
 	/// context against. Required even when `--kernel-url` targets an
 	/// external kernel, since the workspace identity is per-turn, not
 	/// per-kernel-instance.
-	#[arg(long)]
+	#[arg(long, value_parser = parse_absolute_workspace_root)]
 	pub workspace_root: PathBuf,
 
 	/// The user text for this turn.

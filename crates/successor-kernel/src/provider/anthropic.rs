@@ -163,43 +163,61 @@ impl AnthropicAdapter {
 		Self { http, base_url: base_url.into(), api_key }
 	}
 
-	/// Materializes a normalized request into the Anthropic Messages API
-	/// wire body, via `crate::provider::projection::project_request_body`
-	/// for the `anthropic_messages` shape, plus the transport-level `model`
-	/// and `max_tokens` fields the projection layer does not own.
+	/// Materializes a normalized conversation into the Anthropic Messages API
+	/// wire body, via
+	/// `crate::provider::projection::project_conversation_request_body` for
+	/// the `anthropic_messages` shape, plus the transport-level `model` and
+	/// `max_tokens` fields the projection layer does not own.
+	///
+	/// `user_text` is the turn's original user prompt (unchanged across every
+	/// round); `completed_rounds` carries every tool round already completed
+	/// in this turn, oldest first, echoed back as `tool_use`/`tool_result`
+	/// message pairs so the model sees the full conversation instead of only
+	/// the latest tool result (<agent://256> `item_b_fix_ruling`; <agent://259>
+	/// finding 2 / `hydration_design_adjudication`).
 	fn request_body(
 		user_text: &str,
+		completed_rounds: &[projection::CompletedToolRoundV0],
 		catalog: &ToolCatalogV0,
 		model: &str,
 		max_tokens: u32,
 	) -> WireJson {
-		let mut body = projection::project_request_body(
+		let mut body = projection::project_conversation_request_body(
 			&ProviderApiShapeV0::AnthropicMessages,
 			user_text,
+			completed_rounds,
 			catalog,
 		);
 		let object = body
 			.as_object_mut()
-			.expect("project_request_body always returns a JSON object");
+			.expect("project_conversation_request_body always returns a JSON object");
 		object.insert("model".to_owned(), serde_json::json!(model));
 		object.insert("max_tokens".to_owned(), serde_json::json!(max_tokens));
 		body
 	}
 
-	/// Sends `user_text` to the Anthropic Messages API and normalizes the
-	/// response. `tool_call_id` is the successor tool-call ID to attach if
-	/// and only if the model emits a `tool_use` block; it is unused
-	/// otherwise.
+	/// Sends the turn's conversation (`user_text` plus `completed_rounds`) to
+	/// the Anthropic Messages API and normalizes the response. `tool_call_id`
+	/// is the successor tool-call ID to attach if and only if the model
+	/// emits a `tool_use` block; it is unused otherwise.
+	#[expect(
+		clippy::too_many_arguments,
+		reason = "provider round-trip seam: user_text/completed_rounds/catalog/model/max_tokens/ \
+		          message_id/tool_call_id are each independently required by the \
+		          conversation-native request projection (item_b_fix_ruling); splitting into a \
+		          struct is out of scope for this narrow fix"
+	)]
 	pub async fn send_message(
 		&self,
 		user_text: &str,
+		completed_rounds: &[projection::CompletedToolRoundV0],
 		catalog: &ToolCatalogV0,
 		model: &str,
 		max_tokens: u32,
 		message_id: MessageId,
 		tool_call_id: ToolCallId,
 	) -> Result<AnthropicMessageOutcome, AnthropicAdapterError> {
-		let body = Self::request_body(user_text, catalog, model, max_tokens);
+		let body = Self::request_body(user_text, completed_rounds, catalog, model, max_tokens);
 
 		let response = self
 			.http
@@ -290,7 +308,7 @@ mod tests {
 	#[test]
 	fn request_body_carries_model_and_max_tokens_alongside_the_projected_shape() {
 		let catalog = fixtures::tool_catalog();
-		let body = AnthropicAdapter::request_body("hello", &catalog, "claude-x", 256);
+		let body = AnthropicAdapter::request_body("hello", &[], &catalog, "claude-x", 256);
 		assert_eq!(body["model"], "claude-x");
 		assert_eq!(body["max_tokens"], 256);
 		assert!(body["messages"].is_array());
@@ -343,7 +361,15 @@ mod tests {
 		let model = std::env::var("SUCCESSOR_LIVE_PROVIDER_MODEL")
 			.unwrap_or_else(|_| "claude-opus-4-8".to_owned());
 		let outcome = adapter
-			.send_message("Say the single word: ack", &catalog, &model, 16, message_id, tool_call_id)
+			.send_message(
+				"Say the single word: ack",
+				&[],
+				&catalog,
+				&model,
+				16,
+				message_id,
+				tool_call_id,
+			)
 			.await
 			.expect("live Anthropic Messages API call failed");
 

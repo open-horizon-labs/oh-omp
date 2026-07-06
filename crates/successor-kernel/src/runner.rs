@@ -69,7 +69,7 @@ use crate::{
 	id_factory::{Clock, IdFactory},
 	platform_client::KernelPlatformClient,
 	platform_error::PlatformClientError,
-	provider::{auth::ProviderAuthOutcome, credentials::AnthropicApiKey},
+	provider::{auth::ProviderAuthOutcome, credentials::AnthropicApiKey, projection},
 	state_machine::{MAX_EXECUTABLE_TOOL_ROUNDS, TurnFailure, TurnPhase, TurnState},
 	tools::{self, catalog},
 	turn_trace::{TurnAttempt, TurnTrace},
@@ -108,14 +108,24 @@ pub trait ProviderExecutor: Send + Sync {
 	/// Model identifier for raw-event payloads.
 	fn model(&self) -> &str;
 
-	/// Sends one round's request (built from `round_text` and `catalog`)
-	/// and returns the normalized outcome. `message_id`/`tool_call_id` are
-	/// pre-minted by the caller so they can be threaded into the
-	/// normalized response/tool-call regardless of which branch the
+	/// Sends one round's request (built from `user_text`, `completed_rounds`,
+	/// and `catalog`) and returns the normalized outcome. `message_id`/
+	/// `tool_call_id` are pre-minted by the caller so they can be threaded
+	/// into the normalized response/tool-call regardless of which branch the
 	/// provider takes.
+	///
+	/// `user_text` is the turn's original user prompt, unchanged for every
+	/// round. `completed_rounds` carries every tool round already completed
+	/// in this turn's provider round-trip, oldest first, so a provider-native
+	/// implementation can echo back the full conversation (see
+	/// [`projection::project_conversation_request_body`]) instead of
+	/// collapsing to the latest tool result alone (<agent://256>
+	/// `item_b_fix_ruling`; <agent://259> finding 2 /
+	/// `hydration_design_adjudication`).
 	fn send_round(
 		&self,
-		round_text: &str,
+		user_text: &str,
+		completed_rounds: &[projection::CompletedToolRoundV0],
 		catalog: &ToolCatalogV0,
 		message_id: MessageId,
 		tool_call_id: ToolCallId,
@@ -196,7 +206,8 @@ impl ProviderExecutor for ScriptedProviderExecutor {
 
 	async fn send_round(
 		&self,
-		_round_text: &str,
+		_user_text: &str,
+		_completed_rounds: &[projection::CompletedToolRoundV0],
 		_catalog: &ToolCatalogV0,
 		message_id: MessageId,
 		tool_call_id: ToolCallId,
@@ -285,14 +296,23 @@ impl ProviderExecutor for AnthropicProviderExecutor {
 
 	async fn send_round(
 		&self,
-		round_text: &str,
+		user_text: &str,
+		completed_rounds: &[projection::CompletedToolRoundV0],
 		catalog: &ToolCatalogV0,
 		message_id: MessageId,
 		tool_call_id: ToolCallId,
 	) -> Result<ProviderRoundOutcome, TurnFailure> {
 		let outcome = self
 			.adapter
-			.send_message(round_text, catalog, &self.model, self.max_tokens, message_id, tool_call_id)
+			.send_message(
+				user_text,
+				completed_rounds,
+				catalog,
+				&self.model,
+				self.max_tokens,
+				message_id,
+				tool_call_id,
+			)
 			.await
 			.map_err(|err| TurnFailure::Provider(err.to_string()))?;
 		Ok(ProviderRoundOutcome {
@@ -1268,7 +1288,7 @@ impl<P: ProviderExecutor> TurnRunner<P> {
 			let mut required_source_envelope_ids: Vec<SourceEnvelopeId> = Vec::new();
 			let mut phase = TurnPhase::PreTool;
 			let mut executed_tool_rounds: u8 = 0;
-			let mut round_text: String = input.user_text.clone();
+			let mut completed_rounds: Vec<projection::CompletedToolRoundV0> = Vec::new();
 			let assembly_query = input
 				.assembly_query
 				.clone()
@@ -1343,14 +1363,15 @@ impl<P: ProviderExecutor> TurnRunner<P> {
 				let outcome = self
 					.provider
 					.send_round(
-						&round_text,
+						&input.user_text,
+						&completed_rounds,
 						&catalog,
 						round_message_id.clone(),
 						round_tool_call_id.clone(),
 					)
 					.await?;
 
-				if let Some((tool_call, _metadata)) = outcome.tool_call {
+				if let Some((tool_call, metadata)) = outcome.tool_call {
 					if executed_tool_rounds >= MAX_EXECUTABLE_TOOL_ROUNDS {
 						// <agent://256> item A (contract §9 amendment, commit 1e0b8ca98): a
 						// provider tool call past the live per-turn maximum must still
@@ -1470,7 +1491,12 @@ impl<P: ProviderExecutor> TurnRunner<P> {
 					required_source_envelope_ids = vec![dispatch.source_envelope_id];
 					causation = dispatch.last_event_id;
 					last_frame_id = dispatch.last_frame_id;
-					round_text = dispatch.provider_result_text;
+					completed_rounds.push(projection::CompletedToolRoundV0 {
+						provider_tool_call_id: metadata.provider_tool_call_id,
+						tool_name: tool_call.tool_name,
+						arguments: tool_call.arguments,
+						result_text: dispatch.provider_result_text,
+					});
 					phase = phase.next().unwrap_or(phase);
 				} else {
 					let response_event_id = self.ids.event_id();

@@ -202,6 +202,121 @@ pub fn project_request_body(
 	}
 }
 
+/// A tool round already completed within the current turn's provider
+/// round-trip.
+///
+/// Carries the tool call the provider requested plus the bounded result
+/// text produced for it, including the provider's own wire-level tool-call
+/// identifier (see `ProviderObservationMetadataV0::provider_tool_call_id`)
+/// so the echoed-back `tool_result`/`function_call_output` block round-trips
+/// exactly what the provider itself emitted, not a successor-internal
+/// `ToolCallId`.
+#[derive(Debug, Clone)]
+pub struct CompletedToolRoundV0 {
+	pub provider_tool_call_id: String,
+	pub tool_name:             String,
+	pub arguments:             WireJson,
+	pub result_text:           String,
+}
+
+/// Projects a full turn conversation -- the original user prompt plus
+/// every tool round completed so far -- into a provider wire request body.
+///
+/// `completed_rounds` empty produces output identical to
+/// [`project_request_body`] for the same `user_text`/`catalog`: this
+/// function is additive, not a replacement. [`project_request_body`] itself
+/// is unchanged and remains the byte-pinned surface validated against
+/// `fixtures/slice-0/provider-shape-normalization.json`
+/// (`tests/slice0_provider_shapes.rs::
+/// request_projection_matches_the_canonical_fixture_for_every_provider_shape`).
+///
+/// Replaces the previous wholesale `round_text` replacement design
+/// (<agent://256> `item_b_fix_ruling`; <agent://259> finding 2 /
+/// `hydration_design_adjudication`): every prior round and the original
+/// prompt stay present in every subsequent request instead of being
+/// discarded after the first tool hop.
+pub fn project_conversation_request_body(
+	shape: &ProviderApiShapeV0,
+	user_text: &str,
+	completed_rounds: &[CompletedToolRoundV0],
+	catalog: &ToolCatalogV0,
+) -> WireJson {
+	let mut body = project_request_body(shape, user_text, catalog);
+	if completed_rounds.is_empty() {
+		return body;
+	}
+
+	match shape {
+		ProviderApiShapeV0::AnthropicMessages => {
+			let messages = body["messages"]
+				.as_array_mut()
+				.expect("project_request_body always emits a `messages` array for this shape");
+			for round in completed_rounds {
+				messages.push(serde_json::json!({
+					"role": "assistant",
+					"content": [{
+						"type": "tool_use",
+						"id": round.provider_tool_call_id,
+						"name": round.tool_name,
+						"input": round.arguments,
+					}],
+				}));
+				messages.push(serde_json::json!({
+					"role": "user",
+					"content": [{
+						"type": "tool_result",
+						"tool_use_id": round.provider_tool_call_id,
+						"content": round.result_text,
+					}],
+				}));
+			}
+		},
+		ProviderApiShapeV0::OpenAiChatCompletions => {
+			let messages = body["messages"]
+				.as_array_mut()
+				.expect("project_request_body always emits a `messages` array for this shape");
+			for round in completed_rounds {
+				messages.push(serde_json::json!({
+					"role": "assistant",
+					"tool_calls": [{
+						"id": round.provider_tool_call_id,
+						"type": "function",
+						"function": {
+							"name": round.tool_name,
+							"arguments": encode_arguments_as_string(&round.arguments),
+						},
+					}],
+				}));
+				messages.push(serde_json::json!({
+					"role": "tool",
+					"tool_call_id": round.provider_tool_call_id,
+					"content": round.result_text,
+				}));
+			}
+		},
+		ProviderApiShapeV0::OpenAiResponses => {
+			let input = body["input"]
+				.as_array_mut()
+				.expect("project_request_body always emits an `input` array for this shape");
+			for round in completed_rounds {
+				input.push(serde_json::json!({
+					"type": "function_call",
+					"call_id": round.provider_tool_call_id,
+					"name": round.tool_name,
+					"arguments": encode_arguments_as_string(&round.arguments),
+				}));
+				input.push(serde_json::json!({
+					"type": "function_call_output",
+					"call_id": round.provider_tool_call_id,
+					"output": round.result_text,
+				}));
+			}
+		},
+	}
+
+	body
+}
+
 /// `serde_json::Value` serialization is infallible; this documents that
 /// invariant at the one call site depending on it instead of unwrapping
 /// silently at each use.

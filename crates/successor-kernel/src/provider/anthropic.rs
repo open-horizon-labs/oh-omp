@@ -340,15 +340,10 @@ mod tests {
 		let tool_call_id =
 			ToolCallId::from_raw("tool_live_smoke_00000000-0000-4000-8000-000000000001".to_owned());
 
+		let model = std::env::var("SUCCESSOR_LIVE_PROVIDER_MODEL")
+			.unwrap_or_else(|_| "claude-opus-4-8".to_owned());
 		let outcome = adapter
-			.send_message(
-				"Say the single word: ack",
-				&catalog,
-				"claude-3-5-haiku-20241022",
-				16,
-				message_id,
-				tool_call_id,
-			)
+			.send_message("Say the single word: ack", &catalog, &model, 16, message_id, tool_call_id)
 			.await
 			.expect("live Anthropic Messages API call failed");
 

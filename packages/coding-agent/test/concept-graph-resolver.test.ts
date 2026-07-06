@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import type { ResolvedConceptFact } from "../src/concept-graph";
 import {
 	ConceptGraphStore,
 	formatResolvedConceptNeighbors,
@@ -82,32 +83,31 @@ beforeEach(() => {
 		evidenceIds: [evidence.id],
 	});
 
-		// Generic-vocabulary filler: a realistic concept graph has many facts that
-		// share domain-ubiquitous words (concept, context, graph, fact, memory,
-		// session). Without this frequency signal a tiny corpus cannot exercise
-		// IDF — "context" and "dogfood" would have identical document frequency.
-		// These facts contain only generic terms, so the relevance floor excludes
-		// them from every query result; they exist solely to make generic words
-		// common, the way they are in a real graph.
-		const fillerClaims = [
-			"The concept graph stores each concept and context as a fact node in the system.",
-			"Every concept graph fact links memory, context, and project session metadata.",
-			"The system models concept context using graph facts and memory nodes.",
-			"Concept graph tooling reads fact context from the project memory store.",
-			"Agent context and concept facts share the same graph memory system.",
-			"The concept graph fact store keeps context, memory, and session vocabulary.",
-		];
-		for (const [i, claim] of fillerClaims.entries()) {
-			store.upsertFact({
-				id: `filler-${i}`,
-				kind: "definition",
-				claim,
-				status: "active",
-				authority: "llm_inferred",
-				confidence: "low",
-				evidenceIds: [evidence.id],
-			});
-		}
+	// Generic-vocabulary filler: a realistic concept graph has many facts that
+	// share domain-ubiquitous words (context, fact, memory, session). Without
+	// this frequency signal a tiny corpus cannot exercise IDF — "context" and
+	// "dogfood" would have identical document frequency. Keep "concept graph"
+	// comparatively rarer so legitimate phrase matches still contain an
+	// informative term, while generic context-only queries remain excluded.
+	const fillerClaims = [
+		"The context store records each fact node in the system memory layer.",
+		"Every fact links memory, context, and project session metadata.",
+		"The system models context using durable facts and memory nodes.",
+		"Agent tooling reads fact context from the project memory store.",
+		"Agent context and session facts share the same memory system.",
+		"The fact store keeps context, memory, and session vocabulary.",
+	];
+	for (const [i, claim] of fillerClaims.entries()) {
+		store.upsertFact({
+			id: `filler-${i}`,
+			kind: "definition",
+			claim,
+			status: "active",
+			authority: "llm_inferred",
+			confidence: "low",
+			evidenceIds: [evidence.id],
+		});
+	}
 });
 
 afterEach(() => {
@@ -230,9 +230,133 @@ describe("concept graph resolver", () => {
 		expect(injection).toBeNull();
 	});
 });
+describe("scorer precision for global graph bleed", () => {
+	function seedScoringFact(id: string, claim: string, authority: "adr" | "llm_inferred" = "llm_inferred"): void {
+		store.upsertFact({
+			id,
+			kind: "definition",
+			claim,
+			status: "active",
+			authority,
+			confidence: authority === "adr" ? "high" : "medium",
+			evidenceIds: ["evidence-1"],
+		});
+	}
 
+	function seedPrecisionFixtures(): void {
+		seedScoringFact(
+			"offender-turn-alias",
+			"Byzantine delegated-authority turn alias scoping: aliases exist only within the last turn",
+		);
+		seedScoringFact(
+			"offender-rollups",
+			"Matrice commitment slice reports cross-project rollups; the last slice covers all projects",
+		);
+		seedScoringFact(
+			"offender-proceed",
+			"Unrelated approval workflow can continue and proceed after the external handoff.",
+		);
+		seedScoringFact(
+			"legit-concept-cap",
+			"Concept graph injection is capped at 6 facts and routed through the single assembler",
+			"adr",
+		);
+		seedScoringFact(
+			"legit-concept-scoring",
+			"The concept graph resolver uses deterministic phrase-aware scoring",
+			"adr",
+		);
+	}
 
-describe("IDF relevance (no hardcoded stopwords)", () => {
+	function expectNoOffenders(results: ResolvedConceptFact[]): void {
+		const ids = results.map(result => result.fact.id);
+		expect(ids).not.toContain("offender-turn-alias");
+		expect(ids).not.toContain("offender-rollups");
+		expect(ids).not.toContain("offender-proceed");
+	}
+
+	test("ignores unrelated stage/subtask wording instead of importing cross-project facts", () => {
+		seedPrecisionFixtures();
+
+		const results = searchConceptFacts(store, { query: "stage C in a subtask, review with superego" });
+
+		expectNoOffenders(results);
+	});
+
+	test("ignores conversational prose that overlaps only weak resolver terms", () => {
+		seedPrecisionFixtures();
+
+		const results = searchConceptFacts(store, {
+			query: "models often respond with walls of text, I would like to explore more efficient modes of communication",
+		});
+
+		expectNoOffenders(results);
+	});
+
+	test("does not qualify offenders through phrase-only overlap of non-informative tokens", () => {
+		seedPrecisionFixtures();
+		const results = searchConceptFacts(store, { query: "what happened last turn" });
+
+		// Defends against the loophole where phrase-only overlap of non-informative
+		// tokens ("last turn") bypasses stopword and corpus-IDF gates.
+		expectNoOffenders(results);
+		expect(results.map(result => result.reason).join("\n")).not.toContain('phrase "last turn" matched');
+	});
+
+	test("does not qualify stopword plus informative bigram overlap", () => {
+		seedPrecisionFixtures();
+		const results = searchConceptFacts(store, { query: "lets see how it looks and proceed to stage B" });
+
+		// Defends the stopword+informative bigram class by mechanism: any phrase
+		// containing a stopword is ineligible, so this does not rely on a phrase
+		// blocklist and still passes if such a blocklist is deleted.
+		expectNoOffenders(results);
+		expect(results.map(result => result.reason).join("\n")).not.toContain('phrase "and proceed" matched');
+	});
+
+	test("keeps concept graph phrase matches while excluding unrelated offender facts", () => {
+		seedPrecisionFixtures();
+
+		const results = searchConceptFacts(store, {
+			query: "constrain the concept graph context injection to relevant facts",
+		});
+		const ids = results.map(result => result.fact.id);
+
+		expect(ids).toContain("legit-concept-cap");
+		expect(ids).toContain("legit-concept-scoring");
+		expectNoOffenders(results);
+		expect(results.find(result => result.fact.id === "legit-concept-cap")?.reason).toContain(
+			'phrase "concept graph" matched',
+		);
+		expect(results.find(result => result.fact.id === "legit-concept-cap")?.reason).not.toContain(
+			'phrase "the concept graph" matched',
+		);
+	});
+
+	// Adversarial by construction: "cross" and "projects" are weak but are not
+	// stopwords. They are made corpus-common so a stopword-list-only patch would
+	// still return offender-rollups here, while IDF precision excludes it.
+	test("corpus-common non-stopword overlaps cannot select a cross-project offender", () => {
+		seedPrecisionFixtures();
+		for (let i = 0; i < 8; i++) {
+			seedScoringFact(`weak-cross-project-${i}`, `Cross team projects publish the last summary marker ${i}.`);
+		}
+
+		const results = searchConceptFacts(store, { query: "cross projects last" });
+
+		expectNoOffenders(results);
+	});
+
+	test("one genuinely rare term is excluded without a phrase or second informative term", () => {
+		seedScoringFact("single-rare-tokenizer", "Tokenizer boundary rules normalize subword separators.");
+
+		const results = searchConceptFacts(store, { query: "tokenizer" });
+
+		expect(results.map(result => result.fact.id)).not.toContain("single-rare-tokenizer");
+	});
+});
+
+describe("stopword and IDF-threshold relevance", () => {
 	function seedFact(id: string, claim: string): void {
 		store.upsertFact({
 			id,

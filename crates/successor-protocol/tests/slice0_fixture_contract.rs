@@ -121,13 +121,13 @@ fn raw_events_unsupported_tool_is_rejected_by_project_session() {
 #[test]
 fn tool_catalog_parses_with_full_slice0_tool_roster() {
 	let catalog = fixtures::tool_catalog();
-	assert_eq!(catalog.tools.len(), 34);
+	assert_eq!(catalog.tools.len(), 35);
 	let executable_count = catalog
 		.tools
 		.iter()
 		.filter(|tool| tool.status == ToolStatusV0::Executable)
 		.count();
-	assert_eq!(executable_count, 4);
+	assert_eq!(executable_count, 5);
 	let stub_rejected_count = catalog
 		.tools
 		.iter()

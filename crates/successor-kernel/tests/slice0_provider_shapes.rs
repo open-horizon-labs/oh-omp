@@ -22,8 +22,8 @@ use successor_kernel::{
 		normalize_tool_call, project_request_body, project_tool_call, project_tool_result,
 	},
 	tools::{
-		catalog::slice0_catalog, find::FindArgs, grep::GrepArgs, read::ReadArgs,
-		search_files::SearchFilesArgs,
+		catalog::slice0_catalog, find::FindArgs, grep::GrepArgs, list_dir::ListDirArgs,
+		read::ReadArgs, search_files::SearchFilesArgs,
 	},
 };
 use successor_protocol::{
@@ -88,6 +88,10 @@ fn wire_shape<'a>(
 /// by a different lane and publishes a differently worded `read` tool with
 /// no schema, so this builds a catalog from the literal values in
 /// `provider-shape-normalization.json` instead of reusing that fixture.
+///
+/// The schema below (`path`/`offset`/`limit`, `path` required) mirrors the
+/// fixture's own literal `read` schema exactly (<agent://269> Lane 3
+/// dissent ruling: `max_bytes` is no longer advertised anywhere).
 fn read_tool_catalog() -> ToolCatalogV0 {
 	let read_tool = ToolDefinitionV0 {
 		name:         "read".to_owned(),
@@ -96,7 +100,11 @@ fn read_tool_catalog() -> ToolCatalogV0 {
 		description:  Some("Read a relative file under the workspace root.".to_owned()),
 		input_schema: Some(serde_json::json!({
 			"type": "object",
-			"properties": { "path": { "type": "string" }, "max_bytes": { "type": "integer" } },
+			"properties": {
+				"path": { "type": "string" },
+				"offset": { "type": "integer" },
+				"limit": { "type": "integer" },
+			},
 			"required": ["path"],
 		})),
 	};
@@ -361,9 +369,11 @@ fn normalize_response_extracts_finish_reason_and_text_for_every_shape() {
 
 /// Drift-proof contract (<agent://252-ToolSchemaAmendmentDissent>, ruling 4/6;
 /// strengthened per post-hoc review <agent://254-ToolSchemaAmendmentReview>,
-/// finding 1, closing dissent ruling 252.4's residual gap): a schema with an
-/// extra unrelated property, a missing expected property, or hand-drifted
-/// content must FAIL this test. Two independent checks enforce that:
+/// finding 1, closing dissent ruling 252.4's residual gap; extended per
+/// agent://269 Lane 3 dissent ruling for the new `list_dir` tool and the
+/// widened `read` tool): a schema with an extra unrelated property, a
+/// missing expected property, or hand-drifted content must FAIL this test.
+/// Two independent checks enforce that:
 ///
 /// (a) whole-document exact equality between each executable tool's
 /// published `input_schema` and `schemars::schema_for!` for the exact kernel
@@ -375,7 +385,7 @@ fn normalize_response_extracts_finish_reason_and_text_for_every_shape() {
 /// (b) an independent, hand-authored spot oracle that does not derive from
 /// the DTO types at all: the exact `properties` key set the executor
 /// actually consumes, per tool, read from the published body (not the DTO).
-/// None of the four DTOs mark any field as JSON-Schema `required` -- every
+/// None of the five DTOs mark any field as JSON-Schema `required` -- every
 /// field on every one of them carries a `#[serde(default = ...)]`, so
 /// `schemars` never emits a `required` key for them at all (verified
 /// directly against the generated schemas, not assumed). This oracle
@@ -397,11 +407,12 @@ fn every_executable_tool_in_the_anthropic_projection_matches_its_dto_schema_and_
 
 	// (b) hand-authored, DTO-independent expectation of the property set the
 	// executor actually reads for each tool. Never derived from the type.
-	let expected_properties: [(&str, &[&str]); 4] = [
+	let expected_properties: [(&str, &[&str]); 5] = [
 		("search_files", &["query", "max_matches"]),
-		("read", &["path"]),
+		("read", &["path", "offset", "limit"]),
 		("find", &["glob"]),
 		("grep", &["pattern"]),
+		("list_dir", &["path"]),
 	];
 
 	let mut seen: Vec<&str> = Vec::new();
@@ -432,6 +443,8 @@ fn every_executable_tool_in_the_anthropic_projection_matches_its_dto_schema_and_
 				.expect("schemars output for FindArgs must serialize"),
 			"grep" => serde_json::to_value(schemars::schema_for!(GrepArgs))
 				.expect("schemars output for GrepArgs must serialize"),
+			"list_dir" => serde_json::to_value(schemars::schema_for!(ListDirArgs))
+				.expect("schemars output for ListDirArgs must serialize"),
 			other => panic!(
 				"executable tool {other} has no schemars oracle wired into this test; add its DTO"
 			),
@@ -498,12 +511,39 @@ fn tool_argument_dtos_round_trip_valid_json_and_reject_malformed_json_through_th
 	assert_eq!(search_defaults.query, "");
 	assert_eq!(search_defaults.max_matches, 20);
 
-	let read: ReadArgs =
-		serde_json::from_value(serde_json::json!({ "path": "a.txt", "max_bytes": 200_000 })).expect(
-			"a read call carrying the documented but executor-ignored max_bytes field must still \
-			 deserialize",
-		);
+	let read: ReadArgs = serde_json::from_value(serde_json::json!({ "path": "a.txt" }))
+		.expect("well-formed read arguments must deserialize");
 	assert_eq!(read.path, "a.txt");
+	assert_eq!(read.offset, None);
+	assert_eq!(read.limit, None);
+
+	let read_ranged: ReadArgs =
+		serde_json::from_value(serde_json::json!({ "path": "a.txt", "offset": 5, "limit": 10 }))
+			.expect("read arguments carrying a positive offset/limit range must deserialize");
+	assert_eq!(read_ranged.offset.map(std::num::NonZeroU32::get), Some(5));
+	assert_eq!(read_ranged.limit.map(std::num::NonZeroU32::get), Some(10));
+
+	// The `max_bytes` drift fix (agent://269 Lane 3 dissent ruling): a
+	// legacy/unknown field is rejected as malformed, not silently ignored.
+	// `execute_tool` maps this failure exactly the way it maps every other
+	// tool-execution failure -- `.map_err(|err| err.to_string())` -- so the
+	// error class downstream (`TurnFailure::Protocol(String)`) is identical
+	// regardless of whether the failure came from argument parsing or from
+	// tool execution itself.
+	let rejected_max_bytes: Result<ReadArgs, _> =
+		serde_json::from_value(serde_json::json!({ "path": "a.txt", "max_bytes": 200_000 }));
+	assert!(
+		rejected_max_bytes.is_err(),
+		"a read call carrying the legacy max_bytes field must be rejected, not silently ignored"
+	);
+
+	let rejected_zero_offset: Result<ReadArgs, _> =
+		serde_json::from_value(serde_json::json!({ "path": "a.txt", "offset": 0 }));
+	assert!(rejected_zero_offset.is_err(), "a zero read offset must be rejected as malformed");
+
+	let rejected_zero_limit: Result<ReadArgs, _> =
+		serde_json::from_value(serde_json::json!({ "path": "a.txt", "limit": 0 }));
+	assert!(rejected_zero_limit.is_err(), "a zero read limit must be rejected as malformed");
 
 	let find: FindArgs = serde_json::from_value(serde_json::json!({}))
 		.expect("missing find arguments must fall back to the default glob, not error");
@@ -512,6 +552,21 @@ fn tool_argument_dtos_round_trip_valid_json_and_reject_malformed_json_through_th
 	let grep: GrepArgs = serde_json::from_value(serde_json::json!({ "pattern": "TODO" }))
 		.expect("well-formed grep arguments must deserialize");
 	assert_eq!(grep.pattern, "TODO");
+
+	let list_dir: ListDirArgs = serde_json::from_value(serde_json::json!({ "path": "src" }))
+		.expect("well-formed list_dir arguments must deserialize");
+	assert_eq!(list_dir.path, "src");
+
+	let list_dir_defaults: ListDirArgs = serde_json::from_value(serde_json::json!({}))
+		.expect("missing list_dir arguments must fall back to the root path, not error");
+	assert_eq!(list_dir_defaults.path, "");
+
+	let rejected_list_dir_unknown: Result<ListDirArgs, _> =
+		serde_json::from_value(serde_json::json!({ "path": "src", "recursive": true }));
+	assert!(
+		rejected_list_dir_unknown.is_err(),
+		"a list_dir call carrying an unknown field must be rejected, not silently ignored"
+	);
 
 	// A malformed argument type is rejected, not silently coerced to a
 	// default. `execute_tool` maps this failure exactly the way it maps

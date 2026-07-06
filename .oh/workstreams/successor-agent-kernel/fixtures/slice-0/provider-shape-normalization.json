@@ -14,8 +14,7 @@
     "tool_call_id": "tool_shape_00000000-0000-4000-8000-000000000001",
     "tool_name": "read",
     "arguments": {
-      "path": "packages/coding-agent/src/context/concept-graph.ts",
-      "max_bytes": 200000
+      "path": "packages/coding-agent/src/context/concept-graph.ts"
     }
   },
   "normalized_tool_result": {
@@ -52,7 +51,8 @@
               "type": "object",
               "properties": {
                 "path": { "type": "string" },
-                "max_bytes": { "type": "integer" }
+                "offset": { "type": "integer" },
+                "limit": { "type": "integer" }
               },
               "required": ["path"]
             }
@@ -64,8 +64,7 @@
         "id": "toolu_shape_anthropic_001",
         "name": "read",
         "input": {
-          "path": "packages/coding-agent/src/context/concept-graph.ts",
-          "max_bytes": 200000
+          "path": "packages/coding-agent/src/context/concept-graph.ts"
         }
       },
       "tool_result_projection": {
@@ -91,7 +90,8 @@
                 "type": "object",
                 "properties": {
                   "path": { "type": "string" },
-                  "max_bytes": { "type": "integer" }
+                  "offset": { "type": "integer" },
+                  "limit": { "type": "integer" }
                 },
                 "required": ["path"]
               }
@@ -104,7 +104,7 @@
         "type": "function",
         "function": {
           "name": "read",
-          "arguments": "{\"path\":\"packages/coding-agent/src/context/concept-graph.ts\",\"max_bytes\":200000}"
+          "arguments": "{\"path\":\"packages/coding-agent/src/context/concept-graph.ts\"}"
         }
       },
       "tool_result_projection": {
@@ -134,7 +134,8 @@
               "type": "object",
               "properties": {
                 "path": { "type": "string" },
-                "max_bytes": { "type": "integer" }
+                "offset": { "type": "integer" },
+                "limit": { "type": "integer" }
               },
               "required": ["path"]
             }
@@ -145,7 +146,7 @@
         "type": "function_call",
         "call_id": "call_shape_openai_responses_001",
         "name": "read",
-        "arguments": "{\"path\":\"packages/coding-agent/src/context/concept-graph.ts\",\"max_bytes\":200000}"
+        "arguments": "{\"path\":\"packages/coding-agent/src/context/concept-graph.ts\"}"
       },
       "tool_result_projection": {
         "type": "function_call_output",
@@ -159,6 +160,7 @@
     "Each wire shape normalizes to the same successor tool_call_id assigned by the kernel.",
     "Provider-specific tool call IDs are metadata, not successor identity.",
     "Each tool result projects from the same artifact handle and does not inline provider credentials.",
-    "No wire shape changes the raw event ontology."
+    "No wire shape changes the raw event ontology.",
+    "The read tool schema advertises path/offset/limit only; max_bytes is not advertised anywhere (agent://269 Lane 3 dissent ruling)."
   ]
 }

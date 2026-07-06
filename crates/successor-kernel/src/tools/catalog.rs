@@ -9,11 +9,12 @@
 //! thin, typed accessor over it, not a re-derivation — with one exception:
 //! `input_schema` (see [`executable_input_schema`]).
 //!
-//! Of the 34 cataloged tools, four are `executable`: `search_files`,
-//! `read`, `find`, and `grep`. This lane implements only `read`
-//! ([`super::read`]); `search_files`, `find`, and `grep` dispatch is owned
-//! by Lane C6 `KernelToolSearchFindGrep` and is not implemented here — their
-//! catalog entries describe intended status only.
+//! Of the 35 cataloged tools, five are `executable`: `search_files`,
+//! `read`, `find`, `grep`, and `list_dir`. This lane implements `read` and
+//! `list_dir` ([`super::read`], [`super::list_dir`]); `search_files`,
+//! `find`, and `grep` dispatch is owned by Lane C6
+//! `KernelToolSearchFindGrep` and is not implemented here — their catalog
+//! entries describe intended status only.
 //!
 //! Every other cataloged tool is `stub_rejected`. [`stub_rejection_reason`]
 //! is a single generalized rejection-reason template applied uniformly
@@ -30,16 +31,18 @@
 //!
 //! Real Anthropic rejects a tools array whose entries carry
 //! `input_schema: null` with an HTTP 400. [`slice0_catalog`] therefore
-//! overlays a real JSON Schema onto each of the four `executable` tools,
+//! overlays a real JSON Schema onto each of the five `executable` tools,
 //! derived directly from the same kernel-local argument DTOs
-//! (`tools::{search_files,read,find,grep}::*Args`) that
+//! (`tools::{search_files,read,find,grep,list_dir}::*Args`) that
 //! [`crate::runner`]'s `execute_tool` deserializes against — never a
 //! hand-authored schema literal. The canonical fixture is amended
 //! (byte-for-byte, generated from that same `schemars` output, never
 //! hand-typed) to carry the identical schema bytes, so
 //! [`slice0_catalog_matches_the_canonical_fixture_exactly`] keeps proving
 //! the two stay in lockstep. `stub_rejected` tools keep `input_schema:
-//! None`, exactly as the fixture pins them.
+//! None`, exactly as the fixture pins them. `list_dir` was added, and
+//! `read`'s schema widened to `path`/`offset`/`limit`, by the
+//! <agent://269> Lane 3 dissent ruling.
 
 use successor_protocol::tool_catalog::{ToolCatalogV0, ToolStatusV0};
 
@@ -66,7 +69,7 @@ pub const TOOL_BUDGET_REJECTION_POLICY: &str = "slice0_tool_budget_exhausted";
 pub const TOOL_BUDGET_REJECTION_ERROR_CODE: &str = "tool_budget_exhausted_in_slice0";
 
 /// The canonical Slice 0 tool catalog, exactly as pinned by
-/// `fixtures/slice-0/tool-catalog.json` (34 tools; schema
+/// `fixtures/slice-0/tool-catalog.json` (35 tools; schema
 /// `kernel.tool_catalog.v0`).
 pub fn slice0_catalog() -> ToolCatalogV0 {
 	let mut catalog = successor_protocol::fixtures::tool_catalog();
@@ -86,6 +89,7 @@ fn executable_input_schema(tool_name: &str) -> Option<serde_json::Value> {
 		"read" => schemars::schema_for!(super::read::ReadArgs),
 		"find" => schemars::schema_for!(super::find::FindArgs),
 		"grep" => schemars::schema_for!(super::grep::GrepArgs),
+		"list_dir" => schemars::schema_for!(super::list_dir::ListDirArgs),
 		_ => return None,
 	};
 	Some(serde_json::to_value(schema).expect("tool argument schema must serialize to JSON"))
@@ -146,11 +150,11 @@ mod tests {
 	fn slice0_catalog_has_the_pinned_schema_version_and_tool_count() {
 		let catalog = slice0_catalog();
 		assert_eq!(catalog.schema_version, TOOL_CATALOG_SCHEMA_VERSION);
-		assert_eq!(catalog.tools.len(), 34, "Slice 0 catalog must publish exactly 34 tools");
+		assert_eq!(catalog.tools.len(), 35, "Slice 0 catalog must publish exactly 35 tools");
 	}
 
 	#[test]
-	fn exactly_four_tools_are_executable_and_they_are_the_safe_read_discovery_set() {
+	fn exactly_five_tools_are_executable_and_they_are_the_safe_read_discovery_set() {
 		let catalog = slice0_catalog();
 		let mut executable: Vec<&str> = catalog
 			.tools
@@ -159,7 +163,7 @@ mod tests {
 			.map(|tool| tool.name.as_str())
 			.collect();
 		executable.sort_unstable();
-		assert_eq!(executable, vec!["find", "grep", "read", "search_files"]);
+		assert_eq!(executable, vec!["find", "grep", "list_dir", "read", "search_files"]);
 	}
 
 	#[test]

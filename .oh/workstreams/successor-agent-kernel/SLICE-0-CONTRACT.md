@@ -522,16 +522,17 @@ Slice 0 publishes a protocol-visible tool catalog based on oh-omp’s core tools
 
 ### 7.1 Executable tools
 
-Executable read/discovery subset:
+Executable read/discovery subset (no write/edit/shell authority):
 
 | Tool | Purpose | Notes |
 |---|---|---|
 | `search_files` | locate likely files/paths from a bounded query | successor locator tool; may use walkdir/ignore + lexical/regex matching |
-| `read` | read one relative file under session workspace root | successor-compatible replacement for oh-omp read path |
+| `read` | read one relative file or a line range under the session workspace root | offset/limit are optional positive line-range parameters; returns an artifact for exactly the returned bytes |
 | `find` | glob/list files under session workspace root | bounded output |
 | `grep` | regex/text search under session workspace root | bounded output |
+| `list_dir` | list direct children of one relative directory under the session workspace root | sorted, bounded, metadata-only directory listing; no file content reads; no symlink traversal |
 
-`search_files` is included so the smoke target can be useful without a path-explicit prompt.
+`search_files` is included so the smoke target can be useful without a path-explicit prompt. (The `read` row and the `list_dir` row/tool were amended/added by the agent://269 Lane 3 dissent ruling.)
 
 ### 7.2 Catalog-visible rejected/stubbed tools
 

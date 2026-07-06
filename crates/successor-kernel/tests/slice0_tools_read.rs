@@ -1,4 +1,5 @@
-//! Integration coverage for Lane C5 `KernelToolCatalogAndRead`.
+//! Integration coverage for Lane C5 `KernelToolCatalogAndRead`, extended by
+//! the <agent://269> Lane 3 dissent ruling with ranged-read coverage.
 //!
 //! Exercises the crate's public surface only:
 //! `successor_kernel::tools::catalog` and `successor_kernel::tools::read`. The
@@ -11,7 +12,7 @@ use successor_kernel::tools::{
 	catalog::{
 		REJECTION_ERROR_CODE, REJECTION_POLICY, slice0_catalog, stub_rejection_reason, tool_status,
 	},
-	read::{ReadRejection, read},
+	read::{ReadArgs, ReadRejection, read},
 };
 use successor_protocol::{
 	artifact::{ArtifactHash, validate_artifact_content},
@@ -47,9 +48,9 @@ fn catalog_round_trips_the_canonical_fixture_exactly() {
 }
 
 #[test]
-fn catalog_has_34_tools_with_expected_ids_and_statuses() {
+fn catalog_has_35_tools_with_expected_ids_and_statuses() {
 	let catalog = slice0_catalog();
-	assert_eq!(catalog.tools.len(), 34);
+	assert_eq!(catalog.tools.len(), 35);
 
 	let mut names: Vec<&str> = catalog
 		.tools
@@ -60,7 +61,7 @@ fn catalog_has_34_tools_with_expected_ids_and_statuses() {
 	names.dedup();
 	assert_eq!(catalog.tools.len(), names.len(), "tool names must be unique");
 
-	for expected in ["search_files", "read", "find", "grep"] {
+	for expected in ["search_files", "read", "find", "grep", "list_dir"] {
 		assert_eq!(
 			tool_status(expected),
 			Some(ToolStatusV0::Executable),
@@ -109,7 +110,8 @@ fn read_of_a_fixture_known_file_yields_a_valid_artifact() {
 	let content = b"successor kernel slice 0 read tool fixture content\n";
 	std::fs::write(root.join("notes.txt"), content).unwrap();
 
-	let artifact = read(&root, "notes.txt").expect("read of an in-root file must succeed");
+	let artifact =
+		read(&root, "notes.txt", None, None).expect("read of an in-root file must succeed");
 
 	assert_eq!(artifact.bytes, content);
 	assert_eq!(artifact.byte_length, content.len() as u64);
@@ -127,21 +129,21 @@ fn read_of_a_fixture_known_file_yields_a_valid_artifact() {
 #[test]
 fn read_rejects_absolute_path() {
 	let root = unique_temp_dir("abs");
-	assert_eq!(read(&root, "/etc/passwd"), Err(ReadRejection::AbsolutePath));
+	assert_eq!(read(&root, "/etc/passwd", None, None), Err(ReadRejection::AbsolutePath));
 	std::fs::remove_dir_all(&root).ok();
 }
 
 #[test]
 fn read_rejects_parent_traversal() {
 	let root = unique_temp_dir("dotdot");
-	assert_eq!(read(&root, "../../etc/passwd"), Err(ReadRejection::ParentTraversal));
+	assert_eq!(read(&root, "../../etc/passwd", None, None), Err(ReadRejection::ParentTraversal));
 	std::fs::remove_dir_all(&root).ok();
 }
 
 #[test]
 fn read_rejects_nonexistent_file() {
 	let root = unique_temp_dir("missing");
-	assert_eq!(read(&root, "does/not/exist.txt"), Err(ReadRejection::NotFound));
+	assert_eq!(read(&root, "does/not/exist.txt", None, None), Err(ReadRejection::NotFound));
 	std::fs::remove_dir_all(&root).ok();
 }
 
@@ -149,7 +151,7 @@ fn read_rejects_nonexistent_file() {
 fn read_rejects_nul_containing_file_as_binary_looking() {
 	let root = unique_temp_dir("binary");
 	std::fs::write(root.join("blob.bin"), [b'a', b'b', 0u8, b'c']).unwrap();
-	assert_eq!(read(&root, "blob.bin"), Err(ReadRejection::BinaryLooking));
+	assert_eq!(read(&root, "blob.bin", None, None), Err(ReadRejection::BinaryLooking));
 	std::fs::remove_dir_all(&root).ok();
 }
 
@@ -168,7 +170,7 @@ fn read_rejects_symlink_escape_the_string_prefix_trap() {
 	std::fs::write(evil.join("secret.txt"), b"top secret").unwrap();
 	std::os::unix::fs::symlink(&evil, workspace.join("escape")).unwrap();
 
-	assert_eq!(read(&workspace, "escape/secret.txt"), Err(ReadRejection::OutOfRoot));
+	assert_eq!(read(&workspace, "escape/secret.txt", None, None), Err(ReadRejection::OutOfRoot));
 	std::fs::remove_dir_all(&base).ok();
 }
 
@@ -186,7 +188,7 @@ fn read_rejects_permission_denied_file_where_portable() {
 	std::fs::write(&file_path, b"cannot read me").unwrap();
 	std::fs::set_permissions(&file_path, std::fs::Permissions::from_mode(0o000)).unwrap();
 
-	let outcome = read(&root, "locked.txt");
+	let outcome = read(&root, "locked.txt", None, None);
 	std::fs::set_permissions(&file_path, std::fs::Permissions::from_mode(0o644)).ok();
 	std::fs::remove_dir_all(&root).ok();
 
@@ -203,7 +205,7 @@ fn read_rejects_permission_denied_file_where_portable() {
 fn read_rejects_a_directory_as_not_a_file() {
 	let root = unique_temp_dir("dir");
 	std::fs::create_dir_all(root.join("subdir")).unwrap();
-	assert_eq!(read(&root, "subdir"), Err(ReadRejection::NotAFile));
+	assert_eq!(read(&root, "subdir", None, None), Err(ReadRejection::NotAFile));
 	std::fs::remove_dir_all(&root).ok();
 }
 
@@ -215,7 +217,7 @@ fn read_rejects_a_directory_as_not_a_file() {
 fn read_precedence_absolute_path_wins_over_missing_root() {
 	let base = unique_temp_dir("missing-root-abs");
 	let missing_root = base.join("does-not-exist");
-	assert_eq!(read(&missing_root, "/etc/passwd"), Err(ReadRejection::AbsolutePath));
+	assert_eq!(read(&missing_root, "/etc/passwd", None, None), Err(ReadRejection::AbsolutePath));
 	std::fs::remove_dir_all(&base).ok();
 }
 
@@ -223,7 +225,10 @@ fn read_precedence_absolute_path_wins_over_missing_root() {
 fn read_precedence_parent_traversal_wins_over_missing_root() {
 	let base = unique_temp_dir("missing-root-dotdot");
 	let missing_root = base.join("does-not-exist");
-	assert_eq!(read(&missing_root, "../outside.txt"), Err(ReadRejection::ParentTraversal));
+	assert_eq!(
+		read(&missing_root, "../outside.txt", None, None),
+		Err(ReadRejection::ParentTraversal)
+	);
 	std::fs::remove_dir_all(&base).ok();
 }
 
@@ -243,8 +248,8 @@ fn read_precedence_unreadable_root_with_malformed_path_rejects_lexically_first()
 	// `relative_path` runs before `WorkspaceRoot::new` ever attempts to
 	// canonicalize `root`, so the outcome does not depend on permission
 	// enforcement.
-	let outcome_abs = read(&root, "/etc/passwd");
-	let outcome_dotdot = read(&root, "../outside.txt");
+	let outcome_abs = read(&root, "/etc/passwd", None, None);
+	let outcome_dotdot = read(&root, "../outside.txt", None, None);
 
 	std::fs::set_permissions(&locked_parent, std::fs::Permissions::from_mode(0o755)).ok();
 	std::fs::remove_dir_all(&base).ok();
@@ -265,10 +270,100 @@ fn root_with_trailing_separator_normalizes_correctly() {
 	let mut with_slash = root.as_os_str().to_owned();
 	with_slash.push("/");
 
-	let plain = read(&root, "hello.txt").expect("plain root read must succeed");
-	let slashed =
-		read(Path::new(&with_slash), "hello.txt").expect("trailing-slash root read must succeed");
+	let plain = read(&root, "hello.txt", None, None).expect("plain root read must succeed");
+	let slashed = read(Path::new(&with_slash), "hello.txt", None, None)
+		.expect("trailing-slash root read must succeed");
 	assert_eq!(plain, slashed);
 
 	std::fs::remove_dir_all(&root).ok();
+}
+
+// ---------------------------------------------------------------------
+// Ranged read (agent://269 Lane 3 dissent ruling)
+// ---------------------------------------------------------------------
+
+fn make_five_line_file(root: &Path) {
+	std::fs::write(root.join("lines.txt"), b"one\ntwo\nthree\nfour\nfive\n").unwrap();
+}
+
+#[test]
+fn read_offset_and_limit_returns_exactly_the_requested_in_range_lines() {
+	let root = unique_temp_dir("ranged-in-range");
+	make_five_line_file(&root);
+
+	let artifact =
+		read(&root, "lines.txt", std::num::NonZeroU32::new(2), std::num::NonZeroU32::new(2))
+			.expect("an in-range offset/limit read must succeed");
+	assert_eq!(artifact.bytes, b"two\nthree\n");
+	assert_eq!(artifact.byte_length, artifact.bytes.len() as u64);
+	assert_eq!(artifact.sha256, ArtifactHash::compute(&artifact.bytes));
+
+	std::fs::remove_dir_all(&root).ok();
+}
+
+#[test]
+fn read_offset_only_returns_from_that_line_to_the_end_of_the_file() {
+	let root = unique_temp_dir("ranged-offset-only");
+	make_five_line_file(&root);
+
+	let artifact = read(&root, "lines.txt", std::num::NonZeroU32::new(4), None)
+		.expect("an offset-only read must succeed");
+	assert_eq!(artifact.bytes, b"four\nfive\n");
+
+	std::fs::remove_dir_all(&root).ok();
+}
+
+#[test]
+fn read_limit_only_returns_the_first_n_lines_from_the_start() {
+	let root = unique_temp_dir("ranged-limit-only");
+	make_five_line_file(&root);
+
+	let artifact = read(&root, "lines.txt", None, std::num::NonZeroU32::new(2))
+		.expect("a limit-only read must succeed");
+	assert_eq!(artifact.bytes, b"one\ntwo\n");
+
+	std::fs::remove_dir_all(&root).ok();
+}
+
+#[test]
+fn read_offset_beyond_end_of_file_returns_empty_content_not_an_error() {
+	let root = unique_temp_dir("ranged-out-of-range");
+	make_five_line_file(&root);
+
+	let artifact = read(&root, "lines.txt", std::num::NonZeroU32::new(50), None)
+		.expect("an out-of-range offset must succeed with empty content, not error");
+	assert_eq!(artifact.bytes, b"");
+	assert_eq!(artifact.byte_length, 0);
+	assert_eq!(artifact.sha256, ArtifactHash::compute(b""));
+
+	std::fs::remove_dir_all(&root).ok();
+}
+
+#[test]
+fn read_without_offset_or_limit_still_returns_the_whole_file() {
+	let root = unique_temp_dir("ranged-default");
+	make_five_line_file(&root);
+
+	let whole = read(&root, "lines.txt", None, None).expect("a whole-file read must succeed");
+	assert_eq!(whole.bytes, b"one\ntwo\nthree\nfour\nfive\n");
+
+	std::fs::remove_dir_all(&root).ok();
+}
+
+#[test]
+fn read_args_rejects_zero_offset_and_zero_limit_and_unknown_fields_as_malformed() {
+	let rejected_offset: Result<ReadArgs, _> =
+		serde_json::from_value(serde_json::json!({ "path": "a.txt", "offset": 0 }));
+	assert!(rejected_offset.is_err(), "a zero offset must be rejected as malformed, not clamped");
+
+	let rejected_limit: Result<ReadArgs, _> =
+		serde_json::from_value(serde_json::json!({ "path": "a.txt", "limit": 0 }));
+	assert!(rejected_limit.is_err(), "a zero limit must be rejected as malformed, not clamped");
+
+	let rejected_max_bytes: Result<ReadArgs, _> =
+		serde_json::from_value(serde_json::json!({ "path": "a.txt", "max_bytes": 200_000 }));
+	assert!(
+		rejected_max_bytes.is_err(),
+		"a legacy max_bytes field must be rejected as malformed, not silently ignored"
+	);
 }

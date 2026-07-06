@@ -1,13 +1,18 @@
-//! Root-bounded whole-file read tool, owned by Lane C5
-//! `KernelToolCatalogAndRead`.
+//! Root-bounded read tool, owned by Lane C5 `KernelToolCatalogAndRead`,
+//! extended by Lane 3 (<agent://269> dissent ruling) with an optional
+//! 1-indexed line range.
 //!
-//! Slice 0 scope (Dissent ruling 5): whole-file reads only, no partial or
-//! windowed reads, no pagination. [`read`] resolves `relative_path` against
-//! `root_path` through the shared [`super::WorkspaceRoot`] substrate (never
-//! naming that type in this module's public API — see its doc comment),
-//! then hashes and measures the content via the accepted `successor-protocol`
-//! A1 hashing surface: [`successor_protocol::artifact::ArtifactHash::compute`]
-//! and [`successor_protocol::artifact::validate_artifact_content`]. This
+//! Slice 0 scope (Dissent ruling 5) was whole-file reads only, no partial
+//! or windowed reads, no pagination. [`ReadArgs`] now additionally accepts
+//! an optional `offset` (1-indexed first line) and `limit` (maximum line
+//! count); omitting both preserves the original whole-file behavior
+//! exactly. [`read`] resolves `relative_path` against `root_path` through
+//! the shared [`super::WorkspaceRoot`] substrate (never naming that type
+//! in this module's public API — see its doc comment), then hashes and
+//! measures exactly the returned bytes via the accepted
+//! `successor-protocol` A1 hashing surface:
+//! [`successor_protocol::artifact::ArtifactHash::compute`] and
+//! [`successor_protocol::artifact::validate_artifact_content`]. This
 //! module adds no separate hashing dependency.
 //!
 //! Binary detection (Dissent ruling 4): a NUL byte anywhere in the file is
@@ -18,7 +23,7 @@
 //! `root_path`; this module never falls back to an environment variable or
 //! the process's current working directory.
 
-use std::path::Path;
+use std::{num::NonZeroU32, path::Path};
 
 use successor_protocol::artifact::{ArtifactHash, validate_artifact_content};
 
@@ -109,17 +114,37 @@ fn map_read_io(err: std::io::Error) -> ReadRejection {
 	}
 }
 
-/// Arguments for the `read` tool: read the full contents of a file under
-/// the workspace root.
+/// Arguments for the `read` tool.
+///
+/// Reads the full contents of a file, or an optional 1-indexed line range,
+/// under the workspace root (<agent://269> Lane 3 dissent ruling). Any
+/// field not listed here (including a legacy `max_bytes`) is rejected as a
+/// malformed argument rather than silently ignored.
 #[derive(Debug, Clone, serde::Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ReadArgs {
 	/// Path to read, relative to the workspace root.
 	#[serde(default)]
-	pub path: String,
+	pub path:   String,
+	/// Optional 1-indexed first line to return. Omit to read from the
+	/// start of the file. Zero is rejected as a malformed argument, not
+	/// clamped to line 1.
+	#[serde(default)]
+	pub offset: Option<NonZeroU32>,
+	/// Optional maximum number of lines to return, starting at `offset`
+	/// (or the first line if `offset` is omitted). Omit to read to the end
+	/// of the file. Zero is rejected as a malformed argument, not clamped.
+	#[serde(default)]
+	pub limit:  Option<NonZeroU32>,
 }
 
-/// Read the whole contents of `relative_path` under the workspace rooted at
-/// `root_path`.
+/// Read `relative_path` under the workspace rooted at `root_path`.
+///
+/// Returns the whole file when `offset` and `limit` are both `None`, or a
+/// bounded 1-indexed line range otherwise (<agent://269> Lane 3 dissent
+/// ruling). The returned [`ReadArtifactContent`] hash and byte length
+/// describe exactly the bytes returned, not the whole file, when a range
+/// is applied.
 ///
 /// `root_path` is the trusted workspace root, supplied by the caller (the
 /// host process) — never derived internally from an environment variable
@@ -132,10 +157,15 @@ pub struct ReadArgs {
 /// be read — canonicalizing an untrusted root first would let a root-level
 /// I/O failure (`RootNotFound`/`PermissionDenied`) mask a lexical
 /// rejection the contract requires to take precedence.
-pub fn read(root_path: &Path, relative_path: &str) -> Result<ReadArtifactContent, ReadRejection> {
+pub fn read(
+	root_path: &Path,
+	relative_path: &str,
+	offset: Option<NonZeroU32>,
+	limit: Option<NonZeroU32>,
+) -> Result<ReadArtifactContent, ReadRejection> {
 	validate_relative_path_lexically(relative_path).map_err(map_path_bound)?;
 	let root = WorkspaceRoot::new(root_path).map_err(map_path_bound)?;
-	read_with_root(&root, relative_path)
+	read_with_root(&root, relative_path, offset, limit)
 }
 
 /// Read `relative_path` against an already-constructed [`WorkspaceRoot`].
@@ -148,6 +178,8 @@ pub fn read(root_path: &Path, relative_path: &str) -> Result<ReadArtifactContent
 pub(crate) fn read_with_root(
 	root: &WorkspaceRoot,
 	relative_path: &str,
+	offset: Option<NonZeroU32>,
+	limit: Option<NonZeroU32>,
 ) -> Result<ReadArtifactContent, ReadRejection> {
 	let resolved = root.resolve(relative_path).map_err(map_path_bound)?;
 
@@ -160,12 +192,52 @@ pub(crate) fn read_with_root(
 	if looks_binary(&bytes) {
 		return Err(ReadRejection::BinaryLooking);
 	}
+	let bytes = if offset.is_some() || limit.is_some() {
+		select_line_range(&bytes, offset, limit)
+	} else {
+		bytes
+	};
 
 	let (sha256, byte_length) = compute_artifact_bytes(&bytes);
 	validate_artifact_content(sha256.as_str(), byte_length, &bytes)
 		.expect("hash/length computed from these exact bytes must validate against them");
 
 	Ok(ReadArtifactContent { bytes, sha256, byte_length })
+}
+
+/// Select a 1-indexed, `\n`-delimited line range from `bytes`, preserving
+/// line terminators so the result is an exact contiguous slice of the
+/// original file (<agent://269> Lane 3 dissent ruling).
+///
+/// `offset` defaults to line 1; `limit` defaults to "to the end of the
+/// file". An `offset` beyond the last line returns empty content, not an
+/// error — the artifact hash/byte length computed from that empty slice is
+/// the correct description of "nothing in range", not a rejection.
+fn select_line_range(
+	bytes: &[u8],
+	offset: Option<NonZeroU32>,
+	limit: Option<NonZeroU32>,
+) -> Vec<u8> {
+	let start_line = offset.map_or(1, NonZeroU32::get) as usize;
+
+	let mut line_starts = vec![0usize];
+	for (index, byte) in bytes.iter().enumerate() {
+		if *byte == b'\n' {
+			line_starts.push(index + 1);
+		}
+	}
+	let total_lines = line_starts.len();
+
+	if start_line > total_lines {
+		return Vec::new();
+	}
+	let start_byte = line_starts[start_line - 1];
+	let end_line = match limit {
+		Some(count) => (start_line - 1 + count.get() as usize).min(total_lines),
+		None => total_lines,
+	};
+	let end_byte = line_starts.get(end_line).copied().unwrap_or(bytes.len());
+	bytes[start_byte..end_byte].to_vec()
 }
 
 #[cfg(test)]
@@ -191,7 +263,8 @@ mod tests {
 		let content = b"hello, slice 0 read tool\n";
 		std::fs::write(root.join("greeting.txt"), content).unwrap();
 
-		let artifact = read(&root, "greeting.txt").expect("read of an in-root file must succeed");
+		let artifact =
+			read(&root, "greeting.txt", None, None).expect("read of an in-root file must succeed");
 		assert_eq!(artifact.bytes, content);
 		assert_eq!(artifact.byte_length, content.len() as u64);
 		assert_eq!(artifact.sha256, ArtifactHash::compute(content));
@@ -204,21 +277,21 @@ mod tests {
 	#[test]
 	fn read_rejects_absolute_path() {
 		let root = unique_temp_dir("abs");
-		assert_eq!(read(&root, "/etc/passwd"), Err(ReadRejection::AbsolutePath));
+		assert_eq!(read(&root, "/etc/passwd", None, None), Err(ReadRejection::AbsolutePath));
 		std::fs::remove_dir_all(&root).ok();
 	}
 
 	#[test]
 	fn read_rejects_parent_traversal() {
 		let root = unique_temp_dir("dotdot");
-		assert_eq!(read(&root, "../outside.txt"), Err(ReadRejection::ParentTraversal));
+		assert_eq!(read(&root, "../outside.txt", None, None), Err(ReadRejection::ParentTraversal));
 		std::fs::remove_dir_all(&root).ok();
 	}
 
 	#[test]
 	fn read_rejects_nonexistent_file_as_not_found() {
 		let root = unique_temp_dir("missing");
-		assert_eq!(read(&root, "nope.txt"), Err(ReadRejection::NotFound));
+		assert_eq!(read(&root, "nope.txt", None, None), Err(ReadRejection::NotFound));
 		std::fs::remove_dir_all(&root).ok();
 	}
 
@@ -226,7 +299,7 @@ mod tests {
 	fn read_rejects_a_directory_as_not_a_file() {
 		let root = unique_temp_dir("dir");
 		std::fs::create_dir_all(root.join("subdir")).unwrap();
-		assert_eq!(read(&root, "subdir"), Err(ReadRejection::NotAFile));
+		assert_eq!(read(&root, "subdir", None, None), Err(ReadRejection::NotAFile));
 		std::fs::remove_dir_all(&root).ok();
 	}
 
@@ -234,7 +307,7 @@ mod tests {
 	fn read_rejects_nul_containing_file_as_binary_looking() {
 		let root = unique_temp_dir("binary");
 		std::fs::write(root.join("blob.bin"), b"prefix\0suffix").unwrap();
-		assert_eq!(read(&root, "blob.bin"), Err(ReadRejection::BinaryLooking));
+		assert_eq!(read(&root, "blob.bin", None, None), Err(ReadRejection::BinaryLooking));
 		std::fs::remove_dir_all(&root).ok();
 	}
 
@@ -249,7 +322,7 @@ mod tests {
 		std::fs::write(evil.join("secret.txt"), b"top secret").unwrap();
 		std::os::unix::fs::symlink(&evil, workspace.join("escape")).unwrap();
 
-		assert_eq!(read(&workspace, "escape/secret.txt"), Err(ReadRejection::OutOfRoot));
+		assert_eq!(read(&workspace, "escape/secret.txt", None, None), Err(ReadRejection::OutOfRoot));
 		std::fs::remove_dir_all(&base).ok();
 	}
 
@@ -267,7 +340,7 @@ mod tests {
 		std::fs::write(&file_path, b"cannot read me").unwrap();
 		std::fs::set_permissions(&file_path, std::fs::Permissions::from_mode(0o000)).unwrap();
 
-		let outcome = read(&root, "locked.txt");
+		let outcome = read(&root, "locked.txt", None, None);
 		std::fs::set_permissions(&file_path, std::fs::Permissions::from_mode(0o644)).ok();
 		std::fs::remove_dir_all(&root).ok();
 
@@ -293,8 +366,8 @@ mod tests {
 		let mut with_slash = root.as_os_str().to_owned();
 		with_slash.push("/");
 
-		let plain = read(&root, "hello.txt").unwrap();
-		let slashed = read(Path::new(&with_slash), "hello.txt").unwrap();
+		let plain = read(&root, "hello.txt", None, None).unwrap();
+		let slashed = read(Path::new(&with_slash), "hello.txt", None, None).unwrap();
 		assert_eq!(plain, slashed);
 
 		std::fs::remove_dir_all(&root).ok();
@@ -304,7 +377,7 @@ mod tests {
 	fn read_precedence_absolute_path_wins_over_missing_root() {
 		let base = unique_temp_dir("missing-root-abs");
 		let missing_root = base.join("does-not-exist");
-		assert_eq!(read(&missing_root, "/etc/passwd"), Err(ReadRejection::AbsolutePath));
+		assert_eq!(read(&missing_root, "/etc/passwd", None, None), Err(ReadRejection::AbsolutePath));
 		std::fs::remove_dir_all(&base).ok();
 	}
 
@@ -312,7 +385,10 @@ mod tests {
 	fn read_precedence_parent_traversal_wins_over_missing_root() {
 		let base = unique_temp_dir("missing-root-dotdot");
 		let missing_root = base.join("does-not-exist");
-		assert_eq!(read(&missing_root, "../outside.txt"), Err(ReadRejection::ParentTraversal));
+		assert_eq!(
+			read(&missing_root, "../outside.txt", None, None),
+			Err(ReadRejection::ParentTraversal)
+		);
 		std::fs::remove_dir_all(&base).ok();
 	}
 
@@ -332,8 +408,8 @@ mod tests {
 		// `relative_path` runs before `WorkspaceRoot::new` ever attempts to
 		// canonicalize `root`, so the outcome does not depend on permission
 		// enforcement.
-		let outcome_abs = read(&root, "/etc/passwd");
-		let outcome_dotdot = read(&root, "../outside.txt");
+		let outcome_abs = read(&root, "/etc/passwd", None, None);
+		let outcome_dotdot = read(&root, "../outside.txt", None, None);
 
 		std::fs::set_permissions(&locked_parent, std::fs::Permissions::from_mode(0o755)).ok();
 		std::fs::remove_dir_all(&base).ok();
@@ -350,10 +426,16 @@ mod tests {
 
 		let workspace_root = WorkspaceRoot::new(&root).expect("root must canonicalize");
 
-		assert_eq!(read_with_root(&workspace_root, "shared.txt"), read(&root, "shared.txt"));
-		assert_eq!(read_with_root(&workspace_root, "/etc/passwd"), Err(ReadRejection::AbsolutePath));
 		assert_eq!(
-			read_with_root(&workspace_root, "../outside.txt"),
+			read_with_root(&workspace_root, "shared.txt", None, None),
+			read(&root, "shared.txt", None, None)
+		);
+		assert_eq!(
+			read_with_root(&workspace_root, "/etc/passwd", None, None),
+			Err(ReadRejection::AbsolutePath)
+		);
+		assert_eq!(
+			read_with_root(&workspace_root, "../outside.txt", None, None),
 			Err(ReadRejection::ParentTraversal)
 		);
 

@@ -912,8 +912,9 @@ impl<P: ProviderExecutor> TurnRunner<P> {
 			"read" => {
 				let args: tools::read::ReadArgs =
 					serde_json::from_value(arguments.clone()).map_err(|err| err.to_string())?;
-				let content = tools::read::read(&self.workspace_root, &args.path)
-					.map_err(|err| err.to_string())?;
+				let content =
+					tools::read::read(&self.workspace_root, &args.path, args.offset, args.limit)
+						.map_err(|err| err.to_string())?;
 				let text = String::from_utf8_lossy(&content.bytes).into_owned();
 				let preview = text.strip_suffix('\n').unwrap_or(&text);
 				let provider_text = bound_provider_visible_text(&text);
@@ -931,6 +932,25 @@ impl<P: ProviderExecutor> TurnRunner<P> {
 						"text/plain",
 						preview,
 						&content.bytes,
+					),
+					provider_text,
+				))
+			},
+			"list_dir" => {
+				let args: tools::list_dir::ListDirArgs =
+					serde_json::from_value(arguments.clone()).map_err(|err| err.to_string())?;
+				let result = tools::list_dir::list_dir(&self.workspace_root, &args.path)
+					.map_err(|err| err.to_string())?;
+				let payload = json!({ "source_kind": "tool_result", "tool_name": "list_dir", "entries": result.entries, "truncated": result.truncated });
+				let provider_text = payload.to_string();
+				Ok((
+					payload,
+					artifact_ref(
+						result.sha256.clone(),
+						result.byte_length,
+						"application/json",
+						"list_dir results",
+						&result.bytes,
 					),
 					provider_text,
 				))

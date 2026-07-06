@@ -1,19 +1,20 @@
-//! Integration coverage for Lane C6 `KernelToolSearchFindGrep`.
+//! Integration coverage for the `list_dir` tool, added per the
+//! agent://269 Lane 3 dissent ruling.
 //!
 //! Exercises the crate's public surface only:
-//! `successor_kernel::tools::{search_files, find, grep}`. The shared bounded
-//! walker (`tools::find::walk_workspace`, `DiscoveryWalkError`,
-//! `DEFAULT_MAX_WALK_ENTRIES`) and the root-bounding substrate
-//! (`WorkspaceRoot`, `PathBoundError`) are `pub(crate)` by design (Dissent
-//! ruling 1/3) and are intentionally not reachable from here.
+//! `successor_kernel::tools::list_dir` and `successor_kernel::tools::catalog`.
+//! The root-bounding substrate (`WorkspaceRoot`, `PathBoundError`) is
+//! `pub(crate)` by design and is intentionally not reachable from here.
 
 use std::path::PathBuf;
 
 use successor_kernel::tools::{
-	find::{FindMatch, FindRejection, find},
-	grep::{GrepMatch, GrepRejection, grep},
-	search_files::{SearchFilesRejection, search_files},
+	catalog::{slice0_catalog, tool_status},
+	list_dir::{
+		DEFAULT_MAX_LIST_ENTRIES, ListDirEntry, ListDirEntryKind, ListDirRejection, list_dir,
+	},
 };
+use successor_protocol::{fixtures, tool_catalog::ToolStatusV0};
 
 fn unique_temp_dir(label: &str) -> PathBuf {
 	let dir = std::env::temp_dir().join(format!(
@@ -29,327 +30,181 @@ fn unique_temp_dir(label: &str) -> PathBuf {
 }
 
 // ---------------------------------------------------------------------
-// search_files: fixture-shape fidelity, determinism, ranking
+// Catalog: list_dir is registered as executable in the sovereign fixture
 // ---------------------------------------------------------------------
 
 #[test]
-fn search_files_result_shape_matches_the_contract_fixture() {
-	let root_dir = unique_temp_dir("shape");
-	std::fs::create_dir_all(root_dir.join("packages/coding-agent/src/context")).unwrap();
-	std::fs::write(
-		root_dir.join("packages/coding-agent/src/context/concept-graph.ts"),
-		b"export {};",
-	)
-	.unwrap();
+fn list_dir_is_catalog_executable_and_the_kernel_catalog_matches_the_fixture() {
+	let kernel_catalog = slice0_catalog();
+	let fixture_catalog = fixtures::tool_catalog();
+	assert_eq!(
+		kernel_catalog, fixture_catalog,
+		"kernel catalog must equal the sovereign fixture byte-for-byte in typed form"
+	);
+	assert_eq!(tool_status("list_dir"), Some(ToolStatusV0::Executable));
+}
 
-	let result = search_files(&root_dir, "concept graph", 20).unwrap();
+// ---------------------------------------------------------------------
+// list_dir: bounded listing, sorted output
+// ---------------------------------------------------------------------
 
-	// Fixture shape: `matches[{path, score, preview}]` — see
-	// `.oh/workstreams/successor-agent-kernel/fixtures/slice-0/
-	// raw-events-successful-turn.json`.
-	let parsed: serde_json::Value = serde_json::from_slice(&result.bytes).unwrap();
-	let matches = parsed
-		.get("matches")
-		.and_then(serde_json::Value::as_array)
-		.unwrap();
-	assert_eq!(matches.len(), 1);
-	let entry = &matches[0];
-	assert!(entry.get("path").is_some());
-	assert!(entry.get("score").is_some());
-	assert!(entry.get("preview").is_some());
-	// Revision C6.2 (review finding): `preview` is now content-derived (first
-	// non-empty line, bounded/truncated like `grep`), not a copy of `path` —
-	// see `search_files_fixture_replay_documents_verified_stop_items` below
-	// for why the fixture's own pinned `score`/`preview` values cannot be
-	// reproduced by the disclosed formula/derivation.
-	assert_eq!(entry["preview"], "export {};");
+#[test]
+fn list_dir_returns_sorted_direct_children_only() {
+	let root = unique_temp_dir("sorted");
+	std::fs::write(root.join("zeta.txt"), b"z").unwrap();
+	std::fs::write(root.join("alpha.txt"), b"a").unwrap();
+	std::fs::create_dir(root.join("mid_dir")).unwrap();
+	// A grandchild must never appear: list_dir lists direct children only.
+	std::fs::write(root.join("mid_dir").join("grandchild.txt"), b"g").unwrap();
 
-	std::fs::remove_dir_all(&root_dir).ok();
+	let artifact = list_dir(&root, "").expect("list of the workspace root must succeed");
+	assert_eq!(artifact.entries, vec![
+		ListDirEntry { name: "alpha.txt".to_owned(), kind: ListDirEntryKind::File },
+		ListDirEntry { name: "mid_dir".to_owned(), kind: ListDirEntryKind::Directory },
+		ListDirEntry { name: "zeta.txt".to_owned(), kind: ListDirEntryKind::File },
+	]);
+	assert!(!artifact.truncated);
+
+	std::fs::remove_dir_all(&root).ok();
 }
 
 #[test]
-fn search_files_fixture_replay_documents_verified_stop_items() {
-	// Fixture-replay test using the fixture's own recorded query and file
-	// content: `.oh/workstreams/successor-agent-kernel/fixtures/slice-0/
-	// raw-events-successful-turn.json` pins a `search_files` call with
-	// `query: "concept graph resolver"` over
-	// `packages/coding-agent/src/context/concept-graph.ts`, and a separate
-	// `read` tool-result event in the same fixture recording that file's
-	// content as
-	// `"export class ConceptGraphResolver {\n  // fixture content\n}\n"`.
-	//
-	// Revision C6.3 (Superego dissent task 200, verdict ALLOW; dedicated
-	// fixture-maintenance lane) replaced the two previously-documented
-	// STOP-item divergences with values captured by actually running this
-	// implementation against the fixture's own inputs: `score` is
-	// `0.85 * (2.0 / 3.0)` (2 of 3 query terms — "concept", "graph" — match
-	// the path; no "resolver" substring; no phrase-bonus substring) and
-	// `preview` is the first non-empty line of the fixture's recorded file
-	// content. Both are now byte-exact reproductions of the fixture's pinned
-	// values, not approximations documented as unreachable.
-	let root_dir = unique_temp_dir("fixture-replay");
-	std::fs::create_dir_all(root_dir.join("packages/coding-agent/src/context")).unwrap();
-	std::fs::write(
-		root_dir.join("packages/coding-agent/src/context/concept-graph.ts"),
-		b"export class ConceptGraphResolver {\n  // fixture content\n}\n",
-	)
-	.unwrap();
-
-	let result = search_files(&root_dir, "concept graph resolver", 20).unwrap();
-	assert_eq!(result.matches.len(), 1);
-	let matched = &result.matches[0];
-
-	// Full fidelity: every fixture-pinned field is now exactly reproducible.
-	assert_eq!(matched.path, "packages/coding-agent/src/context/concept-graph.ts");
-	assert_eq!(matched.score, 0.85 * 2.0 / 3.0);
-	assert_eq!(matched.preview, "export class ConceptGraphResolver {");
-
-	std::fs::remove_dir_all(&root_dir).ok();
-}
-
-#[test]
-fn search_files_is_deterministic_across_repeated_calls() {
-	let root_dir = unique_temp_dir("determinism");
-	for name in ["zeta.rs", "alpha.rs", "middle.rs"] {
-		std::fs::write(root_dir.join(name), b"rs").unwrap();
+fn list_dir_truncates_beyond_the_bound_with_a_deterministic_marker() {
+	let root = unique_temp_dir("truncated");
+	for index in 0..(DEFAULT_MAX_LIST_ENTRIES + 3) {
+		std::fs::write(root.join(format!("f{index:06}.txt")), b"x").unwrap();
 	}
 
-	let first = search_files(&root_dir, "rs", 10).unwrap();
-	let second = search_files(&root_dir, "rs", 10).unwrap();
-	assert_eq!(first.matches, second.matches);
-	assert_eq!(first.bytes, second.bytes);
-	assert_eq!(first.sha256, second.sha256);
+	let artifact = list_dir(&root, "").expect("list of an over-bound dir must still succeed");
+	assert_eq!(artifact.entries.len(), DEFAULT_MAX_LIST_ENTRIES);
+	assert!(artifact.truncated, "an over-bound listing must set truncated: true");
 
-	std::fs::remove_dir_all(&root_dir).ok();
-}
+	// Deterministic: truncation keeps the first DEFAULT_MAX_LIST_ENTRIES
+	// entries in sorted order, not an arbitrary OS-ordered subset.
+	assert_eq!(artifact.entries.first().unwrap().name, "f000000.txt");
 
-#[test]
-fn search_files_max_matches_truncation_is_visible_in_metadata() {
-	let root_dir = unique_temp_dir("truncate");
-	for i in 0..5 {
-		std::fs::write(root_dir.join(format!("needle-{i}.txt")), b"content").unwrap();
-	}
-
-	let result = search_files(&root_dir, "needle", 2).unwrap();
-	assert_eq!(result.matches.len(), 2);
-	assert!(result.truncated);
-
-	std::fs::remove_dir_all(&root_dir).ok();
+	std::fs::remove_dir_all(&root).ok();
 }
 
 // ---------------------------------------------------------------------
-// find: ordering, truncation, root-bound rejections, empty results
+// list_dir: root-bounding, same substrate/error class as read/find/grep
 // ---------------------------------------------------------------------
 
 #[test]
-fn find_orders_matches_lexicographically_regardless_of_insertion_order() {
-	let root_dir = unique_temp_dir("order");
-	// Insert out of lexicographic order to prove the walk does not leak
-	// filesystem insertion order (Dissent ruling 4).
-	std::fs::write(root_dir.join("zeta.rs"), b"").unwrap();
-	std::fs::write(root_dir.join("alpha.rs"), b"").unwrap();
-	std::fs::create_dir_all(root_dir.join("mid")).unwrap();
-	std::fs::write(root_dir.join("mid/nested.rs"), b"").unwrap();
-
-	let result = find(&root_dir, "**/*.rs", 100).unwrap();
-	let paths: Vec<&str> = result
-		.entries
-		.iter()
-		.map(|entry| entry.path.as_str())
-		.collect();
-	assert_eq!(paths, vec!["alpha.rs", "mid/nested.rs", "zeta.rs"]);
-
-	std::fs::remove_dir_all(&root_dir).ok();
+fn list_dir_rejects_absolute_path() {
+	let root = unique_temp_dir("abs");
+	assert_eq!(list_dir(&root, "/etc"), Err(ListDirRejection::AbsolutePath));
+	std::fs::remove_dir_all(&root).ok();
 }
 
 #[test]
-fn find_empty_results_are_well_formed_not_errors() {
-	let root_dir = unique_temp_dir("empty");
-	std::fs::write(root_dir.join("a.txt"), b"").unwrap();
-
-	let result = find(&root_dir, "*.rs", 10).unwrap();
-	assert!(result.entries.is_empty());
-	assert!(!result.truncated);
-
-	std::fs::remove_dir_all(&root_dir).ok();
+fn list_dir_rejects_parent_traversal() {
+	let root = unique_temp_dir("dotdot");
+	assert_eq!(list_dir(&root, "../outside"), Err(ListDirRejection::ParentTraversal));
+	std::fs::remove_dir_all(&root).ok();
 }
 
 #[test]
-fn find_hidden_dotfiles_are_included() {
-	let root_dir = unique_temp_dir("hidden");
-	std::fs::write(root_dir.join(".env"), b"SECRET=1").unwrap();
-
-	let result = find(&root_dir, ".*", 10).unwrap();
-	assert_eq!(result.entries, vec![FindMatch { path: ".env".to_string() }]);
-
-	std::fs::remove_dir_all(&root_dir).ok();
+fn list_dir_rejects_nonexistent_directory_as_not_found() {
+	let root = unique_temp_dir("missing");
+	assert_eq!(list_dir(&root, "does/not/exist"), Err(ListDirRejection::NotFound));
+	std::fs::remove_dir_all(&root).ok();
 }
 
 #[test]
-fn find_glob_with_parent_traversal_matches_nothing_and_does_not_escape() {
-	let root_dir = unique_temp_dir("dotdot-glob");
-	std::fs::write(root_dir.join("a.txt"), b"content").unwrap();
-
-	// Syntactically valid glob; every candidate path produced by the
-	// bounded walk is already root-contained and never contains `..`, so
-	// this can only ever match nothing — never escape the root.
-	let result = find(&root_dir, "../*", 10).unwrap();
-	assert!(result.entries.is_empty());
-
-	std::fs::remove_dir_all(&root_dir).ok();
+fn list_dir_rejects_a_file_as_not_a_directory() {
+	let root = unique_temp_dir("file");
+	std::fs::write(root.join("leaf.txt"), b"leaf").unwrap();
+	assert_eq!(list_dir(&root, "leaf.txt"), Err(ListDirRejection::NotADirectory));
+	std::fs::remove_dir_all(&root).ok();
 }
 
 #[cfg(unix)]
 #[test]
-fn find_does_not_follow_a_symlink_pointing_outside_root() {
-	let base = unique_temp_dir("symlink-base");
+fn list_dir_rejects_symlink_escape_outside_root() {
+	use std::os::unix::fs::symlink;
+
+	// Shares the same root-bounding substrate as `read` (component-wise
+	// containment via canonicalization, never a string-prefix check), so
+	// this mirrors read.rs's own string-prefix-trap coverage: a symlinked
+	// directory that resolves outside the workspace root is rejected, not
+	// silently listed.
+	let base = unique_temp_dir("escape-base");
 	let workspace = base.join("workspace");
-	let outside = base.join("outside");
+	let outside = base.join("workspace_evil");
 	std::fs::create_dir_all(&workspace).unwrap();
 	std::fs::create_dir_all(&outside).unwrap();
-	std::fs::write(outside.join("secret.rs"), b"top secret").unwrap();
-	std::os::unix::fs::symlink(&outside, workspace.join("escape")).unwrap();
-	std::fs::write(workspace.join("visible.rs"), b"ok").unwrap();
+	std::fs::write(outside.join("secret.txt"), b"top secret").unwrap();
+	symlink(&outside, workspace.join("escape")).expect("symlink creation must succeed");
 
-	let result = find(&workspace, "**/*.rs", 100).unwrap();
-	let paths: Vec<&str> = result
-		.entries
-		.iter()
-		.map(|entry| entry.path.as_str())
-		.collect();
-	assert_eq!(paths, vec!["visible.rs"], "the symlinked subtree must never be traversed");
-
+	assert_eq!(list_dir(&workspace, "escape"), Err(ListDirRejection::OutOfRoot));
 	std::fs::remove_dir_all(&base).ok();
 }
 
-#[test]
-fn find_rejects_absolute_and_parent_traversal_root_inputs() {
-	// The workspace root itself is a trusted argument, not caller-supplied
-	// relative input, but it must still be rejected cleanly when it does
-	// not resolve to a real directory (e.g. a caller passing a bogus
-	// absolute path as the configured root).
-	let bogus_root = PathBuf::from("/definitely/does/not/exist/successor-kernel-c6");
-	let err = find(&bogus_root, "*", 10).unwrap_err();
-	assert_eq!(err, FindRejection::RootNotFound);
-}
-
-#[test]
-fn find_rejects_invalid_glob_syntax_as_typed_error_without_panicking() {
-	let root_dir = unique_temp_dir("invalid-glob");
-	let err = find(&root_dir, "[unterminated", 10).unwrap_err();
-	assert!(matches!(err, FindRejection::InvalidPattern(_)));
-	std::fs::remove_dir_all(&root_dir).ok();
-}
-
-#[test]
-fn find_large_tree_respects_the_default_walk_bound() {
-	// `DEFAULT_MAX_WALK_ENTRIES` (2_000) is a `pub(crate)` implementation
-	// detail; this test only observes its externally visible effect
-	// (`truncated: true`, an output count no client can exceed) through the
-	// public `find` API, per contract ("large-tree bound respected").
-	let root_dir = unique_temp_dir("large-tree");
-	for i in 0..2_100 {
-		std::fs::write(root_dir.join(format!("file-{i:05}.txt")), b"").unwrap();
-	}
-
-	let result = find(&root_dir, "*.txt", 1_000_000).unwrap();
-	assert!(result.truncated, "walking more eligible entries than the default bound must truncate");
-	assert!(result.entries.len() < 2_100, "the walk itself must stop early, not just the output");
-
-	std::fs::remove_dir_all(&root_dir).ok();
-}
-
 // ---------------------------------------------------------------------
-// grep: line matches, binary skip vs find, invalid regex, root rejections
+// list_dir: symlink children are reported, never traversed/resolved
 // ---------------------------------------------------------------------
 
+#[cfg(unix)]
 #[test]
-fn grep_matches_lines_and_find_still_lists_binary_files_grep_skips() {
-	let root_dir = unique_temp_dir("binary-vs-find");
-	std::fs::write(root_dir.join("text.rs"), b"fn main() {\n    needle_here();\n}").unwrap();
-	std::fs::write(root_dir.join("data.bin"), b"needle_here\0but binary").unwrap();
+fn list_dir_reports_a_symlink_child_as_a_symlink_without_following_it() {
+	use std::os::unix::fs::symlink;
 
-	let grep_result = grep(&root_dir, "needle_here", 100).unwrap();
-	assert_eq!(grep_result.matches, vec![GrepMatch {
-		path:              "text.rs".to_string(),
-		line:              2,
-		preview:           "    needle_here();".to_string(),
-		preview_truncated: false,
+	let root = unique_temp_dir("symlink-child");
+	let target = unique_temp_dir("symlink-child-target");
+	std::fs::write(target.join("hidden.txt"), b"hidden").unwrap();
+	symlink(&target, root.join("link_to_target")).expect("symlink creation must succeed");
+
+	let artifact = list_dir(&root, "").expect("list of a dir containing a symlink must succeed");
+	assert_eq!(artifact.entries, vec![ListDirEntry {
+		name: "link_to_target".to_owned(),
+		kind: ListDirEntryKind::Symlink,
 	}]);
 
-	let find_result = find(&root_dir, "*.bin", 100).unwrap();
-	assert_eq!(find_result.entries, vec![FindMatch { path: "data.bin".to_string() }]);
-
-	std::fs::remove_dir_all(&root_dir).ok();
-}
-
-#[test]
-fn grep_empty_results_are_well_formed_not_errors() {
-	let root_dir = unique_temp_dir("grep-empty");
-	std::fs::write(root_dir.join("a.txt"), b"nothing matches here").unwrap();
-
-	let result = grep(&root_dir, "absent_token", 10).unwrap();
-	assert!(result.matches.is_empty());
-	assert!(!result.truncated);
-
-	std::fs::remove_dir_all(&root_dir).ok();
-}
-
-#[test]
-fn grep_max_matches_truncation_is_visible_in_metadata() {
-	let root_dir = unique_temp_dir("grep-truncate");
-	let mut content = String::new();
-	for _ in 0..10 {
-		content.push_str("needle\n");
-	}
-	std::fs::write(root_dir.join("a.txt"), content).unwrap();
-
-	let result = grep(&root_dir, "needle", 3).unwrap();
-	assert_eq!(result.matches.len(), 3);
-	assert!(result.truncated);
-
-	std::fs::remove_dir_all(&root_dir).ok();
-}
-
-#[test]
-fn grep_rejects_invalid_regex_syntax_as_typed_error_without_panicking() {
-	let root_dir = unique_temp_dir("invalid-regex");
-	let err = grep(&root_dir, "(unterminated", 10).unwrap_err();
-	assert!(matches!(err, GrepRejection::InvalidPattern(_)));
-	std::fs::remove_dir_all(&root_dir).ok();
-}
-
-#[test]
-fn grep_rejects_missing_workspace_root() {
-	let bogus_root = PathBuf::from("/definitely/does/not/exist/successor-kernel-c6-grep");
-	let err = grep(&bogus_root, "anything", 10).unwrap_err();
-	assert_eq!(err, GrepRejection::RootNotFound);
-}
-
-#[cfg(unix)]
-#[test]
-fn grep_does_not_follow_a_symlink_pointing_outside_root() {
-	let base = unique_temp_dir("grep-symlink-base");
-	let workspace = base.join("workspace");
-	let outside = base.join("outside");
-	std::fs::create_dir_all(&workspace).unwrap();
-	std::fs::create_dir_all(&outside).unwrap();
-	std::fs::write(outside.join("secret.txt"), b"needle in the haystack").unwrap();
-	std::os::unix::fs::symlink(&outside, workspace.join("escape")).unwrap();
-
-	let result = grep(&workspace, "needle", 100).unwrap();
-	assert!(result.matches.is_empty(), "the symlinked subtree must never be scanned");
-
-	std::fs::remove_dir_all(&base).ok();
+	std::fs::remove_dir_all(&root).ok();
+	std::fs::remove_dir_all(&target).ok();
 }
 
 // ---------------------------------------------------------------------
-// search_files: root-bound rejections (mirrors find/grep)
+// list_dir: artifact hash/byte_length describe the exact returned payload
 // ---------------------------------------------------------------------
 
 #[test]
-fn search_files_rejects_missing_workspace_root() {
-	let bogus_root = PathBuf::from("/definitely/does/not/exist/successor-kernel-c6-search");
-	let err = search_files(&bogus_root, "anything", 10).unwrap_err();
-	assert_eq!(err, SearchFilesRejection::RootNotFound);
+fn list_dir_artifact_hash_and_byte_length_describe_the_exact_returned_bytes() {
+	use successor_protocol::artifact::{ArtifactHash, validate_artifact_content};
+
+	let root = unique_temp_dir("hash");
+	std::fs::write(root.join("one.txt"), b"1").unwrap();
+
+	let artifact = list_dir(&root, "").expect("list must succeed");
+	assert_eq!(artifact.byte_length, artifact.bytes.len() as u64);
+	assert_eq!(artifact.sha256, ArtifactHash::compute(&artifact.bytes));
+	validate_artifact_content(artifact.sha256.as_str(), artifact.byte_length, &artifact.bytes)
+		.expect("artifact fields must validate via the accepted protocol helper");
+
+	std::fs::remove_dir_all(&root).ok();
+}
+
+// ---------------------------------------------------------------------
+// ListDirArgs: malformed argument rejection (unknown field, non-string path)
+// ---------------------------------------------------------------------
+
+#[test]
+fn list_dir_args_rejects_unknown_fields_as_malformed() {
+	use successor_kernel::tools::list_dir::ListDirArgs;
+
+	let ok: ListDirArgs = serde_json::from_value(serde_json::json!({ "path": "src" }))
+		.expect("well-formed list_dir arguments must deserialize");
+	assert_eq!(ok.path, "src");
+
+	let defaults: ListDirArgs = serde_json::from_value(serde_json::json!({}))
+		.expect("missing list_dir arguments must fall back to the root path, not error");
+	assert_eq!(defaults.path, "");
+
+	let rejected: Result<ListDirArgs, _> =
+		serde_json::from_value(serde_json::json!({ "path": "src", "recursive": true }));
+	assert!(
+		rejected.is_err(),
+		"an unknown field on list_dir arguments must be rejected, not silently ignored"
+	);
 }

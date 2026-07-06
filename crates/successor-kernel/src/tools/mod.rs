@@ -35,6 +35,7 @@
 pub mod catalog;
 pub mod find;
 pub mod grep;
+pub mod list_dir;
 pub mod read;
 pub mod search_files;
 

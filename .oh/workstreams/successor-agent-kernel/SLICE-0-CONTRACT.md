@@ -611,7 +611,7 @@ Rules:
 
 ## 9. Successful turn state machine
 
-Slice 0 supports a bounded read-only tool path: at most one locator tool call and one file-read tool call per turn. Anything beyond that emits `tool_call.rejected` and `error.recorded`.
+Slice 0's canonical fixture is a bounded read-only tool path: one locator tool call followed by one file-read tool call per turn. Post-Slice-0 live execution permits up to eight executable read/discovery tool calls per turn; the Slice 0 canonical fixture remains the richer locator+read happy path, not an exhaustive max-budget fixture. Exceeding the live per-turn tool-call maximum emits `tool_call.rejected` and `error.recorded` without changing event names or lifecycle semantics. (Amended by the agent://256 dissent ruling, item A, PROCEED-WITH-CONDITIONS.)
 
 Happy path:
 

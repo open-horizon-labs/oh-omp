@@ -43,7 +43,7 @@ use crate::{
 /// never run turns.
 pub const DEFAULT_MODEL: &str = "claude-sonnet-5";
 /// Default `max_tokens` for the in-process bootstrap's provider factory.
-const DEFAULT_MAX_TOKENS: u32 = 8192;
+const DEFAULT_MAX_TOKENS: u32 = 32768;
 
 /// Bucketed process exit codes (dissent ruling 6).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -15,10 +15,12 @@
 //!
 //! Identity and time are seams ([`IdFactory`], [`Clock`], `id_factory.rs`),
 //! never hand-rolled inline. The turn lifecycle is a bounded, typed state
-//! machine (`state_machine.rs`): at most one locator tool call
-//! (`search_files`) followed by at most one file-read tool call (`read`),
-//! matching Dissent ruling 5's scope. Every attempt is single-shot: no
-//! retry, no backoff, no resume engine.
+//! machine (`state_machine.rs`): the canonical fixture is one locator tool
+//! call (`search_files`) followed by one file-read tool call (`read`); live
+//! execution permits up to `state_machine::MAX_EXECUTABLE_TOOL_ROUNDS`
+//! executable tool rounds per turn (<agent://256> dissent ruling, amending
+//! Dissent ruling 5's original two-call bound). Every attempt is single-shot:
+//! no retry, no backoff, no resume engine.
 //!
 //! ## Disclosed deviations from the canonical fixtures
 //!
@@ -68,7 +70,7 @@ use crate::{
 	platform_client::KernelPlatformClient,
 	platform_error::PlatformClientError,
 	provider::{auth::ProviderAuthOutcome, credentials::AnthropicApiKey},
-	state_machine::{TurnFailure, TurnPhase, TurnState},
+	state_machine::{MAX_EXECUTABLE_TOOL_ROUNDS, TurnFailure, TurnPhase, TurnState},
 	tools::{self, catalog},
 	turn_trace::{TurnAttempt, TurnTrace},
 };
@@ -477,9 +479,43 @@ pub struct TurnRunner<P: ProviderExecutor> {
 /// executed (not rejected, not failed) tool call.
 #[derive(Debug)]
 pub struct ToolDispatchSuccess {
-	pub source_envelope_id: SourceEnvelopeId,
-	pub last_event_id:      EventId,
-	pub last_frame_id:      FrameId,
+	pub source_envelope_id:   SourceEnvelopeId,
+	pub last_event_id:        EventId,
+	pub last_frame_id:        FrameId,
+	/// The tool result content the *next* provider round must see (<agent://256>
+	/// dissent ruling, item B): full bounded content for `read`, the full
+	/// matches payload for `search_files`/`find`/`grep`. Never a preview-only
+	/// or artifact-handle-only projection. This is a runtime-only value used
+	/// to build the next `send_round` call; it is never persisted as raw
+	/// event/frame bytes, so it cannot perturb any fixture-pinned oracle.
+	pub provider_result_text: String,
+}
+
+/// Contract §8.1 bounds the provider-visible `read` result to 200,000
+/// bytes. Full file content is sent verbatim to the provider under that
+/// bound; a deterministic truncation marker is appended when the file
+/// exceeds it. The underlying artifact (`content.bytes`, `sha256`,
+/// `byte_length`) recorded in `tool_result.recorded` is always the
+/// complete, untruncated read — only this provider-facing projection is
+/// bounded (<agent://256> dissent ruling, item B: full-file for normal
+/// files, bounded for huge ones).
+const MAX_PROVIDER_VISIBLE_READ_BYTES: usize = 200_000;
+
+/// Builds the model-visible text for a successful `read`, bounded per
+/// [`MAX_PROVIDER_VISIBLE_READ_BYTES`]. Never a preview-only or
+/// artifact-handle-only projection (<agent://256> dissent ruling, item B;
+/// forbidden pattern: "Projecting `preview`, first line, or
+/// `artifact:<id>` as the only model-visible result for a successful
+/// `read`").
+fn bound_provider_visible_text(text: &str) -> String {
+	if text.len() <= MAX_PROVIDER_VISIBLE_READ_BYTES {
+		return text.to_owned();
+	}
+	let mut boundary = MAX_PROVIDER_VISIBLE_READ_BYTES;
+	while !text.is_char_boundary(boundary) {
+		boundary -= 1;
+	}
+	format!("{}\n...[truncated: showing {boundary} of {} bytes]", &text[..boundary], text.len())
 }
 
 impl<P: ProviderExecutor> TurnRunner<P> {
@@ -727,7 +763,7 @@ impl<P: ProviderExecutor> TurnRunner<P> {
 			)
 			.await?;
 
-		let (payload, artifact) = self
+		let (payload, artifact, provider_result_text) = self
 			.execute_tool(tool_name, arguments)
 			.map_err(TurnFailure::Protocol)?;
 		let artifact_preview = artifact.preview.clone();
@@ -812,6 +848,7 @@ impl<P: ProviderExecutor> TurnRunner<P> {
 			source_envelope_id,
 			last_event_id: completed_event_id,
 			last_frame_id: completed_frame.frame_id,
+			provider_result_text,
 		})
 	}
 
@@ -823,7 +860,7 @@ impl<P: ProviderExecutor> TurnRunner<P> {
 		&self,
 		tool_name: &str,
 		arguments: &WireJson,
-	) -> Result<(WireJson, RawEventArtifactRef), String> {
+	) -> Result<(WireJson, RawEventArtifactRef, String), String> {
 		match tool_name {
 			"search_files" => {
 				let args: tools::search_files::SearchFilesArgs =
@@ -838,8 +875,10 @@ impl<P: ProviderExecutor> TurnRunner<P> {
 					.matches
 					.first()
 					.map_or_else(|| "no matches".to_owned(), |m| m.path.clone());
+				let payload = json!({ "source_kind": "tool_result", "tool_name": "search_files", "matches": result.matches });
+				let provider_text = payload.to_string();
 				Ok((
-					json!({ "source_kind": "tool_result", "tool_name": "search_files", "matches": result.matches }),
+					payload,
 					artifact_ref(
 						result.sha256.clone(),
 						result.byte_length,
@@ -847,6 +886,7 @@ impl<P: ProviderExecutor> TurnRunner<P> {
 						&preview,
 						&result.bytes,
 					),
+					provider_text,
 				))
 			},
 			"read" => {
@@ -856,6 +896,7 @@ impl<P: ProviderExecutor> TurnRunner<P> {
 					.map_err(|err| err.to_string())?;
 				let text = String::from_utf8_lossy(&content.bytes).into_owned();
 				let preview = text.strip_suffix('\n').unwrap_or(&text);
+				let provider_text = bound_provider_visible_text(&text);
 				Ok((
 					json!({
 						"source_kind": "tool_result",
@@ -871,6 +912,7 @@ impl<P: ProviderExecutor> TurnRunner<P> {
 						preview,
 						&content.bytes,
 					),
+					provider_text,
 				))
 			},
 			"find" => {
@@ -878,8 +920,10 @@ impl<P: ProviderExecutor> TurnRunner<P> {
 					serde_json::from_value(arguments.clone()).map_err(|err| err.to_string())?;
 				let result = tools::find::find(&self.workspace_root, &args.glob, 2_000)
 					.map_err(|err| err.to_string())?;
+				let payload = json!({ "source_kind": "tool_result", "tool_name": "find", "matches": result.entries });
+				let provider_text = payload.to_string();
 				Ok((
-					json!({ "source_kind": "tool_result", "tool_name": "find", "matches": result.entries }),
+					payload,
 					artifact_ref(
 						result.sha256.clone(),
 						result.byte_length,
@@ -887,6 +931,7 @@ impl<P: ProviderExecutor> TurnRunner<P> {
 						"find results",
 						&result.bytes,
 					),
+					provider_text,
 				))
 			},
 			"grep" => {
@@ -894,8 +939,10 @@ impl<P: ProviderExecutor> TurnRunner<P> {
 					serde_json::from_value(arguments.clone()).map_err(|err| err.to_string())?;
 				let result = tools::grep::grep(&self.workspace_root, &args.pattern, 2_000)
 					.map_err(|err| err.to_string())?;
+				let payload = json!({ "source_kind": "tool_result", "tool_name": "grep", "matches": result.matches });
+				let provider_text = payload.to_string();
 				Ok((
-					json!({ "source_kind": "tool_result", "tool_name": "grep", "matches": result.matches }),
+					payload,
 					artifact_ref(
 						result.sha256.clone(),
 						result.byte_length,
@@ -903,6 +950,7 @@ impl<P: ProviderExecutor> TurnRunner<P> {
 						"grep results",
 						&result.bytes,
 					),
+					provider_text,
 				))
 			},
 			other => {
@@ -1219,6 +1267,8 @@ impl<P: ProviderExecutor> TurnRunner<P> {
 			let mut last_frame_id = raw_event_appended_frame.frame_id;
 			let mut required_source_envelope_ids: Vec<SourceEnvelopeId> = Vec::new();
 			let mut phase = TurnPhase::PreTool;
+			let mut executed_tool_rounds: u8 = 0;
+			let mut round_text: String = input.user_text.clone();
 			let assembly_query = input
 				.assembly_query
 				.clone()
@@ -1293,7 +1343,7 @@ impl<P: ProviderExecutor> TurnRunner<P> {
 				let outcome = self
 					.provider
 					.send_round(
-						&input.user_text,
+						&round_text,
 						&catalog,
 						round_message_id.clone(),
 						round_tool_call_id.clone(),
@@ -1301,9 +1351,10 @@ impl<P: ProviderExecutor> TurnRunner<P> {
 					.await?;
 
 				if let Some((tool_call, _metadata)) = outcome.tool_call {
-					if phase.round_index() >= TurnPhase::PostRead.round_index() {
+					if executed_tool_rounds >= MAX_EXECUTABLE_TOOL_ROUNDS {
 						return Err(TurnFailure::ToolBudgetExhausted);
 					}
+					executed_tool_rounds += 1;
 
 					let observed_event_id = self.ids.event_id();
 					let provider_event_id = self.ids.provider_event_id();
@@ -1355,9 +1406,8 @@ impl<P: ProviderExecutor> TurnRunner<P> {
 					required_source_envelope_ids = vec![dispatch.source_envelope_id];
 					causation = dispatch.last_event_id;
 					last_frame_id = dispatch.last_frame_id;
-					phase = phase
-						.next()
-						.expect("bounded by the round_index guard above");
+					round_text = dispatch.provider_result_text;
+					phase = phase.next().unwrap_or(phase);
 				} else {
 					let response_event_id = self.ids.event_id();
 					let final_provider_event_id = self.ids.provider_event_id();

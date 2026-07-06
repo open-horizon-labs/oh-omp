@@ -4,11 +4,17 @@
 //! the typed failure surface [`TurnFailure`] the runner returns instead of
 //! panicking or inventing an ad hoc error string.
 //!
-//! Slice 0 bounds a turn to at most one locator tool call (`search_files`)
-//! followed by at most one file-read tool call (`read`) — contract §9,
-//! Dissent ruling 5. That bound is represented directly as the three
-//! [`TurnPhase`] variants: there is no fourth phase, and
-//! [`TurnPhase::next`] returns `None` after [`TurnPhase::PostRead`].
+//! Slice 0's canonical fixture is the locator (`search_files`) + file-read
+//! (`read`) happy path — contract §9, Dissent ruling 5 — represented
+//! directly as the three [`TurnPhase`] variants; there is no fourth phase.
+//! Live execution (<agent://256> dissent ruling, amending Dissent ruling 5's
+//! original two-call bound) permits up to [`MAX_EXECUTABLE_TOOL_ROUNDS`]
+//! executable tool rounds per turn: rounds beyond [`TurnPhase::PostRead`]
+//! reuse its assemble/label mapping rather than advancing to a fourth
+//! phase, and [`TurnPhase::next`] still returns `None` after
+//! [`TurnPhase::PostRead`] — the tool-round budget is enforced by a
+//! runner-owned counter against [`MAX_EXECUTABLE_TOOL_ROUNDS`], independent
+//! of [`TurnPhase::round_index`].
 //!
 //! [`TurnState`] transitions are validated by [`TurnState::validate_next`]:
 //! illegal transitions return a typed [`IllegalTransition`] rather than
@@ -33,6 +39,19 @@ pub enum TurnPhase {
 	PostLocator,
 	PostRead,
 }
+
+/// Maximum number of executable tool-call rounds permitted within a single
+/// turn.
+///
+/// Set by the <agent://256> dissent ruling, amending Dissent ruling 5's
+/// original two-call bound. Enforced by a runner-owned round counter
+/// (`runner.rs`'s `execute_turn`), independent of [`TurnPhase::round_index`]:
+/// [`TurnPhase`] itself still only distinguishes the first three
+/// assemble/provider rounds ([`TurnPhase::PreTool`],
+/// [`TurnPhase::PostLocator`], [`TurnPhase::PostRead`]); rounds beyond
+/// `PostRead` reuse its assemble-phase/label mapping instead of advancing
+/// to a fourth phase.
+pub const MAX_EXECUTABLE_TOOL_ROUNDS: u8 = 8;
 
 impl TurnPhase {
 	/// Zero-based round index, matching the order rounds run in.

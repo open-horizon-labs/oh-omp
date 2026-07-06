@@ -22,7 +22,7 @@ use successor_kernel::{
 	api::{CreateSessionResponse, ResumeResponse, SessionAttachResponse, SubmitTurnRequest},
 	config::ANTHROPIC_API_KEY_ENV,
 	http::{AppState, build_router},
-	id_factory::{RealClock, RealIdFactory},
+	id_factory::{IdFactory, RealClock, RealIdFactory},
 	platform_client::{EntitlementToken, KernelPlatformClient},
 	provider::{auth::ProviderSlot, projection},
 	runner::{ProviderExecutor, ProviderRoundOutcome, ScriptedProviderExecutor, ScriptedRound},
@@ -32,8 +32,11 @@ use successor_kernel::{
 };
 use successor_protocol::{
 	error::ErrorEnvelopeV0,
-	ids::{MessageId, ToolCallId},
+	ids::{MessageId, RequestId, SessionId, ToolCallId, TurnId},
 	kernel_frame::{KernelFrameKindV0, KernelFrameV0},
+	platform_api::{
+		AssembleIntentV0, AssemblePhaseV0, AssembleRequestV0, AssembleWorkspaceV0, AssemblyBudgetV0,
+	},
 	provider::ProviderApiShapeV0,
 	raw_event::RawEventType,
 	tool_catalog::ToolCatalogV0,
@@ -1452,6 +1455,261 @@ async fn replaying_a_two_turn_session_stream_is_deterministic_and_spans_both_tur
 		assistant_messages, 2,
 		"the accumulated transcript must include both turns' assistant messages: {:?}",
 		first_projection.transcript
+	);
+
+	cleanup_workspace(&workspace);
+}
+
+// --- agent://279-RetrievalSemanticsDissent ---------------------------------
+//
+// Ruling 279 refuted the "tool_result artifacts carry no source envelope"
+// hypothesis (component A traced the field end to end). The ruled fix is to
+// test the platform's own recency-retrieval semantics directly -- bypassing
+// the runner/provider pipeline already proven healthy above by
+// `continuation_turn_round_one_injects_the_prior_turns_hydrated_context_into_the_first_user_message`
+// -- and to diagnose from persisted rows if anything here is red.
+
+/// Distinctive marker for a *second* turn's own tool artifact, written into a
+/// dedicated file separate from [`CONTEXT_INJECTION_MARKER`] (turn 1's
+/// artifact). Must never appear in any other workspace file or fixture, so a
+/// match can only mean the retrieval set surfaced this turn's own artifact
+/// when recency semantics require it to be excluded.
+const OWN_TURN_ARTIFACT_MARKER: &str = "marker-9b31e0-turn-two-own-file-contents";
+
+fn seed_workspace_with_marker_and_own_turn_file(label: &str) -> std::path::PathBuf {
+	let root = seed_workspace_with_marker(label);
+	std::fs::write(root.join("own_turn.txt"), OWN_TURN_ARTIFACT_MARKER)
+		.expect("write the turn-two-own-artifact fixture file");
+	root
+}
+
+/// Builds an `AssembleRequestV0` in the exact shape
+/// `TurnRunner::assemble_round` (`crates/successor-kernel/src/runner.rs`)
+/// sends on every real turn: same `repo_id`, same default 12_000-token /
+/// 20-item budget unless overridden, and empty `required_source_envelope_ids`
+/// (recency-only retrieval, per ruling 279's ruled fix). Tests call the
+/// platform's `/v0/assemble` route directly through this shape so failures
+/// are attributable to platform retrieval semantics, not to runner/provider
+/// wiring.
+fn ruling_279_assemble_request(
+	workspace: &std::path::Path,
+	session_id: SessionId,
+	turn_id: TurnId,
+	request_id: RequestId,
+	phase: AssemblePhaseV0,
+	budget: AssemblyBudgetV0,
+) -> AssembleRequestV0 {
+	AssembleRequestV0::new(
+		session_id,
+		turn_id,
+		request_id,
+		phase,
+		AssembleIntentV0 {
+			query:         "continue please".to_owned(),
+			raw_user_text: "continue please".to_owned(),
+			confidence:    "high".to_owned(),
+		},
+		AssembleWorkspaceV0 {
+			root_hint: workspace.display().to_string(),
+			repo_id:   "successor-agent-kernel".to_owned(),
+		},
+		budget,
+	)
+}
+
+const RULING_279_DEFAULT_BUDGET: AssemblyBudgetV0 =
+	AssemblyBudgetV0 { max_context_tokens: 12_000, max_items: 20 };
+
+/// Required test 1(a)/(b) and the budget-exclusion edge case from
+/// <agent://279-RetrievalSemanticsDissent>: turn 2's `pre_tool` assemble (empty
+/// `required_source_envelope_ids`) must return a context item set including
+/// turn 1's tool artifact, whose `rendered_text` contains the artifact's
+/// content -- and a starved budget must mark that same candidate
+/// `included: false` rather than silently dropping it, with
+/// `render_context_block` never injecting an excluded item.
+#[tokio::test]
+async fn platform_assemble_pre_tool_includes_the_prior_turns_tool_artifact_for_ruling_279() {
+	let server = TestServer::start("ruling279-pretool").await;
+	let workspace = seed_workspace_with_marker("ruling279-pretool");
+	let session_id = seed_session_with_a_read_artifact(&server, &workspace).await;
+
+	// Mint a fresh turn id the way `TurnRunner` would before running turn 2's
+	// own pre_tool assemble, and call the platform directly.
+	let ids = RealIdFactory::new();
+	let turn_two_id = ids.turn_id();
+	let request = ruling_279_assemble_request(
+		&workspace,
+		session_id.clone(),
+		turn_two_id,
+		ids.request_id(),
+		AssemblePhaseV0::PreTool,
+		RULING_279_DEFAULT_BUDGET,
+	);
+
+	let response = server
+		.client()
+		.assemble(&request)
+		.await
+		.expect("a pre_tool assemble against a real prior-turn artifact must succeed");
+
+	assert!(
+		!response.context_items.is_empty(),
+		"pre_tool recency retrieval for turn 2 must surface turn 1's tool artifact; got an empty \
+		 context_items set: {response:?}"
+	);
+	let rendered_texts: Vec<&str> = response
+		.context_items
+		.iter()
+		.map(|item| item.rendered_text.as_str())
+		.collect();
+	assert!(
+		rendered_texts
+			.iter()
+			.any(|text| text.contains(CONTEXT_INJECTION_MARKER)),
+		"turn 1's marker.txt tool artifact must be retrievable by content, not merely by id; \
+		 rendered_text values were: {rendered_texts:?}"
+	);
+	assert!(
+		response.context_items.iter().all(|item| item.included),
+		"the default 12_000-token / 20-item budget must admit a single small artifact; got: {:?}",
+		response.context_items
+	);
+
+	// Budget-exclusion variant (edge case pinned by the assignment): a starved
+	// budget must mark the same candidate `included: false` instead of
+	// masquerading as a retrieval failure, and the runner's own
+	// `render_context_block` must never inject an excluded item.
+	let starved_request = ruling_279_assemble_request(
+		&workspace,
+		session_id,
+		ids.turn_id(),
+		ids.request_id(),
+		AssemblePhaseV0::PreTool,
+		AssemblyBudgetV0 { max_context_tokens: 0, max_items: 0 },
+	);
+	let starved_response = server
+		.client()
+		.assemble(&starved_request)
+		.await
+		.expect("a starved-budget assemble must still succeed, just with nothing included");
+	assert!(
+		!starved_response.context_items.is_empty(),
+		"a zero budget must still surface the candidate set for observability, marked excluded, not \
+		 an empty response: {starved_response:?}"
+	);
+	assert!(
+		starved_response
+			.context_items
+			.iter()
+			.all(|item| !item.included),
+		"a zero-token/zero-item budget must mark every candidate excluded: {:?}",
+		starved_response.context_items
+	);
+	let rendered = projection::render_context_block(&starved_response.context_items);
+	assert!(
+		rendered.text.is_empty() && rendered.injected_context_item_ids.is_empty(),
+		"included:false items must never be treated as injected by render_context_block; got: \
+		 {rendered:?}"
+	);
+
+	cleanup_workspace(&workspace);
+}
+
+/// Required test 2 from <agent://279-RetrievalSemanticsDissent>: recency
+/// semantics must be direction-sensitive. A second turn that has produced
+/// its *own* tool artifact must never see that artifact reflected back in
+/// its own recency retrieval set, while turn 1's artifact must still be
+/// included.
+#[tokio::test]
+async fn platform_assemble_excludes_the_requesting_turns_own_artifact_but_includes_the_prior_turns_for_ruling_279()
+ {
+	let server = TestServer::start("ruling279-recency").await;
+	let workspace = seed_workspace_with_marker_and_own_turn_file("ruling279-recency");
+	let session_id = seed_session_with_a_read_artifact(&server, &workspace).await;
+
+	let page_before = server
+		.client()
+		.read_session_events(&session_id, None, None)
+		.await
+		.expect("read the pre-turn-2 event page");
+
+	let runner = successor_kernel::runner::TurnRunner::new(
+		server.client(),
+		successor_kernel::frame_sink::FrameSink::new(KernelFrameStream::new()),
+		Arc::new(RealIdFactory::new()),
+		Arc::new(RealClock),
+		ScriptedProviderExecutor::new(
+			"scripted",
+			ProviderApiShapeV0::AnthropicMessages,
+			"scripted-model",
+			vec![
+				ScriptedRound::ToolUse {
+					tool_name:             "read".to_owned(),
+					arguments:             serde_json::json!({ "path": "own_turn.txt" }),
+					provider_tool_call_id: "call_ruling279_own_turn_read".to_owned(),
+				},
+				ScriptedRound::Final {
+					text:    "read my own file".to_owned(),
+					summary: "read my own file".to_owned(),
+				},
+			],
+		),
+		&workspace,
+	);
+	let attempt = runner
+		.continue_turn(
+			successor_kernel::runner::TurnInput {
+				user_text:      "continue please".to_owned(),
+				assembly_query: None,
+			},
+			session_id.clone(),
+		)
+		.await;
+	assert!(attempt.outcome.is_ok(), "turn 2 (its own read tool round) must succeed: {attempt:?}");
+
+	let page_after = server
+		.client()
+		.read_session_events(&session_id, None, None)
+		.await
+		.expect("read the post-turn-2 event page");
+	let turn_two_id = page_after.events[page_before.events.len()..]
+		.iter()
+		.find_map(|event| event.turn_id.clone())
+		.expect("turn 2 must append at least one turn-scoped raw event");
+
+	let ids = RealIdFactory::new();
+	let request = ruling_279_assemble_request(
+		&workspace,
+		session_id,
+		turn_two_id,
+		ids.request_id(),
+		AssemblePhaseV0::PostRead,
+		RULING_279_DEFAULT_BUDGET,
+	);
+	let response = server
+		.client()
+		.assemble(&request)
+		.await
+		.expect("a post_read assemble against turn 2's own session must succeed");
+
+	let rendered_texts: Vec<&str> = response
+		.context_items
+		.iter()
+		.map(|item| item.rendered_text.as_str())
+		.collect();
+	assert!(
+		rendered_texts
+			.iter()
+			.any(|text| text.contains(CONTEXT_INJECTION_MARKER)),
+		"turn 2's recency retrieval must still include turn 1's prior-turn artifact; rendered_text \
+		 values were: {rendered_texts:?}"
+	);
+	assert!(
+		!rendered_texts
+			.iter()
+			.any(|text| text.contains(OWN_TURN_ARTIFACT_MARKER)),
+		"turn 2's recency retrieval must exclude its own turn's artifact; rendered_text values \
+		 were: {rendered_texts:?}"
 	);
 
 	cleanup_workspace(&workspace);

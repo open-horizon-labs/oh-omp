@@ -134,7 +134,9 @@ pub struct AnthropicAdapter {
 impl std::fmt::Debug for AnthropicAdapter {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 		f.debug_struct("AnthropicAdapter")
-			.field("base_url", &self.base_url)
+			// `base_url` is env/caller-sourced and may carry userinfo or
+			// token query params (gateway URLs); never print it verbatim.
+			.field("base_url", &"<redacted>")
 			.field("api_key", &self.api_key)
 			.finish_non_exhaustive()
 	}
@@ -259,6 +261,20 @@ mod tests {
 		let adapter = AnthropicAdapter::new(test_key());
 		let debug = format!("{adapter:?}");
 		assert!(!debug.contains("sk-ant-test-sentinel-do-not-leak"));
+	}
+
+	#[test]
+	fn adapter_debug_never_contains_the_base_url_material() {
+		let adapter = AnthropicAdapter::with_base_url(
+			"http://user:sentinel-token@gw.example:8888/path?key=sentinel-q",
+			test_key(),
+		);
+		let debug = format!("{adapter:?}");
+		assert!(!debug.contains("sentinel-token"));
+		assert!(!debug.contains("sentinel-q"));
+		assert!(!debug.contains("gw.example"));
+		assert!(!debug.contains("user:"));
+		assert!(debug.contains("<redacted>"));
 	}
 
 	#[test]

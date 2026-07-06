@@ -359,14 +359,31 @@ fn normalize_response_extracts_finish_reason_and_text_for_every_shape() {
 	}
 }
 
-/// Drift-proof contract (<agent://252-ToolSchemaAmendmentDissent>, ruling 4/6):
-/// real Anthropic rejects a tools array whose entries carry
-/// `input_schema: null` with an HTTP 400. This asserts the Slice 0
-/// catalog's Anthropic projection never regresses to that shape (or to a
-/// placeholder `{"type":"object"}` with no properties, which would
-/// silently defeat the point) for any executable tool.
+/// Drift-proof contract (<agent://252-ToolSchemaAmendmentDissent>, ruling 4/6;
+/// strengthened per post-hoc review <agent://254-ToolSchemaAmendmentReview>,
+/// finding 1, closing dissent ruling 252.4's residual gap): a schema with an
+/// extra unrelated property, a missing expected property, or hand-drifted
+/// content must FAIL this test. Two independent checks enforce that:
+///
+/// (a) whole-document exact equality between each executable tool's
+/// published `input_schema` and `schemars::schema_for!` for the exact kernel
+/// arg DTO `execute_tool` deserializes into, compared as a whole
+/// `serde_json::Value` (no field cherry-picking), via the identical
+/// transformation path `catalog::executable_input_schema` uses (none: the
+/// catalog publishes the schemars output verbatim, see that function);
+///
+/// (b) an independent, hand-authored spot oracle that does not derive from
+/// the DTO types at all: the exact `properties` key set the executor
+/// actually consumes, per tool, read from the published body (not the DTO).
+/// None of the four DTOs mark any field as JSON-Schema `required` -- every
+/// field on every one of them carries a `#[serde(default = ...)]`, so
+/// `schemars` never emits a `required` key for them at all (verified
+/// directly against the generated schemas, not assumed). This oracle
+/// asserts that invariant explicitly too, so a future edit that drops a
+/// default and silently makes a field schema-required is caught here.
 #[test]
-fn every_executable_tool_in_the_anthropic_projection_carries_a_real_non_null_object_schema() {
+fn every_executable_tool_in_the_anthropic_projection_matches_its_dto_schema_and_the_hand_authored_spot_oracle_exactly()
+ {
 	let catalog = slice0_catalog();
 	let projected =
 		project_request_body(&ProviderApiShapeV0::AnthropicMessages, USER_TEXT, &catalog);
@@ -378,6 +395,16 @@ fn every_executable_tool_in_the_anthropic_projection_carries_a_real_non_null_obj
 
 	let placeholder = serde_json::json!({ "type": "object" });
 
+	// (b) hand-authored, DTO-independent expectation of the property set the
+	// executor actually reads for each tool. Never derived from the type.
+	let expected_properties: [(&str, &[&str]); 4] = [
+		("search_files", &["query", "max_matches"]),
+		("read", &["path"]),
+		("find", &["glob"]),
+		("grep", &["pattern"]),
+	];
+
+	let mut seen: Vec<&str> = Vec::new();
 	for tool in tools {
 		let name = tool
 			.get("name")
@@ -393,11 +420,62 @@ fn every_executable_tool_in_the_anthropic_projection_carries_a_real_non_null_obj
 			Some("object"),
 			"tool {name} schema must be a JSON Schema object"
 		);
+
+		// (a) whole-document exact equality against schemars for the exact same
+		// DTO type the kernel executor deserializes into.
+		let expected_schema = match name {
+			"search_files" => serde_json::to_value(schemars::schema_for!(SearchFilesArgs))
+				.expect("schemars output for SearchFilesArgs must serialize"),
+			"read" => serde_json::to_value(schemars::schema_for!(ReadArgs))
+				.expect("schemars output for ReadArgs must serialize"),
+			"find" => serde_json::to_value(schemars::schema_for!(FindArgs))
+				.expect("schemars output for FindArgs must serialize"),
+			"grep" => serde_json::to_value(schemars::schema_for!(GrepArgs))
+				.expect("schemars output for GrepArgs must serialize"),
+			other => panic!(
+				"executable tool {other} has no schemars oracle wired into this test; add its DTO"
+			),
+		};
+		assert_eq!(
+			schema, &expected_schema,
+			"tool {name} input_schema must equal schemars::schema_for! for its kernel arg DTO \
+			 exactly, whole-document, no cherry-picking"
+		);
+
+		// (b) independent spot oracle, read from the published body only.
+		let found = expected_properties
+			.iter()
+			.find(|entry| entry.0 == name)
+			.unwrap_or_else(|| panic!("tool {name} has no hand-authored spot-oracle entry"));
+		let expected_props: &[&str] = found.1;
 		let properties = schema
 			.get("properties")
 			.and_then(serde_json::Value::as_object)
 			.unwrap_or_else(|| panic!("tool {name} schema must declare properties"));
-		assert!(!properties.is_empty(), "tool {name} schema must declare at least one property");
+		let mut actual_props: Vec<&str> = properties.keys().map(String::as_str).collect();
+		actual_props.sort_unstable();
+		let mut want_props: Vec<&str> = expected_props.to_vec();
+		want_props.sort_unstable();
+		assert_eq!(
+			actual_props, want_props,
+			"tool {name} properties must be exactly the executor-consumed field set: no extra \
+			 property, none missing, no hand-drift"
+		);
+		assert!(
+			schema.get("required").is_none(),
+			"tool {name} must not publish a `required` array; every argument field on this DTO \
+			 carries a serde default"
+		);
+
+		seen.push(name);
+	}
+
+	for (tool_name, _) in expected_properties {
+		assert!(
+			seen.contains(&tool_name),
+			"spot oracle expected {tool_name} to be an executable tool but it was absent from the \
+			 projection"
+		);
 	}
 }
 

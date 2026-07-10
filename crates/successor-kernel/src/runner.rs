@@ -60,7 +60,7 @@ use successor_protocol::{
 		EntityIdsV0, RAW_EVENT_SCHEMA_VERSION, RawEventArtifactRef, RawEventProducerV0, RawEventType,
 		RedactionLevelV0, VisibilityV0,
 	},
-	tool_catalog::{ToolCatalogV0, ToolStatusV0},
+	tool_catalog::{ToolAuthorityClassV0, ToolAuthorityRequestV0, ToolCatalogV0, ToolStatusV0},
 };
 
 use crate::{
@@ -70,7 +70,10 @@ use crate::{
 	platform_error::PlatformClientError,
 	provider::{auth::ProviderAuthOutcome, credentials::AnthropicApiKey, projection},
 	state_machine::{MAX_EXECUTABLE_TOOL_ROUNDS, TurnFailure, TurnPhase, TurnState},
-	tools::{catalog, registry},
+	tools::{
+		catalog,
+		registry::{self, EffectiveToolAuthority},
+	},
 	turn_trace::{TurnAttempt, TurnTrace},
 };
 
@@ -468,12 +471,13 @@ const fn api_shape_label(shape: &ProviderApiShapeV0) -> &'static str {
 /// runner API): production callers instantiate with an adapter-backed
 /// executor; replay tests instantiate with [`ScriptedProviderExecutor`].
 pub struct TurnRunner<P: ProviderExecutor> {
-	platform:       KernelPlatformClient,
-	frames:         FrameSink,
-	ids:            Arc<dyn IdFactory>,
-	clock:          Arc<dyn Clock>,
-	provider:       P,
-	workspace_root: std::path::PathBuf,
+	platform:            KernelPlatformClient,
+	frames:              FrameSink,
+	ids:                 Arc<dyn IdFactory>,
+	clock:               Arc<dyn Clock>,
+	provider:            P,
+	workspace_root:      std::path::PathBuf,
+	effective_authority: EffectiveToolAuthority,
 }
 
 /// What [`TurnRunner::dispatch_tool_call`] returns on a successfully
@@ -501,6 +505,53 @@ impl<P: ProviderExecutor> TurnRunner<P> {
 		provider: P,
 		workspace_root: impl AsRef<Path>,
 	) -> Self {
+		Self::with_effective_authority(
+			platform,
+			frames,
+			ids,
+			clock,
+			provider,
+			workspace_root,
+			EffectiveToolAuthority::default_safe_read(),
+		)
+	}
+
+	#[expect(
+		clippy::too_many_arguments,
+		reason = "authority-aware constructor mirrors the existing explicit runner seams plus \
+		          request and ceiling"
+	)]
+	pub fn with_tool_authority(
+		platform: KernelPlatformClient,
+		frames: FrameSink,
+		ids: Arc<dyn IdFactory>,
+		clock: Arc<dyn Clock>,
+		provider: P,
+		workspace_root: impl AsRef<Path>,
+		request: Option<&ToolAuthorityRequestV0>,
+		trusted_ceiling: &[ToolAuthorityClassV0],
+	) -> Result<Self, registry::ToolAuthorityResolutionError> {
+		let effective_authority = EffectiveToolAuthority::resolve(request, trusted_ceiling)?;
+		Ok(Self::with_effective_authority(
+			platform,
+			frames,
+			ids,
+			clock,
+			provider,
+			workspace_root,
+			effective_authority,
+		))
+	}
+
+	fn with_effective_authority(
+		platform: KernelPlatformClient,
+		frames: FrameSink,
+		ids: Arc<dyn IdFactory>,
+		clock: Arc<dyn Clock>,
+		provider: P,
+		workspace_root: impl AsRef<Path>,
+		effective_authority: EffectiveToolAuthority,
+	) -> Self {
 		Self {
 			platform,
 			frames,
@@ -508,6 +559,7 @@ impl<P: ProviderExecutor> TurnRunner<P> {
 			clock,
 			provider,
 			workspace_root: workspace_root.as_ref().to_path_buf(),
+			effective_authority,
 		}
 	}
 
@@ -627,7 +679,14 @@ impl<P: ProviderExecutor> TurnRunner<P> {
 		causation_event_id: Option<EventId>,
 		causation_frame_id: Option<FrameId>,
 	) -> Result<ToolDispatchSuccess, TurnFailure> {
-		let Some(status) = catalog::tool_status(tool_name) else {
+		let registry = registry::slice0_registry();
+		let effective_catalog = registry.effective_catalog(&self.effective_authority);
+		let Some(status) = effective_catalog
+			.tools
+			.iter()
+			.find(|tool| tool.name == tool_name)
+			.map(|tool| tool.status)
+		else {
 			return Err(TurnFailure::ToolNotInCatalog { tool_name: tool_name.to_owned() });
 		};
 		let tool_entity_ids =
@@ -835,8 +894,13 @@ impl<P: ProviderExecutor> TurnRunner<P> {
 		tool_name: &str,
 		arguments: &WireJson,
 	) -> Result<(WireJson, RawEventArtifactRef, String), String> {
-		let execution =
-			registry::slice0_registry().execute(&self.workspace_root, tool_name, arguments)?;
+		let registry = registry::slice0_registry();
+		let execution = registry.execute_authorized(
+			&self.workspace_root,
+			tool_name,
+			arguments,
+			&self.effective_authority,
+		)?;
 		Ok((execution.payload, execution.artifact, execution.provider_result_text))
 	}
 
@@ -1045,6 +1109,8 @@ impl<P: ProviderExecutor> TurnRunner<P> {
 		let result: Result<String, TurnFailure> = async {
 			let mut state = TurnState::NotStarted;
 
+			let registry = registry::slice0_registry();
+			let catalog = registry.effective_catalog(&self.effective_authority);
 			let (session_id, catalog_causation_event_id) = if let Some(existing_session_id) =
 				continue_session_id
 			{
@@ -1084,7 +1150,6 @@ impl<P: ProviderExecutor> TurnRunner<P> {
 				request_id: self.ids.request_id(),
 			};
 
-			let catalog = catalog::slice0_catalog();
 			let catalog_event_id = self.ids.event_id();
 			// `tool_catalog.published` is session-level (contract §9): unlike every
 			// other raw event in a turn, its `turn_id` is `null`. `Self::append`
@@ -1105,11 +1170,17 @@ impl<P: ProviderExecutor> TurnRunner<P> {
 				entity_ids:         EntityIdsV0::default(),
 				visibility:         visibility_for(&RawEventType::ToolCatalogPublished),
 				redaction:          RedactionLevelV0::Public,
-				payload:            json!({
-					"catalog_id": self.ids.catalog_id(),
-					"projection_version": successor_protocol::projection::PROJECTION_VERSION,
-					"tool_count": catalog.tools.len(),
-				}),
+				payload:            {
+					let mut catalog_payload = json!({
+						"catalog_id": self.ids.catalog_id(),
+						"projection_version": successor_protocol::projection::PROJECTION_VERSION,
+						"tool_count": catalog.tools.len(),
+					});
+					if let Some(decision) = self.effective_authority.conditional_decision_payload() {
+						catalog_payload["authority_decision"] = decision;
+					}
+					catalog_payload
+				},
 				artifact:           None,
 				idempotency_key:    format!(
 					"{}:{}",
@@ -1239,11 +1310,8 @@ impl<P: ProviderExecutor> TurnRunner<P> {
 					"context_item_ids": context_item_ids.iter().map(ContextItemId::as_str).collect::<Vec<_>>(),
 				});
 				if phase.is_first() {
-					let tool_names: Vec<&str> = catalog
-						.tools
-						.iter()
-						.filter(|tool| tool.status == ToolStatusV0::Executable)
-						.map(|tool| tool.name.as_str())
+					let tool_names: Vec<&str> = registry
+						.effective_executable_names(&self.effective_authority)
 						.collect();
 					request_payload["tool_names"] = json!(tool_names);
 				}

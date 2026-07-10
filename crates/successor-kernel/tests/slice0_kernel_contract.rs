@@ -116,10 +116,12 @@ use successor_kernel::{
 	},
 	state_machine::{TurnFailure, TurnPhase, TurnState},
 	stream::KernelFrameStream,
-	tools::catalog,
+	tools::{catalog, registry},
 };
 use successor_protocol::{
-	fixtures, kernel_frame, raw_event, validation::validate_unsupported_tool_lifecycle,
+	fixtures, kernel_frame, raw_event,
+	tool_catalog::{ToolAuthorityClassV0, ToolAuthorityRequestV0, ToolStatusV0},
+	validation::validate_unsupported_tool_lifecycle,
 };
 
 const LICENSE: &str = "dev-license-c7-integration-abc123";
@@ -588,6 +590,222 @@ async fn out_of_root_read_arguments_produce_a_typed_failure_not_a_panic() {
 	);
 
 	cleanup_workspace(&workspace_root);
+}
+
+#[test]
+fn effective_empty_authority_retains_catalog_but_removes_provider_executables() {
+	let registry = registry::slice0_registry();
+	let authority = registry::EffectiveToolAuthority::resolve(
+		Some(&ToolAuthorityRequestV0 { classes: vec![] }),
+		&[ToolAuthorityClassV0::SafeRead],
+	)
+	.expect("explicit empty authority resolves under safe_read ceiling");
+	let catalog = registry.effective_catalog(&authority);
+
+	assert_eq!(catalog.tools.len(), catalog::slice0_catalog().tools.len());
+	assert_eq!(catalog.tools.len(), 35);
+	let policy_rejected_names: Vec<&str> = catalog
+		.tools
+		.iter()
+		.filter(|tool| tool.status == ToolStatusV0::PolicyRejected)
+		.map(|tool| tool.name.as_str())
+		.collect();
+	assert_eq!(policy_rejected_names, ["search_files", "read", "find", "grep", "list_dir"]);
+	assert_eq!(
+		registry
+			.effective_executable_names(&authority)
+			.collect::<Vec<_>>(),
+		Vec::<&str>::new()
+	);
+}
+
+#[tokio::test]
+async fn forged_read_under_empty_authority_records_rejected_lifecycle_without_execution() {
+	let server = TestServer::start("forged-empty-authority").await;
+	let client = server.client();
+	let workspace_root = seed_workspace("forged-empty-authority");
+	let session = client
+		.create_session(&successor_protocol::platform_api::CreateSessionRequestV0 {
+			workspace:  successor_protocol::platform_api::WorkspaceV0 {
+				id:        "workspace-1".to_owned(),
+				label:     "Slice 0 workspace".to_owned(),
+				root_hint: workspace_root.display().to_string(),
+			},
+			title:      "forged empty authority turn".to_owned(),
+			created_by: successor_protocol::platform_api::CreatedByV0 {
+				client_kind: "kernel".to_owned(),
+				client_id:   "successor-kernel".to_owned(),
+			},
+		})
+		.await
+		.expect("create session");
+	let ids = successor_kernel::id_factory::RealIdFactory::new();
+	let ctx = TurnContext::new(session.session_id.clone(), ids.turn_id(), ids.request_id());
+	let tool_call_id = ids.tool_call_id();
+	let provider = ScriptedProviderExecutor::new(
+		"anthropic",
+		successor_protocol::provider::ProviderApiShapeV0::AnthropicMessages,
+		"claude-fixture",
+		[],
+	);
+	let runner = TurnRunner::with_tool_authority(
+		client,
+		FrameSink::new(KernelFrameStream::new()),
+		Arc::new(ids) as Arc<dyn IdFactory>,
+		Arc::new(successor_kernel::id_factory::RealClock) as Arc<dyn Clock>,
+		provider,
+		&workspace_root,
+		Some(&ToolAuthorityRequestV0 { classes: vec![] }),
+		&[ToolAuthorityClassV0::SafeRead],
+	)
+	.expect("empty request resolves");
+	let mut trace = successor_kernel::turn_trace::TurnTrace::new();
+
+	let result = runner
+		.dispatch_tool_call(
+			&mut trace,
+			&ctx,
+			&tool_call_id,
+			"read",
+			&serde_json::json!({ "path": "packages/coding-agent/src/context/concept-graph.ts" }),
+			None,
+			None,
+		)
+		.await;
+
+	assert_eq!(
+		result.expect_err("forged read must be authority rejected"),
+		TurnFailure::ToolRejected {
+			tool_name: "read".to_owned(),
+			reason:    catalog::stub_rejection_reason("read"),
+		}
+	);
+	let events = trace.events();
+	assert_eq!(
+		events
+			.iter()
+			.filter(|e| e.event_type == raw_event::RawEventType::ToolCallRequested)
+			.count(),
+		1
+	);
+	assert_eq!(
+		events
+			.iter()
+			.filter(|e| e.event_type == raw_event::RawEventType::ToolCallRejected)
+			.count(),
+		1
+	);
+	assert_eq!(
+		events
+			.iter()
+			.filter(|e| e.event_type == raw_event::RawEventType::ErrorRecorded)
+			.count(),
+		1
+	);
+	assert_eq!(
+		events
+			.iter()
+			.filter(|e| e.event_type == raw_event::RawEventType::ToolResultRecorded)
+			.count(),
+		0
+	);
+	cleanup_workspace(&workspace_root);
+}
+
+#[test]
+fn authority_decision_payload_distinguishes_absent_explicit_and_nondefault_ceiling() {
+	let safe_read = [ToolAuthorityClassV0::SafeRead];
+	let requested_safe = ToolAuthorityRequestV0 { classes: vec![ToolAuthorityClassV0::SafeRead] };
+	let explicit_safe = registry::EffectiveToolAuthority::resolve(Some(&requested_safe), &safe_read)
+		.expect("safe request resolves");
+	assert_eq!(
+		explicit_safe.conditional_decision_payload(),
+		Some(serde_json::json!({
+			"requested": ["safe_read"],
+			"trusted_ceiling": ["safe_read"],
+			"effective": ["safe_read"],
+		}))
+	);
+
+	let explicit_empty = registry::EffectiveToolAuthority::resolve(
+		Some(&ToolAuthorityRequestV0 { classes: vec![] }),
+		&safe_read,
+	)
+	.expect("empty request resolves");
+	assert_eq!(
+		explicit_empty.conditional_decision_payload(),
+		Some(serde_json::json!({
+			"requested": [],
+			"trusted_ceiling": ["safe_read"],
+			"effective": [],
+		}))
+	);
+
+	let nondefault_absent = registry::EffectiveToolAuthority::resolve(None, &[
+		ToolAuthorityClassV0::WorkspaceMutation,
+		ToolAuthorityClassV0::SafeRead,
+	])
+	.expect("absent request resolves to safe_read under larger ceiling");
+	assert_eq!(
+		nondefault_absent.conditional_decision_payload(),
+		Some(serde_json::json!({
+			"requested": null,
+			"trusted_ceiling": ["safe_read", "workspace_mutation"],
+			"effective": ["safe_read"],
+		}))
+	);
+}
+
+#[test]
+fn resolver_canonicalizes_ceiling_and_never_promotes_nonexistent_executors() {
+	let authority = registry::EffectiveToolAuthority::resolve(
+		Some(&ToolAuthorityRequestV0 {
+			classes: vec![ToolAuthorityClassV0::LocalProcess, ToolAuthorityClassV0::WorkspaceMutation],
+		}),
+		&[
+			ToolAuthorityClassV0::LocalProcess,
+			ToolAuthorityClassV0::WorkspaceMutation,
+			ToolAuthorityClassV0::SafeRead,
+		],
+	)
+	.expect("non-read classes can resolve when trusted");
+	let catalog = registry::slice0_registry().effective_catalog(&authority);
+	assert_eq!(authority.classes(), [
+		ToolAuthorityClassV0::WorkspaceMutation,
+		ToolAuthorityClassV0::LocalProcess
+	]);
+	assert_eq!(
+		catalog
+			.tools
+			.iter()
+			.filter(|tool| tool.status == ToolStatusV0::Executable)
+			.count(),
+		0
+	);
+}
+
+#[test]
+fn advertised_executable_names_equal_registry_dispatchable_names_for_each_authority() {
+	let registry = registry::slice0_registry();
+	for request in [
+		None,
+		Some(ToolAuthorityRequestV0 { classes: vec![] }),
+		Some(ToolAuthorityRequestV0 { classes: vec![ToolAuthorityClassV0::SafeRead] }),
+	] {
+		let authority = registry::EffectiveToolAuthority::resolve(request.as_ref(), &[
+			ToolAuthorityClassV0::SafeRead,
+		])
+		.expect("authority resolves");
+		let catalog = registry.effective_catalog(&authority);
+		let advertised: Vec<&str> = catalog
+			.tools
+			.iter()
+			.filter(|tool| tool.status == ToolStatusV0::Executable)
+			.map(|tool| tool.name.as_str())
+			.collect();
+		let dispatchable: Vec<&str> = registry.effective_executable_names(&authority).collect();
+		assert_eq!(advertised, dispatchable);
+	}
 }
 
 // ---------------------------------------------------------------------

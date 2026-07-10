@@ -4,7 +4,7 @@ use serde_json::{Value as WireJson, json};
 use successor_protocol::{
 	artifact::ArtifactHash,
 	raw_event::RawEventArtifactRef,
-	tool_catalog::{ToolAuthorityClassV0, ToolAuthorityRequestV0, ToolStatusV0},
+	tool_catalog::{ToolAuthorityClassV0, ToolAuthorityRequestV0, ToolCatalogV0, ToolStatusV0},
 };
 
 use super::{catalog, find, grep, list_dir, read, search_files};
@@ -93,6 +93,72 @@ pub fn resolve_tool_authority_classes(
 		.collect())
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EffectiveToolAuthority {
+	requested:       Option<Vec<ToolAuthorityClassV0>>,
+	trusted_ceiling: Vec<ToolAuthorityClassV0>,
+	classes:         Vec<ToolAuthorityClassV0>,
+}
+
+impl EffectiveToolAuthority {
+	pub fn resolve(
+		request: Option<&ToolAuthorityRequestV0>,
+		trusted_ceiling: &[ToolAuthorityClassV0],
+	) -> Result<Self, ToolAuthorityResolutionError> {
+		let classes = resolve_tool_authority_classes(request, trusted_ceiling)?;
+		let requested = request.map(|request| canonical_classes(&request.classes));
+		Ok(Self { requested, trusted_ceiling: canonical_classes(trusted_ceiling), classes })
+	}
+
+	pub fn default_safe_read() -> Self {
+		Self {
+			requested:       None,
+			trusted_ceiling: vec![ToolAuthorityClassV0::SafeRead],
+			classes:         vec![ToolAuthorityClassV0::SafeRead],
+		}
+	}
+
+	pub fn classes(&self) -> &[ToolAuthorityClassV0] {
+		&self.classes
+	}
+
+	pub fn permits_executable_tool(&self, tool_name: &str) -> bool {
+		ToolRegistry::tool_authority_class(tool_name)
+			.is_some_and(|class| self.classes.contains(&class))
+	}
+
+	pub fn conditional_decision_payload(&self) -> Option<WireJson> {
+		let default_safe_read = self.requested.is_none()
+			&& self.trusted_ceiling == [ToolAuthorityClassV0::SafeRead]
+			&& self.classes == [ToolAuthorityClassV0::SafeRead];
+		if default_safe_read {
+			return None;
+		}
+
+		Some(json!({
+			"requested": self.requested.as_ref().map(|classes| class_labels(classes)),
+			"trusted_ceiling": class_labels(&self.trusted_ceiling),
+			"effective": class_labels(&self.classes),
+		}))
+	}
+}
+
+fn canonical_classes(classes: &[ToolAuthorityClassV0]) -> Vec<ToolAuthorityClassV0> {
+	AUTHORITY_CANONICAL_ORDER
+		.iter()
+		.copied()
+		.filter(|class| classes.contains(class))
+		.collect()
+}
+
+fn class_labels(classes: &[ToolAuthorityClassV0]) -> Vec<&'static str> {
+	classes
+		.iter()
+		.copied()
+		.map(ToolAuthorityClassV0::as_str)
+		.collect()
+}
+
 impl ToolRegistry {
 	pub fn executable_names(&self) -> impl Iterator<Item = &'static str> + '_ {
 		EXECUTABLE_TOOLS.iter().map(|tool| tool.name)
@@ -100,6 +166,27 @@ impl ToolRegistry {
 
 	pub fn is_dispatchable(&self, tool_name: &str) -> bool {
 		Self::executable(tool_name).is_some()
+	}
+
+	pub fn effective_catalog(&self, authority: &EffectiveToolAuthority) -> ToolCatalogV0 {
+		let mut catalog = catalog::slice0_catalog();
+		for tool in &mut catalog.tools {
+			if tool.status == ToolStatusV0::Executable
+				&& !authority.permits_executable_tool(&tool.name)
+			{
+				tool.status = ToolStatusV0::PolicyRejected;
+			}
+		}
+		catalog
+	}
+
+	pub fn effective_executable_names<'a>(
+		&'a self,
+		authority: &'a EffectiveToolAuthority,
+	) -> impl Iterator<Item = &'static str> + 'a {
+		self
+			.executable_names()
+			.filter(move |tool_name| authority.permits_executable_tool(tool_name))
 	}
 
 	pub fn execute(
@@ -116,12 +203,29 @@ impl ToolRegistry {
 		(tool.execute)(workspace_root, arguments)
 	}
 
+	pub fn execute_authorized(
+		&self,
+		workspace_root: &Path,
+		tool_name: &str,
+		arguments: &WireJson,
+		authority: &EffectiveToolAuthority,
+	) -> Result<ToolExecution, String> {
+		if !authority.permits_executable_tool(tool_name) {
+			return Err(format!("tool `{tool_name}` is not permitted by effective tool authority"));
+		}
+		self.execute(workspace_root, tool_name, arguments)
+	}
+
 	fn executable(tool_name: &str) -> Option<&'static ExecutableTool> {
 		let status = catalog::tool_status(tool_name)?;
 		if status != ToolStatusV0::Executable {
 			return None;
 		}
 		EXECUTABLE_TOOLS.iter().find(|tool| tool.name == tool_name)
+	}
+
+	fn tool_authority_class(tool_name: &str) -> Option<ToolAuthorityClassV0> {
+		Self::executable(tool_name).map(|_| ToolAuthorityClassV0::SafeRead)
 	}
 }
 

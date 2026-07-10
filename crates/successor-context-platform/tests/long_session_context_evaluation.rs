@@ -589,13 +589,19 @@ async fn long_session_context_evaluation_exposes_artifact_lexical_contamination_
 		.assemble(&assemble_request(&session_id, &turn_id_string(303), 10, 4_000))
 		.await
 		.expect("assembly succeeds");
-	let included = rendered_texts(&response.context_items);
-	assert_eq!(included.len(), 2, "both artifact-bearing candidates are retrieval-eligible");
+	assert_eq!(
+		response.context_items.len(),
+		2,
+		"both artifact-bearing candidates are retrieval-eligible"
+	);
+	let lexical_contaminant = response
+		.context_items
+		.iter()
+		.find(|item| item.rendered_text.contains(ARTIFACT_LEXICAL_SENTINEL))
+		.expect("artifact-bearing lexical contaminant is surfaced");
 	assert!(
-		included
-			.iter()
-			.any(|text| text.contains(ARTIFACT_LEXICAL_SENTINEL)),
-		"current recency-only baseline includes an artifact-bearing lexical contaminant"
+		lexical_contaminant.included,
+		"current recency-only baseline injects the artifact-bearing lexical contaminant"
 	);
 	assert!(
 		response
@@ -650,7 +656,13 @@ async fn long_session_context_evaluation_exposes_same_path_stale_content_limitat
 		vec!["read src/target.rs", "read src/target.rs"],
 		"both versions of the same path are currently included in recency order"
 	);
-	let included = rendered_texts(&response.context_items);
-	assert!(included.iter().any(|text| text.contains(CURRENT_BYTES)));
-	assert!(included.iter().any(|text| text.contains(STALE_BYTES)));
+	assert!(
+		response.context_items.iter().all(|item| item.included),
+		"both same-path versions fit the assembly budget"
+	);
+	assert_eq!(
+		rendered_texts(&response.context_items),
+		vec![CURRENT_BYTES, STALE_BYTES],
+		"current bytes precede stale bytes in deterministic recency order"
+	);
 }

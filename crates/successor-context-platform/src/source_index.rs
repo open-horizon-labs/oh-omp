@@ -42,6 +42,12 @@ pub struct ReadToolMetadataV0 {
 	pub limit:  Option<u64>,
 }
 
+#[derive(Debug, Clone)]
+struct ReadRequestLineage {
+	tool_call_id: ToolCallId,
+	metadata:     ReadToolMetadataV0,
+}
+
 /// One `artifact_id -> producing event` association, with the source
 /// envelope that carried it, when the producing event also recorded one.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -69,18 +75,29 @@ pub async fn build_session_indexes(
 	session_id: &SessionId,
 ) -> PlatformResult<SessionIndexesV0> {
 	let mut indexes = SessionIndexesV0::default();
-	let mut read_requests = HashMap::<ToolCallId, ReadToolMetadataV0>::new();
+	let mut read_request_lineage = HashMap::<EventId, ReadRequestLineage>::new();
 	let mut after_seq = 0u64;
 	loop {
 		let page = store
 			.read_session_events(session_id, after_seq, INDEX_PAGE_SIZE)
 			.await?;
 		for event in &page.events {
+			let causal_read_request = event
+				.causation_event_id
+				.as_ref()
+				.and_then(|causation_event_id| read_request_lineage.get(causation_event_id))
+				.filter(|request| event.entity_ids.tool_call_id.as_ref() == Some(&request.tool_call_id))
+				.cloned();
 			if event.event_type == RawEventType::ToolCallRequested
 				&& let Some(tool_call_id) = event.entity_ids.tool_call_id.clone()
 				&& let Some(metadata) = read_tool_request_metadata(&event.payload)
 			{
-				read_requests.entry(tool_call_id).or_insert(metadata);
+				read_request_lineage
+					.insert(event.event_id.clone(), ReadRequestLineage { tool_call_id, metadata });
+			} else if event.event_type == RawEventType::ToolCallStarted
+				&& let Some(request) = causal_read_request.clone()
+			{
+				read_request_lineage.insert(event.event_id.clone(), request);
 			}
 			if let Some(source_envelope_id) = event.entity_ids.source_envelope_id.clone() {
 				indexes.sources.push(SourceIndexEntryV0 {
@@ -95,11 +112,8 @@ pub async fn build_session_indexes(
 					event_id: event.event_id.clone(),
 					session_seq: event.session_seq,
 					source_envelope_id: event.entity_ids.source_envelope_id.clone(),
-					read_metadata: event
-						.entity_ids
-						.tool_call_id
-						.as_ref()
-						.and_then(|tool_call_id| read_requests.get(tool_call_id).cloned())
+					read_metadata: causal_read_request
+						.map(|request| request.metadata)
 						.or_else(|| read_tool_result_metadata(&event.payload)),
 				});
 			}
@@ -237,16 +251,16 @@ mod tests {
 			} else {
 				None
 			};
-			append_store
-				.append_event(request)
-				.await
-				.expect("fixture append must succeed");
 			if let Some(duplicate) = duplicate {
 				append_store
 					.append_event(duplicate)
 					.await
-					.expect("duplicate read request append must succeed");
+					.expect("unrelated reused-ID read request append must succeed");
 			}
+			append_store
+				.append_event(request)
+				.await
+				.expect("fixture append must succeed");
 		}
 
 		session.session_id
@@ -303,7 +317,7 @@ mod tests {
 	}
 
 	#[tokio::test]
-	async fn duplicate_read_request_keeps_first_persisted_range_metadata() {
+	async fn reused_tool_call_id_uses_causal_request_range_metadata() {
 		let append_store = SqliteAppendStore::connect_in_memory().await.unwrap();
 		let session_id = seed_successful_turn_with_duplicate_read_request(&append_store, true).await;
 		let indexes = build_session_indexes(&append_store, &session_id)
@@ -321,7 +335,8 @@ mod tests {
 				offset: Some(10),
 				limit:  Some(20),
 			}),
-			"later duplicate request metadata must not overwrite the first persisted request"
+			"artifact metadata must follow its causal request, not an earlier unrelated request \
+			 reusing the tool_call_id"
 		);
 	}
 

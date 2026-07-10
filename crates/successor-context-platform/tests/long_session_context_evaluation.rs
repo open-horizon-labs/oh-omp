@@ -152,8 +152,8 @@ async fn append_event(
 	if let Some(source_id) = source_envelope_id {
 		payload["source_envelope_id"] = json!(source_id);
 	}
-	// These fixture values intentionally model two reads of one path so the
-	// evaluation can pin the current absence of same-path freshness deduplication.
+	// These fixture values model two successful reads of one path so F5 pins
+	// same-path freshness deduplication for optional retrieval.
 	if text == STALE_BYTES || text == CURRENT_BYTES {
 		payload["tool_name"] = json!("read");
 		payload["path"] = json!("src/target.rs");
@@ -187,6 +187,74 @@ async fn append_event(
 	}
 }
 
+#[expect(
+	clippy::too_many_arguments,
+	reason = "test read event factory mirrors the platform append envelope"
+)]
+async fn append_read_event(
+	append_store: &SqliteAppendStore,
+	artifact_store: &SqliteArtifactStore,
+	session_id: &SessionId,
+	seq: u64,
+	turn: u64,
+	text: &str,
+	source_envelope_id: &str,
+	artifact_id: Option<&str>,
+	path: &str,
+	offset: Option<u64>,
+	limit: Option<u64>,
+) {
+	let event_id: EventId = id(&format!("evt_{seq:032x}"));
+	let request_id: RequestId = id(&format!("req_{seq:032x}"));
+	let turn_id: TurnId = id(&format!("turn_{turn:032x}"));
+	let artifact = artifact_id.map(|raw_id| artifact_for(&id(raw_id), text));
+	let artifact_ref = artifact.as_ref().map(artifact_ref);
+	let mut entity_ids = EntityIdsV0::default();
+	if let Some(artifact) = &artifact {
+		entity_ids.artifact_id = Some(artifact.artifact_id.clone());
+	}
+	entity_ids.source_envelope_id = Some(id(source_envelope_id));
+	let mut payload = json!({
+		"text": text,
+		"source_envelope_id": source_envelope_id,
+		"tool_name": "read",
+		"path": path,
+	});
+	if let Some(offset) = offset {
+		payload["offset"] = json!(offset);
+	}
+	if let Some(limit) = limit {
+		payload["limit"] = json!(limit);
+	}
+	append_store
+		.append_event(RawEventAppendRequestV0 {
+			schema_version: "platform.raw_event.v0".to_owned(),
+			event_id: event_id.clone(),
+			idempotency_key: format!("long-session-context-read-{seq}"),
+			event_type: RawEventType::ToolResultRecorded,
+			session_id: session_id.clone(),
+			turn_id: Some(turn_id),
+			request_id: request_id.clone(),
+			occurred_at: format!("2026-01-01T00:{:02}:00Z", seq % 60),
+			producer: RawEventProducerV0::default(),
+			causation_event_id: None,
+			correlation_id: request_id,
+			entity_ids,
+			visibility: VisibilityV0::default(),
+			redaction: RedactionLevelV0::Sensitive,
+			payload,
+			artifact: artifact_ref,
+		})
+		.await
+		.expect("read event append succeeds");
+	if let Some(artifact) = artifact {
+		artifact_store
+			.put_inline_artifact(&event_id, session_id, artifact)
+			.await
+			.expect("read artifact storage succeeds");
+	}
+}
+
 fn turn_id_string(turn: u64) -> String {
 	format!("turn_{turn:032x}")
 }
@@ -203,8 +271,8 @@ fn assemble_request(
 		id("req_00000000000000000000000000abcdef"),
 		AssemblePhaseV0::PreTool,
 		AssembleIntentV0 {
-			query:         "Evaluate deterministic long-session context assembly.".to_owned(),
-			raw_user_text: "Evaluate deterministic long-session context assembly.".to_owned(),
+			query:         "target relevant grep filler".to_owned(),
+			raw_user_text: "target relevant grep filler".to_owned(),
 			confidence:    "explicit".to_owned(),
 		},
 		AssembleWorkspaceV0 {
@@ -213,6 +281,19 @@ fn assemble_request(
 		},
 		AssemblyBudgetV0 { max_context_tokens, max_items },
 	)
+}
+
+fn assemble_request_with_query(
+	session_id: &SessionId,
+	turn_id: &str,
+	max_items: u64,
+	max_context_tokens: u64,
+	query: &str,
+) -> AssembleRequestV0 {
+	let mut request = assemble_request(session_id, turn_id, max_items, max_context_tokens);
+	query.clone_into(&mut request.intent.query);
+	query.clone_into(&mut request.intent.raw_user_text);
+	request
 }
 
 fn included_titles(items: &[ContextItemV0]) -> Vec<&str> {
@@ -548,7 +629,8 @@ async fn long_session_context_evaluation_required_source_path_pins_exact_inclusi
 }
 
 #[tokio::test]
-async fn long_session_context_evaluation_exposes_artifact_lexical_contamination_limitation() {
+async fn long_session_context_evaluation_excludes_generic_artifact_collision_when_discriminating_terms_exist()
+ {
 	let append_db = TempDbPath::new("f4-artifact-lexical-contamination");
 	let append_store = SqliteAppendStore::connect(append_db.as_str())
 		.await
@@ -586,7 +668,13 @@ async fn long_session_context_evaluation_exposes_artifact_lexical_contamination_
 	.await;
 
 	let response = AssemblyServiceV0::new(append_store, artifact_store)
-		.assemble(&assemble_request(&session_id, &turn_id_string(303), 10, 4_000))
+		.assemble(&assemble_request_with_query(
+			&session_id,
+			&turn_id_string(303),
+			10,
+			4_000,
+			"implementation",
+		))
 		.await
 		.expect("assembly succeeds");
 	assert_eq!(
@@ -600,20 +688,24 @@ async fn long_session_context_evaluation_exposes_artifact_lexical_contamination_
 		.find(|item| item.rendered_text.contains(ARTIFACT_LEXICAL_SENTINEL))
 		.expect("artifact-bearing lexical contaminant is surfaced");
 	assert!(
-		lexical_contaminant.included,
-		"current recency-only baseline injects the artifact-bearing lexical contaminant"
+		!lexical_contaminant.included,
+		"generic/manual lexical collision stays audit-visible but is not injection-eligible"
 	);
+	let relevant = response
+		.context_items
+		.iter()
+		.find(|item| item.rendered_text == "relevant implementation context")
+		.expect("relevant artifact is surfaced");
+	assert!(relevant.included, "discriminating relevant artifact is included");
 	assert!(
-		response
-			.context_items
-			.iter()
-			.all(|item| item.score.to_bits() == 1.0f64.to_bits()),
-		"current scorer exposes no relevance distinction; semantic ranking is a follow-up lane"
+		relevant.score > lexical_contaminant.score,
+		"deterministic lexical scorer ranks the discriminating artifact first"
 	);
 }
 
 #[tokio::test]
-async fn long_session_context_evaluation_exposes_same_path_stale_content_limitation() {
+async fn long_session_context_evaluation_excludes_stale_same_path_read_but_keeps_it_audit_visible()
+{
 	let append_db = TempDbPath::new("f4-same-path-stale-content");
 	let append_store = SqliteAppendStore::connect(append_db.as_str())
 		.await
@@ -652,17 +744,238 @@ async fn long_session_context_evaluation_exposes_same_path_stale_content_limitat
 		.await
 		.expect("assembly succeeds");
 	assert_eq!(
-		included_titles(&response.context_items),
-		vec!["read src/target.rs", "read src/target.rs"],
-		"both versions of the same path are currently included in recency order"
+		response.context_items.len(),
+		2,
+		"fresh and stale same-path candidates remain audit-visible"
 	);
-	assert!(
-		response.context_items.iter().all(|item| item.included),
-		"both same-path versions fit the assembly budget"
-	);
+	assert_eq!(included_titles(&response.context_items), vec!["read src/target.rs"]);
 	assert_eq!(
 		rendered_texts(&response.context_items),
 		vec![CURRENT_BYTES, STALE_BYTES],
-		"current bytes precede stale bytes in deterministic recency order"
+		"fresh read is ordered first while stale read remains included:false"
 	);
+	let stale = response
+		.context_items
+		.iter()
+		.find(|item| item.rendered_text == STALE_BYTES)
+		.expect("stale same-path read remains audit-visible");
+	assert!(!stale.included, "older same-path range is not injection-eligible");
+}
+
+#[tokio::test]
+async fn long_session_context_evaluation_empty_stopword_and_zero_overlap_queries_fall_back_to_recency()
+ {
+	for (label, query) in [
+		("empty-query", ""),
+		("stopword-query", "the and of to"),
+		("zero-overlap-query", "quasar nebula"),
+	] {
+		let append_db = TempDbPath::new(label);
+		let append_store = SqliteAppendStore::connect(append_db.as_str())
+			.await
+			.expect("append store opens");
+		let artifact_store = SqliteArtifactStore::connect(append_db.as_str())
+			.await
+			.expect("artifact store opens");
+		let session_id = create_session(&append_store, label, WORKSPACE_ID).await;
+		append_event(
+			&append_store,
+			&artifact_store,
+			&session_id,
+			501,
+			501,
+			EventKind::ToolResult,
+			"older alpha content",
+			Some("src_00000000000000000000000000000501"),
+			Some("art_00000000000000000000000000000501"),
+		)
+		.await;
+		append_event(
+			&append_store,
+			&artifact_store,
+			&session_id,
+			502,
+			502,
+			EventKind::ToolResult,
+			"newer beta content",
+			Some("src_00000000000000000000000000000502"),
+			Some("art_00000000000000000000000000000502"),
+		)
+		.await;
+
+		let response = AssemblyServiceV0::new(append_store, artifact_store)
+			.assemble(&assemble_request_with_query(
+				&session_id,
+				&turn_id_string(503),
+				10,
+				4_000,
+				query,
+			))
+			.await
+			.expect("assembly succeeds");
+
+		assert_eq!(included_titles(&response.context_items), vec![
+			"newer beta content",
+			"older alpha content"
+		]);
+		assert!(response.context_items.iter().all(|item| item.included));
+	}
+}
+
+#[tokio::test]
+async fn long_session_context_evaluation_pins_read_path_normalization_range_identity_and_failure() {
+	let append_db = TempDbPath::new("f5-read-identity");
+	let append_store = SqliteAppendStore::connect(append_db.as_str())
+		.await
+		.expect("append store opens");
+	let artifact_store = SqliteArtifactStore::connect(append_db.as_str())
+		.await
+		.expect("artifact store opens");
+	let session_id = create_session(&append_store, "read-identity", WORKSPACE_ID).await;
+
+	append_read_event(
+		&append_store,
+		&artifact_store,
+		&session_id,
+		601,
+		601,
+		"stale path-normalized target sentinel",
+		"src_00000000000000000000000000000601",
+		Some("art_00000000000000000000000000000601"),
+		"/workspace/src/./target.rs",
+		Some(1),
+		Some(5),
+	)
+	.await;
+	append_read_event(
+		&append_store,
+		&artifact_store,
+		&session_id,
+		602,
+		602,
+		"current path-normalized target sentinel",
+		"src_00000000000000000000000000000602",
+		Some("art_00000000000000000000000000000602"),
+		"src/target.rs",
+		Some(1),
+		Some(5),
+	)
+	.await;
+	append_read_event(
+		&append_store,
+		&artifact_store,
+		&session_id,
+		603,
+		603,
+		"distinct offset target sentinel",
+		"src_00000000000000000000000000000603",
+		Some("art_00000000000000000000000000000603"),
+		"src/target.rs",
+		Some(2),
+		Some(5),
+	)
+	.await;
+	append_read_event(
+		&append_store,
+		&artifact_store,
+		&session_id,
+		604,
+		604,
+		"failed later target read without artifact",
+		"src_00000000000000000000000000000604",
+		None,
+		"src/target.rs",
+		Some(2),
+		Some(5),
+	)
+	.await;
+
+	let response = AssemblyServiceV0::new(append_store, artifact_store)
+		.assemble(&assemble_request_with_query(
+			&session_id,
+			&turn_id_string(605),
+			10,
+			4_000,
+			"target",
+		))
+		.await
+		.expect("assembly succeeds");
+
+	let included_items = response
+		.context_items
+		.iter()
+		.filter(|item| item.included)
+		.cloned()
+		.collect::<Vec<_>>();
+	let included = rendered_texts(&included_items);
+	assert_eq!(
+		included,
+		vec!["distinct offset target sentinel", "current path-normalized target sentinel"],
+		"range identity is offset/limit-sensitive and a failed later read does not supersede success"
+	);
+	let stale = response
+		.context_items
+		.iter()
+		.find(|item| item.rendered_text == "stale path-normalized target sentinel")
+		.expect("stale normalized path candidate remains audit-visible");
+	assert!(!stale.included);
+}
+
+#[tokio::test]
+async fn long_session_context_evaluation_required_source_bypasses_freshness_and_relevance() {
+	let append_db = TempDbPath::new("f5-required-bypass");
+	let append_store = SqliteAppendStore::connect(append_db.as_str())
+		.await
+		.expect("append store opens");
+	let artifact_store = SqliteArtifactStore::connect(append_db.as_str())
+		.await
+		.expect("artifact store opens");
+	let session_id = create_session(&append_store, "required-bypass", WORKSPACE_ID).await;
+
+	append_read_event(
+		&append_store,
+		&artifact_store,
+		&session_id,
+		701,
+		701,
+		"required stale low score bytes",
+		"src_00000000000000000000000000000701",
+		Some("art_00000000000000000000000000000701"),
+		"src/target.rs",
+		None,
+		None,
+	)
+	.await;
+	append_read_event(
+		&append_store,
+		&artifact_store,
+		&session_id,
+		702,
+		702,
+		"current optional replacement bytes",
+		"src_00000000000000000000000000000702",
+		Some("art_00000000000000000000000000000702"),
+		"src/target.rs",
+		None,
+		None,
+	)
+	.await;
+
+	let mut request = assemble_request_with_query(
+		&session_id,
+		&turn_id_string(703),
+		10,
+		4_000,
+		"discriminating absent",
+	);
+	request.required_source_envelope_ids =
+		vec![id::<SourceEnvelopeId>("src_00000000000000000000000000000701")];
+	let response = AssemblyServiceV0::new(append_store, artifact_store)
+		.assemble(&request)
+		.await
+		.expect("assembly succeeds");
+
+	assert_eq!(included_titles(&response.context_items), vec!["read src/target.rs"]);
+	assert_eq!(rendered_texts(&response.context_items), vec!["required stale low score bytes"]);
+	assert!(response.context_items[0].included);
 }

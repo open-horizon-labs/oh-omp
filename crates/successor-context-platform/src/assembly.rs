@@ -9,23 +9,21 @@
 //! fixtures. HTTP wiring (`POST /v0/assemble`) is B6's responsibility; this
 //! module only exposes the service seam B6 wraps.
 //!
-//! # Selection rule (Dissent ruling 3)
+//! # Selection rule (Dissent ruling 3; F5 retrieval quality)
 //!
-//! Slice 0 implements no embeddings, vector search, or tokenizer (Dissent
-//! ruling 2: no migration, table, or new dependency). Selection is driven
-//! entirely by `AssembleRequestV0::required_source_envelope_ids`:
-//!
-//! - **Empty** (the canonical `pre_tool` fixture): there is no deterministic
-//!   way to rank "recent" sources without embeddings, so the
-//!   `retrieve_recent_sources` stage always yields zero context items and
-//!   reports `embeddings_unavailable` (warning) + `no_context` (info).
-//! - **Non-empty** (the canonical `post_read` fixture): required sources
-//!   dominate. Each requested `source_envelope_id` is resolved to its producing
-//!   raw event (B4 [`find_source_provenance`]) and backing artifact (B3
-//!   [`SqliteArtifactStore::require_artifact`]), then turned into a `score:
-//!   1.0`, `platform_artifact`-recovery `ContextItemV0`. The stage is
-//!   `required_sources` and only `embeddings_unavailable` is reported (there is
-//!   context, so `no_context` does not apply).
+//! Slice 0 implements no embeddings, vector search, tokenizer, network calls,
+//! or randomness. Optional retrieval is local and deterministic: query terms
+//! are normalized as lowercase ASCII-alphanumeric runs; stopwords are removed;
+//! the primary term set comes from `intent.query` and is supplemented by
+//! remaining non-stopword terms from `intent.raw_user_text`. A candidate's
+//! title, rendered text, read path, and path segments are normalized the same
+//! way. Score is `(2 * primary_query_overlap) + raw_user_text_overlap`. With
+//! non-empty terms, zero-overlap optional candidates stay audit-visible but
+//! `included:false`; with an empty/stopword-only query, retrieval falls back to
+//! recency. Successful `read` candidates are fresh only when they are the
+//! newest successful read for the same lexical workspace-relative path plus
+//! `offset`/`limit` range. Required sources bypass optional freshness/relevance
+//! exclusion exactly as before.
 //!
 //! This rule is **phase-agnostic by design**: a `pre_tool` or `post_locator`
 //! request that happens to carry required sources gets the same
@@ -69,7 +67,8 @@
 //! notes rather than papered over with a new persistence layer.
 
 use std::{
-	collections::{HashMap, VecDeque},
+	cmp::Ordering,
+	collections::{HashMap, HashSet, VecDeque},
 	sync::{Mutex, PoisonError},
 	time::{SystemTime, UNIX_EPOCH},
 };
@@ -90,7 +89,9 @@ use uuid::Uuid;
 use crate::{
 	artifacts::SqliteArtifactStore,
 	error::PlatformResult,
-	source_index::{build_session_indexes, find_source_provenance},
+	source_index::{
+		ArtifactIndexEntryV0, ReadToolMetadataV0, build_session_indexes, find_source_provenance,
+	},
 	store::RawEventAppendStore,
 };
 
@@ -228,17 +229,17 @@ impl<E: RawEventAppendStore> AssemblyServiceV0<E> {
 		let mut dropped = Vec::new();
 
 		let stage = if request.required_source_envelope_ids.is_empty() {
-			// B5's lexical/recency retrieval (contract §9/§11 continuation
-			// amendment, ruling 270): rank this session's artifact-bearing raw
-			// events by recency (`session_seq` descending) and surface as many as
-			// fit the budget. A fresh session with no prior artifact-bearing
-			// events (the canonical `pre_tool` fixture's shape) yields an empty
-			// candidate list and reproduces the prior always-empty behaviour
-			// byte-for-byte.
-			let mut candidates = build_session_indexes(&self.events, &request.session_id)
-				.await?
-				.artifacts;
-			candidates.sort_by_key(|candidate| std::cmp::Reverse(candidate.session_seq));
+			// F5 optional retrieval: keep every prior-turn artifact candidate
+			// audit-visible, but only include candidates that pass read freshness,
+			// deterministic lexical relevance, and the greedy budget gate. This
+			// preserves canonical fresh-session output while protecting long-session
+			// assemblies from stale same-path reads and generic artifact/manual lexical
+			// collisions.
+			let query_terms =
+				QueryTerms::from_intent(&request.intent.query, &request.intent.raw_user_text);
+			let mut candidates =
+				build_optional_candidates(&self.events, &self.artifacts, request, &query_terms).await?;
+			candidates.sort_by(compare_optional_candidates);
 
 			degradation.push(DegradationV0 {
 				code:     DEGRADATION_EMBEDDINGS_UNAVAILABLE.to_owned(),
@@ -248,60 +249,32 @@ impl<E: RawEventAppendStore> AssemblyServiceV0<E> {
 				severity: SEVERITY_WARNING.to_owned(),
 			});
 
-			let mut considered = 0u64;
+			let considered = candidates.len() as u64;
 			let mut included_items = 0u64;
 			let mut included_tokens = 0u64;
-			for candidate in &candidates {
-				let Some(source_envelope_id) = candidate.source_envelope_id.clone() else {
-					continue;
-				};
-				let Some(event) = self.events.read_event(&candidate.event_id).await? else {
-					continue;
-				};
-				// Recency retrieval surfaces prior TURNS' artifacts (contract §9/§11
-				// continuation amendment, ruling 270), never the current turn's own
-				// tool results: a `pre_tool` call happens before the current turn's
-				// first tool runs, so in production none of the current turn's own
-				// artifacts exist yet at call time. This also keeps the canonical
-				// `pre_tool` fixture byte-identical: that fixture's own session
-				// already has its (single) turn's artifacts fully persisted before
-				// the fixture replays that same turn's pinned `pre_tool` request.
-				if event.turn_id.as_ref() == Some(&request.turn_id) {
-					continue;
-				}
-				considered += 1;
-				let artifact = self
-					.artifacts
-					.require_artifact(&candidate.artifact_id)
-					.await?;
-				let source_kind = event
-					.payload
-					.get("source_kind")
-					.and_then(Value::as_str)
-					.unwrap_or("unknown")
-					.to_owned();
-				let rendered_text = derive_rendered_text(&artifact);
-				let token_estimate = estimate_tokens(&rendered_text);
-				let included = included_items < request.budget.max_items
-					&& included_tokens.saturating_add(token_estimate)
+			for candidate in candidates {
+				let budget_allows = included_items < request.budget.max_items
+					&& included_tokens.saturating_add(candidate.token_estimate)
 						<= request.budget.max_context_tokens;
+				let included = candidate.eligible && budget_allows;
 				if included {
 					included_items += 1;
-					included_tokens += token_estimate;
+					included_tokens += candidate.token_estimate;
 				}
+
 				context_items.push(ContextItemV0 {
 					context_item_id: new_context_item_id(),
-					source_envelope_id,
-					artifact_id: candidate.artifact_id.clone(),
-					source_kind,
-					title: derive_title(&event, &artifact),
-					rendered_text,
-					score: 1.0,
-					token_estimate,
+					source_envelope_id: candidate.source_envelope_id,
+					artifact_id: candidate.artifact_id,
+					source_kind: candidate.source_kind,
+					title: candidate.title,
+					rendered_text: candidate.rendered_text,
+					score: candidate.score,
+					token_estimate: candidate.token_estimate,
 					included,
 					recovery: ContextItemRecoveryV0 {
 						method: RECOVERY_METHOD_PLATFORM_ARTIFACT.to_owned(),
-						id:     candidate.artifact_id.as_str().to_owned(),
+						id:     candidate.recovery_artifact_id,
 					},
 				});
 			}
@@ -481,6 +454,271 @@ impl<E: RawEventAppendStore> AssemblyServiceV0<E> {
 			.unwrap_or_else(PoisonError::into_inner)
 			.get(assemble_id)
 	}
+}
+
+struct QueryTerms {
+	primary: HashSet<String>,
+	raw:     HashSet<String>,
+}
+
+impl QueryTerms {
+	fn from_intent(query: &str, raw_user_text: &str) -> Self {
+		let primary = normalized_terms(query);
+		let raw = normalized_terms(raw_user_text)
+			.into_iter()
+			.filter(|term| !primary.contains(term))
+			.collect();
+		Self { primary, raw }
+	}
+
+	fn is_empty(&self) -> bool {
+		self.primary.is_empty() && self.raw.is_empty()
+	}
+
+	fn score(&self, candidate_terms: &HashSet<String>) -> f64 {
+		let primary_overlap = self.primary.intersection(candidate_terms).count() as f64;
+		let raw_overlap = self.raw.intersection(candidate_terms).count() as f64;
+		2.0f64.mul_add(primary_overlap, raw_overlap)
+	}
+}
+
+struct OptionalCandidate {
+	source_envelope_id:   successor_protocol::ids::SourceEnvelopeId,
+	artifact_id:          successor_protocol::ids::ArtifactId,
+	recovery_artifact_id: String,
+	source_kind:          String,
+	title:                String,
+	rendered_text:        String,
+	score:                f64,
+	token_estimate:       u64,
+	eligible:             bool,
+	fresh:                bool,
+	freshness_seq:        u64,
+	stable_id:            String,
+}
+
+async fn build_optional_candidates<E: RawEventAppendStore>(
+	events: &E,
+	artifacts: &SqliteArtifactStore,
+	request: &AssembleRequestV0,
+	query_terms: &QueryTerms,
+) -> PlatformResult<Vec<OptionalCandidate>> {
+	let indexed = build_session_indexes(events, &request.session_id)
+		.await?
+		.artifacts;
+	let latest_reads = latest_read_successes(&indexed, &request.workspace.root_hint);
+	let mut candidates = Vec::new();
+
+	for candidate in indexed {
+		let Some(source_envelope_id) = candidate.source_envelope_id.clone() else {
+			continue;
+		};
+		let Some(event) = events.read_event(&candidate.event_id).await? else {
+			continue;
+		};
+		if event.turn_id.as_ref() == Some(&request.turn_id) {
+			continue;
+		}
+
+		let artifact = artifacts.require_artifact(&candidate.artifact_id).await?;
+		let source_kind = event
+			.payload
+			.get("source_kind")
+			.and_then(Value::as_str)
+			.unwrap_or("unknown")
+			.to_owned();
+		let title = derive_title(&event, &artifact);
+		let rendered_text = derive_rendered_text(&artifact);
+		let token_estimate = estimate_tokens(&rendered_text);
+		let score = query_terms.score(&candidate_terms(
+			&title,
+			&rendered_text,
+			candidate.read_metadata.as_ref(),
+			&request.workspace.root_hint,
+		));
+		let freshness_seq = candidate.session_seq;
+		let fresh = candidate
+			.read_metadata
+			.as_ref()
+			.map(|metadata| read_identity(metadata, &request.workspace.root_hint))
+			.is_none_or(|identity| latest_reads.get(&identity) == Some(&candidate.session_seq));
+		let relevant = query_terms.is_empty() || score > 0.0;
+
+		candidates.push(OptionalCandidate {
+			source_envelope_id,
+			artifact_id: candidate.artifact_id.clone(),
+			recovery_artifact_id: candidate.artifact_id.as_str().to_owned(),
+			source_kind,
+			title,
+			rendered_text,
+			score,
+			token_estimate,
+			eligible: fresh && relevant,
+			fresh,
+			freshness_seq,
+			stable_id: candidate.artifact_id.as_str().to_owned(),
+		});
+	}
+
+	// A non-empty query with no overlap against any prior artifact carries no
+	// discriminating signal. Fall back to recency rather than starving a
+	// continuation turn, while retaining same-path freshness suppression.
+	if !query_terms.is_empty() && !candidates.iter().any(|candidate| candidate.score > 0.0) {
+		for candidate in &mut candidates {
+			candidate.eligible = candidate.fresh;
+		}
+	}
+
+	Ok(candidates)
+}
+
+fn latest_read_successes(
+	candidates: &[ArtifactIndexEntryV0],
+	root_hint: &str,
+) -> HashMap<ReadIdentity, u64> {
+	let mut latest: HashMap<ReadIdentity, u64> = HashMap::new();
+	for candidate in candidates {
+		let Some(metadata) = &candidate.read_metadata else {
+			continue;
+		};
+		let identity = read_identity(metadata, root_hint);
+		latest
+			.entry(identity)
+			.and_modify(|session_seq| *session_seq = (*session_seq).max(candidate.session_seq))
+			.or_insert(candidate.session_seq);
+	}
+	latest
+}
+
+fn compare_optional_candidates(left: &OptionalCandidate, right: &OptionalCandidate) -> Ordering {
+	right
+		.eligible
+		.cmp(&left.eligible)
+		.then_with(|| {
+			right
+				.score
+				.partial_cmp(&left.score)
+				.unwrap_or(Ordering::Equal)
+		})
+		.then_with(|| right.freshness_seq.cmp(&left.freshness_seq))
+		.then_with(|| left.stable_id.cmp(&right.stable_id))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct ReadIdentity {
+	path:   String,
+	offset: Option<u64>,
+	limit:  Option<u64>,
+}
+
+fn read_identity(metadata: &ReadToolMetadataV0, root_hint: &str) -> ReadIdentity {
+	ReadIdentity {
+		path:   normalize_read_path(&metadata.path, root_hint),
+		offset: metadata.offset,
+		limit:  metadata.limit,
+	}
+}
+
+fn normalize_read_path(path: &str, root_hint: &str) -> String {
+	let normalized_path = normalize_slash_path(path);
+	let root = normalize_slash_path(root_hint);
+	let prefix = format!("{root}/");
+	if normalized_path == root {
+		return ".".to_owned();
+	}
+	if let Some(relative) = normalized_path.strip_prefix(&prefix) {
+		return relative.to_owned();
+	}
+	normalized_path
+}
+
+fn normalize_slash_path(path: &str) -> String {
+	let mut parts = Vec::new();
+	let absolute = path.starts_with('/');
+	for part in path.split('/') {
+		match part {
+			"" | "." => {},
+			".." => {
+				parts.pop();
+			},
+			segment => parts.push(segment),
+		}
+	}
+	if parts.is_empty() {
+		return if absolute {
+			"/".to_owned()
+		} else {
+			".".to_owned()
+		};
+	}
+	let joined = parts.join("/");
+	if absolute {
+		format!("/{joined}")
+	} else {
+		joined
+	}
+}
+
+fn candidate_terms(
+	title: &str,
+	rendered_text: &str,
+	read_metadata: Option<&ReadToolMetadataV0>,
+	root_hint: &str,
+) -> HashSet<String> {
+	let mut terms = normalized_terms(title);
+	terms.extend(normalized_terms(rendered_text));
+	if let Some(metadata) = read_metadata {
+		let path = normalize_read_path(&metadata.path, root_hint);
+		terms.extend(normalized_terms(&path));
+		for segment in path.split('/') {
+			terms.extend(normalized_terms(segment));
+		}
+	}
+	terms
+}
+
+fn normalized_terms(text: &str) -> HashSet<String> {
+	let mut terms = HashSet::new();
+	let mut current = String::new();
+	for ch in text.chars() {
+		if ch.is_ascii_alphanumeric() {
+			current.push(ch.to_ascii_lowercase());
+		} else if !current.is_empty() {
+			insert_term(&mut terms, &mut current);
+		}
+	}
+	if !current.is_empty() {
+		insert_term(&mut terms, &mut current);
+	}
+	terms
+}
+
+fn insert_term(terms: &mut HashSet<String>, current: &mut String) {
+	if is_stopword(current) {
+		current.clear();
+	} else {
+		terms.insert(std::mem::take(current));
+	}
+}
+
+fn is_stopword(term: &str) -> bool {
+	matches!(
+		term,
+		"a" | "an"
+			| "and"
+			| "are"
+			| "as" | "at"
+			| "be" | "by"
+			| "for"
+			| "from"
+			| "in" | "is"
+			| "it" | "of"
+			| "on" | "or"
+			| "that"
+			| "the"
+			| "this"
+			| "to" | "with"
+	)
 }
 
 fn dropped_entry(source_envelope_id: &str, reason: &str) -> Value {

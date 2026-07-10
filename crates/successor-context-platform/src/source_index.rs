@@ -9,6 +9,7 @@
 //! what `entity_ids` on its persisted raw events already say. This module
 //! never scrapes `raw_events`/`sessions` `SQLite` tables directly.
 
+use serde_json::Value;
 use successor_protocol::ids::{ArtifactId, EventId, SessionId, SourceEnvelopeId};
 
 use crate::{error::PlatformResult, store::RawEventAppendStore};
@@ -26,6 +27,16 @@ pub struct SourceIndexEntryV0 {
 	pub session_seq:        u64,
 }
 
+/// Internal read-tool metadata carried from raw event payloads for
+/// deterministic optional-source freshness. This is not persisted separately
+/// and is not exposed on any protocol DTO.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReadToolMetadataV0 {
+	pub path:   String,
+	pub offset: Option<u64>,
+	pub limit:  Option<u64>,
+}
+
 /// One `artifact_id -> producing event` association, with the source
 /// envelope that carried it, when the producing event also recorded one.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -34,6 +45,7 @@ pub struct ArtifactIndexEntryV0 {
 	pub event_id:           EventId,
 	pub session_seq:        u64,
 	pub source_envelope_id: Option<SourceEnvelopeId>,
+	pub read_metadata:      Option<ReadToolMetadataV0>,
 }
 
 /// Both provenance indexes for one session, derived in a single walk of its
@@ -71,6 +83,7 @@ pub async fn build_session_indexes(
 					event_id: event.event_id.clone(),
 					session_seq: event.session_seq,
 					source_envelope_id: event.entity_ids.source_envelope_id.clone(),
+					read_metadata: read_tool_metadata(&event.payload),
 				});
 			}
 		}
@@ -80,6 +93,17 @@ pub async fn build_session_indexes(
 		}
 	}
 	Ok(indexes)
+}
+
+fn read_tool_metadata(payload: &Value) -> Option<ReadToolMetadataV0> {
+	if payload.get("tool_name").and_then(Value::as_str) != Some("read") {
+		return None;
+	}
+	Some(ReadToolMetadataV0 {
+		path:   payload.get("path")?.as_str()?.to_owned(),
+		offset: payload.get("offset").and_then(Value::as_u64),
+		limit:  payload.get("limit").and_then(Value::as_u64),
+	})
 }
 
 /// Finds the raw event that produced `artifact_id` within `session_id`.

@@ -34,7 +34,7 @@
 use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use successor_protocol::ids::SessionId;
+use successor_protocol::{ids::SessionId, tool_catalog::ToolAuthorityClassV0};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -82,6 +82,24 @@ pub enum AskFormat {
 pub enum ReadFormat {
 	Json,
 	Text,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[value(rename_all = "snake_case")]
+pub enum CliToolAuthorityClass {
+	SafeRead,
+	WorkspaceMutation,
+	LocalProcess,
+}
+
+impl From<CliToolAuthorityClass> for ToolAuthorityClassV0 {
+	fn from(value: CliToolAuthorityClass) -> Self {
+		match value {
+			CliToolAuthorityClass::SafeRead => Self::SafeRead,
+			CliToolAuthorityClass::WorkspaceMutation => Self::WorkspaceMutation,
+			CliToolAuthorityClass::LocalProcess => Self::LocalProcess,
+		}
+	}
 }
 
 /// Rejects a relative `--workspace-root` as a clap usage error (exit code
@@ -144,6 +162,18 @@ pub struct AskArgs {
 	/// `--kernel-url`.
 	#[arg(long, default_value = crate::client::DEFAULT_MODEL, conflicts_with = "kernel_url")]
 	pub model: String,
+
+	/// Per-turn narrowing request for tool authority classes. May be supplied
+	/// repeatedly or comma-delimited; order and duplicates are preserved for
+	/// the kernel-side resolver.
+	#[arg(long, value_enum, value_delimiter = ',')]
+	pub tool_authority: Vec<CliToolAuthorityClass>,
+
+	/// Trusted local bootstrap authority ceiling. Only meaningful when this
+	/// invocation owns the ephemeral in-process kernel, so it conflicts with
+	/// `--kernel-url`.
+	#[arg(long, value_enum, value_delimiter = ',', conflicts_with = "kernel_url")]
+	pub tool_authority_ceiling: Vec<CliToolAuthorityClass>,
 
 	#[arg(long, value_enum, default_value_t = AskFormat::Text)]
 	pub format: AskFormat,

@@ -29,7 +29,10 @@ use successor_kernel::{
 	id_factory::{Clock, IdFactory, RealClock, RealIdFactory},
 	platform_client::KernelPlatformClient,
 };
-use successor_protocol::kernel_frame::{KernelFrameKindV0, KernelFrameV0};
+use successor_protocol::{
+	kernel_frame::{KernelFrameKindV0, KernelFrameV0},
+	tool_catalog::ToolAuthorityRequestV0,
+};
 use tokio::net::TcpListener;
 
 use crate::{
@@ -118,6 +121,7 @@ async fn establish_kernel(
 	platform_url_override: Option<String>,
 	workspace_root: PathBuf,
 	model: String,
+	trusted_tool_authority_ceiling: Vec<successor_protocol::tool_catalog::ToolAuthorityClassV0>,
 ) -> Result<KernelHandle, CliFailure> {
 	if let Some(url) = kernel_url {
 		return Ok(KernelHandle {
@@ -145,7 +149,7 @@ async fn establish_kernel(
 	let ids: Arc<dyn IdFactory> = Arc::new(RealIdFactory::new());
 	let clock: Arc<dyn Clock> = Arc::new(RealClock);
 	let platform = KernelPlatformClient::new(entitlement.base_url, entitlement.token);
-	let state = AppState::with_anthropic(
+	let mut state = AppState::with_anthropic(
 		platform,
 		ids,
 		clock,
@@ -154,6 +158,9 @@ async fn establish_kernel(
 		DEFAULT_MAX_TOKENS,
 		process_env_lookup,
 	);
+	if !trusted_tool_authority_ceiling.is_empty() {
+		state = state.with_trusted_tool_authority_ceiling(trusted_tool_authority_ceiling);
+	}
 
 	let listener = TcpListener::bind("127.0.0.1:0").await.map_err(|err| {
 		CliFailure::bootstrap(format!("failed to bind an ephemeral loopback listener: {err}"))
@@ -205,18 +212,44 @@ impl SseFrameAccumulator {
 /// fresh, runner-owned session (C8 session-semantics ruling -- there is no
 /// way to target an existing session here, by design).
 pub async fn run_ask(args: AskArgs) -> Result<(), u8> {
-	let handle =
-		establish_kernel(args.kernel_url, args.platform_url, args.workspace_root, args.model)
-			.await
-			.map_err(CliFailure::report)?;
+	let tool_authority_ceiling = args
+		.tool_authority_ceiling
+		.iter()
+		.copied()
+		.map(Into::into)
+		.collect();
+	let handle = establish_kernel(
+		args.kernel_url,
+		args.platform_url,
+		args.workspace_root,
+		args.model,
+		tool_authority_ceiling,
+	)
+	.await
+	.map_err(CliFailure::report)?;
+	let tool_authority = if args.tool_authority.is_empty() {
+		None
+	} else {
+		Some(ToolAuthorityRequestV0 {
+			classes: args
+				.tool_authority
+				.iter()
+				.copied()
+				.map(Into::into)
+				.collect(),
+		})
+	};
+	let mut body = serde_json::json!({ "user_text": args.prompt, "session_id": args.session_id });
+	if let Some(tool_authority) = tool_authority {
+		body["tool_authority"] = serde_json::to_value(tool_authority)
+			.expect("ToolAuthorityRequestV0 must serialize to JSON");
+	}
 
 	let response = handle
 		.http
 		.post(format!("{}/v0/turns", handle.base_url))
 		.header(CONTENT_TYPE, "application/json")
-		.body(
-			serde_json::json!({ "user_text": args.prompt, "session_id": args.session_id }).to_string(),
-		)
+		.body(body.to_string())
 		.send()
 		.await
 		.map_err(|err| {
@@ -290,6 +323,7 @@ pub async fn run_resume(args: ResumeArgs) -> Result<(), u8> {
 		args.platform_url,
 		workspace_root,
 		DEFAULT_MODEL.to_owned(),
+		Vec::new(),
 	)
 	.await
 	.map_err(CliFailure::report)?;
@@ -306,6 +340,7 @@ pub async fn run_inspect_session(args: InspectSessionArgs) -> Result<(), u8> {
 		args.platform_url,
 		workspace_root,
 		DEFAULT_MODEL.to_owned(),
+		Vec::new(),
 	)
 	.await
 	.map_err(CliFailure::report)?;

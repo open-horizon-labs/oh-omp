@@ -26,13 +26,14 @@
 //! re-proven here.
 
 use std::{
-	io::ErrorKind,
+	io::{ErrorKind, Read as _, Write as _},
 	net::TcpListener as StdTcpListener,
 	path::PathBuf,
 	process::Command,
 	sync::{
 		Arc, Mutex,
 		atomic::{AtomicU64, Ordering},
+		mpsc,
 	},
 };
 
@@ -110,6 +111,107 @@ fn wait_until_reachable(addr: std::net::SocketAddr) {
 		std::thread::sleep(std::time::Duration::from_millis(10));
 	}
 	panic!("{addr} never became reachable");
+}
+
+fn run_ask_against_body_capture(extra_args: &[&str]) -> (CliOutput, String) {
+	let listener = StdTcpListener::bind("127.0.0.1:0").expect("bind body capture");
+	let base_url = format!("http://{}", listener.local_addr().expect("local addr"));
+	let (sender, receiver) = mpsc::channel();
+	let server = std::thread::spawn(move || {
+		let (mut stream, _) = listener.accept().expect("accept body capture request");
+		let mut bytes = Vec::new();
+		let mut chunk = [0_u8; 1024];
+		let header_end = loop {
+			let read = stream.read(&mut chunk).expect("read request");
+			assert_ne!(read, 0, "client closed before headers");
+			bytes.extend_from_slice(&chunk[..read]);
+			if let Some(index) = bytes.windows(4).position(|window| window == b"\r\n\r\n") {
+				break index + 4;
+			}
+		};
+		let headers = String::from_utf8_lossy(&bytes[..header_end]);
+		let content_length = headers
+			.lines()
+			.find_map(|line| {
+				let (name, value) = line.split_once(':')?;
+				name
+					.eq_ignore_ascii_case("content-length")
+					.then(|| value.trim().parse::<usize>().expect("content-length value"))
+			})
+			.expect("content-length header");
+		while bytes.len() < header_end + content_length {
+			let read = stream.read(&mut chunk).expect("read body");
+			assert_ne!(read, 0, "client closed before body complete");
+			bytes.extend_from_slice(&chunk[..read]);
+		}
+		let body = String::from_utf8(bytes[header_end..header_end + content_length].to_vec())
+			.expect("utf8 request body");
+		sender.send(body).expect("send body");
+		stream
+			.write_all(b"HTTP/1.1 422 Unprocessable Entity\r\ncontent-type: application/json\r\ncontent-length: 2\r\n\r\n{}")
+			.expect("write response");
+	});
+
+	let mut args = vec![
+		"ask",
+		"--workspace-root",
+		env!("CARGO_MANIFEST_DIR"),
+		"--prompt",
+		"hi",
+		"--kernel-url",
+		&base_url,
+	];
+	args.extend_from_slice(extra_args);
+	let output = run_cli(&args, &[]);
+	let body = receiver.recv().expect("captured ask body");
+	server.join().expect("body capture server");
+	(output, body)
+}
+
+fn start_fake_anthropic() -> (String, mpsc::Receiver<String>, std::thread::JoinHandle<()>) {
+	let listener = StdTcpListener::bind("127.0.0.1:0").expect("bind fake anthropic");
+	let base_url = format!("http://{}", listener.local_addr().expect("local addr"));
+	let (sender, receiver) = mpsc::channel();
+	let server = std::thread::spawn(move || {
+		let (mut stream, _) = listener.accept().expect("accept anthropic request");
+		let mut bytes = Vec::new();
+		let mut chunk = [0_u8; 4096];
+		let header_end = loop {
+			let read = stream.read(&mut chunk).expect("read anthropic request");
+			assert_ne!(read, 0, "client closed before anthropic headers");
+			bytes.extend_from_slice(&chunk[..read]);
+			if let Some(index) = bytes.windows(4).position(|window| window == b"\r\n\r\n") {
+				break index + 4;
+			}
+		};
+		let headers = String::from_utf8_lossy(&bytes[..header_end]);
+		let content_length = headers
+			.lines()
+			.find_map(|line| {
+				let (name, value) = line.split_once(':')?;
+				name
+					.eq_ignore_ascii_case("content-length")
+					.then(|| value.trim().parse::<usize>().expect("content-length value"))
+			})
+			.expect("content-length header");
+		while bytes.len() < header_end + content_length {
+			let read = stream.read(&mut chunk).expect("read anthropic body");
+			assert_ne!(read, 0, "client closed before anthropic body complete");
+			bytes.extend_from_slice(&chunk[..read]);
+		}
+		let body = String::from_utf8(bytes[header_end..header_end + content_length].to_vec())
+			.expect("utf8 anthropic body");
+		sender.send(body).expect("send anthropic body");
+		let response_body = r#"{"id":"msg_fake","type":"message","role":"assistant","model":"claude-sonnet-5","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","stop_sequence":null,"usage":{"input_tokens":1,"output_tokens":1}}"#;
+		write!(
+			stream,
+			"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{}",
+			response_body.len(),
+			response_body
+		)
+		.expect("write anthropic response");
+	});
+	(base_url, receiver, server)
 }
 
 /// A live harness: a real platform HTTP server (the reopen's new
@@ -284,6 +386,102 @@ fn http_get_body_authenticated(url: &str, license: &str) -> Vec<u8> {
 // 1. bucket-0: a real platform + real kernel + scripted-provider turn completes
 //    with a terminal success frame.
 // ---------------------------------------------------------------------
+
+#[test]
+fn ask_without_authority_flags_preserves_submit_turn_body_bytes() {
+	let (output, body) = run_ask_against_body_capture(&[]);
+	assert_eq!(output.status, 5, "capture server must be reached: {output:?}");
+	assert_eq!(body, r#"{"session_id":null,"user_text":"hi"}"#);
+}
+
+#[test]
+fn ask_with_explicit_tool_authority_serializes_nested_request_only() {
+	let (output, body) =
+		run_ask_against_body_capture(&["--tool-authority", "workspace_mutation,local_process"]);
+	assert_eq!(output.status, 5, "capture server must be reached: {output:?}");
+	assert_eq!(
+		body,
+		r#"{"session_id":null,"tool_authority":{"classes":["workspace_mutation","local_process"]},"user_text":"hi"}"#
+	);
+	assert!(
+		!body.contains("ceiling"),
+		"per-turn request body must not carry a client-side ceiling: {body}"
+	);
+}
+
+#[test]
+fn kernel_url_mode_authority_request_contains_no_ceiling() {
+	let (output, body) = run_ask_against_body_capture(&["--tool-authority", "safe_read"]);
+	assert_eq!(output.status, 5, "capture server must be reached: {output:?}");
+	assert_eq!(
+		body,
+		r#"{"session_id":null,"tool_authority":{"classes":["safe_read"]},"user_text":"hi"}"#
+	);
+	assert!(!body.contains("ceiling"), "remote mode must not serialize ceiling: {body}");
+}
+
+#[test]
+fn local_bootstrap_ceiling_persists_nondefault_effective_authority_without_promoted_mutation_or_process_tools()
+ {
+	let harness = Harness::start("f3c-local-ceiling", Vec::new());
+	let (anthropic_base_url, anthropic_body, anthropic_server) = start_fake_anthropic();
+	let output = run_cli(
+		&[
+			"ask",
+			"--workspace-root",
+			env!("CARGO_MANIFEST_DIR"),
+			"--prompt",
+			"hi",
+			"--format",
+			"sse",
+			"--platform-url",
+			&format!("{}/v0", harness.platform_base_url()),
+			"--tool-authority-ceiling",
+			"workspace_mutation,local_process",
+			"--tool-authority",
+			"workspace_mutation,local_process",
+		],
+		&[
+			("MEMEX_LICENSE", LICENSE),
+			("ANTHROPIC_API_KEY", "sk-ant-f3c-local-ceiling-fake-key"),
+			("ANTHROPIC_BASE_URL", &anthropic_base_url),
+		],
+	);
+	assert_eq!(
+		output.status, 0,
+		"local in-process kernel with fake Anthropic must succeed: {output:?}"
+	);
+	let provider_body = anthropic_body.recv().expect("fake Anthropic request body");
+	assert!(
+		!provider_body.contains("workspace_mutation") && !provider_body.contains("local_process"),
+		"ceiling/request must not promote mutation/process executors into provider tools: \
+		 {provider_body}"
+	);
+	anthropic_server.join().expect("fake anthropic server");
+
+	let session_id = extract_session_id(&output.stdout);
+	let events = http_get_body_authenticated(
+		&format!(
+			"{}/v0/sessions/{session_id}/events?after_seq=0&limit=64",
+			harness.platform_base_url()
+		),
+		LICENSE,
+	);
+	let events_text = String::from_utf8(events).expect("events response is utf8");
+	assert!(
+		events_text.contains("workspace_mutation") && events_text.contains("local_process"),
+		"persisted authority decision must record nondefault requested/ceiling classes: \
+		 {events_text}"
+	);
+	assert!(
+		events_text.contains(r#""effective":["workspace_mutation","local_process"]"#),
+		"persisted authority decision must record nondefault effective classes: {events_text}"
+	);
+	assert!(
+		events_text.contains(r#""tool_names":[]"#),
+		"provider request event must record zero promoted mutation/process tools: {events_text}"
+	);
+}
 
 #[test]
 fn ask_over_a_real_platform_and_kernel_completes_with_a_terminal_success_frame() {

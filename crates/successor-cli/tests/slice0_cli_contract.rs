@@ -13,6 +13,8 @@ use std::{
 	io::{Read as _, Write as _},
 	net::TcpListener as StdTcpListener,
 	process::Command,
+	sync::mpsc,
+	thread,
 };
 
 use successor_kernel::{
@@ -58,6 +60,61 @@ fn run_cli(args: &[&str], env: &[(&str, &str)]) -> CliOutput {
 		stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
 		stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
 	}
+}
+
+fn run_ask_against_capturing_kernel(extra_args: &[&str]) -> (CliOutput, String) {
+	let listener = StdTcpListener::bind("127.0.0.1:0").expect("bind capturing kernel");
+	let base_url = format!("http://{}", listener.local_addr().expect("local addr"));
+	let (sender, receiver) = mpsc::channel();
+	let server = thread::spawn(move || {
+		let (mut stream, _) = listener.accept().expect("accept request");
+		let mut bytes = Vec::new();
+		let mut chunk = [0_u8; 1024];
+		let header_end = loop {
+			let read = stream.read(&mut chunk).expect("read request");
+			assert_ne!(read, 0, "client closed before headers");
+			bytes.extend_from_slice(&chunk[..read]);
+			if let Some(index) = bytes.windows(4).position(|window| window == b"\r\n\r\n") {
+				break index + 4;
+			}
+		};
+		let headers = String::from_utf8_lossy(&bytes[..header_end]);
+		let content_length = headers
+			.lines()
+			.find_map(|line| {
+				let (name, value) = line.split_once(':')?;
+				name
+					.eq_ignore_ascii_case("content-length")
+					.then(|| value.trim().parse::<usize>().expect("content-length value"))
+			})
+			.expect("content-length header");
+		while bytes.len() < header_end + content_length {
+			let read = stream.read(&mut chunk).expect("read body");
+			assert_ne!(read, 0, "client closed before complete body");
+			bytes.extend_from_slice(&chunk[..read]);
+		}
+		let body = String::from_utf8(bytes[header_end..header_end + content_length].to_vec())
+			.expect("utf8 request body");
+		sender.send(body).expect("send captured body");
+		stream
+			.write_all(b"HTTP/1.1 422 Unprocessable Entity\r\ncontent-type: application/json\r\ncontent-length: 2\r\n\r\n{}")
+			.expect("write response");
+	});
+
+	let mut args = vec![
+		"ask",
+		"--workspace-root",
+		env!("CARGO_MANIFEST_DIR"),
+		"--prompt",
+		"hi",
+		"--kernel-url",
+		&base_url,
+	];
+	args.extend_from_slice(extra_args);
+	let output = run_cli(&args, &[]);
+	let body = receiver.recv().expect("captured request body");
+	server.join().expect("capturing kernel thread");
+	(output, body)
 }
 
 // ---------------------------------------------------------------------
@@ -126,6 +183,85 @@ fn ask_help_documents_the_session_id_continuation_flag() {
 		output.stdout.contains("--session-id"),
 		"ask --help must document the ruling-270 --session-id continuation flag: {output:?}"
 	);
+}
+
+#[test]
+fn ask_help_documents_tool_authority_flags_and_values() {
+	let output = run_cli(&["ask", "--help"], &[]);
+	assert_eq!(output.status, 0);
+	for expected in [
+		"--tool-authority",
+		"--tool-authority-ceiling",
+		"safe_read",
+		"workspace_mutation",
+		"local_process",
+	] {
+		assert!(output.stdout.contains(expected), "ask --help must document {expected}: {output:?}");
+	}
+}
+
+#[test]
+fn ask_rejects_tool_authority_ceiling_combined_with_kernel_url_before_network() {
+	let output = run_cli(
+		&[
+			"ask",
+			"--workspace-root",
+			env!("CARGO_MANIFEST_DIR"),
+			"--prompt",
+			"hi",
+			"--kernel-url",
+			"http://127.0.0.1:1",
+			"--tool-authority-ceiling",
+			"workspace_mutation",
+		],
+		&[],
+	);
+	assert_eq!(output.status, 2, "ceiling/kernel-url conflict must be clap usage: {output:?}");
+	assert!(
+		output.stderr.contains("--kernel-url") && output.stderr.contains("--tool-authority-ceiling"),
+		"conflict error must name both flags: {output:?}"
+	);
+}
+
+#[test]
+fn ask_accepts_tool_authority_with_kernel_url_and_preserves_repeated_comma_order() {
+	let (output, body) = run_ask_against_capturing_kernel(&[
+		"--tool-authority",
+		"safe_read,workspace_mutation",
+		"--tool-authority",
+		"safe_read",
+	]);
+	assert_eq!(
+		output.status, 5,
+		"capturing kernel response proves request path was reached: {output:?}"
+	);
+	assert_eq!(
+		body,
+		r#"{"session_id":null,"tool_authority":{"classes":["safe_read","workspace_mutation","safe_read"]},"user_text":"hi"}"#
+	);
+}
+
+#[test]
+fn ask_rejects_invalid_tool_authority_class_with_allowed_values() {
+	let output = run_cli(
+		&[
+			"ask",
+			"--workspace-root",
+			env!("CARGO_MANIFEST_DIR"),
+			"--prompt",
+			"hi",
+			"--tool-authority",
+			"network",
+		],
+		&[],
+	);
+	assert_eq!(output.status, 2, "invalid authority class must be clap usage: {output:?}");
+	for expected in ["network", "safe_read", "workspace_mutation", "local_process"] {
+		assert!(
+			output.stderr.contains(expected),
+			"invalid value error must mention {expected}: {output:?}"
+		);
+	}
 }
 
 #[test]

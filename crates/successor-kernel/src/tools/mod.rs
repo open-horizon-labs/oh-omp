@@ -32,6 +32,9 @@
 //!    arguments, environment variables, or the process's current working
 //!    directory.
 
+pub mod edit;
+pub mod mutation;
+
 pub mod catalog;
 pub mod find;
 pub mod grep;
@@ -39,6 +42,7 @@ pub mod list_dir;
 pub mod read;
 pub mod registry;
 pub mod search_files;
+pub mod write;
 
 use std::{
 	fmt,

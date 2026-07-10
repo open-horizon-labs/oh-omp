@@ -24,7 +24,8 @@ const CURRENT_BYTES: &str =
 	"current bytes contain F4_CURRENT_ALPHA_SENTINEL and fresh implementation";
 const STALE_BYTES: &str = "stale bytes contain F4_STALE_ALPHA_SENTINEL and obsolete implementation";
 const RELEVANT_TOOL_SENTINEL: &str = "F4_RELEVANT_PRIOR_TOOL_SENTINEL";
-const IRRELEVANT_LEXICAL_SENTINEL: &str = "F4_IRRELEVANT_LEXICAL_COLLISION_SENTINEL";
+const USER_TURN_SENTINEL: &str = "F4_UNRELATED_USER_TURN_SENTINEL";
+const ARTIFACT_LEXICAL_SENTINEL: &str = "F4_ARTIFACT_LEXICAL_COLLISION_SENTINEL";
 const CURRENT_TURN_SENTINEL: &str = "F4_CURRENT_TURN_SENTINEL";
 const OTHER_SESSION_SENTINEL: &str = "F4_OTHER_SESSION_SENTINEL";
 
@@ -51,7 +52,9 @@ impl TempDbPath {
 
 impl Drop for TempDbPath {
 	fn drop(&mut self) {
-		let _ = std::fs::remove_file(&self.0);
+		for suffix in ["", "-wal", "-shm"] {
+			let _ = std::fs::remove_file(format!("{}{suffix}", self.0));
+		}
 	}
 }
 
@@ -148,6 +151,12 @@ async fn append_event(
 	let mut payload = json!({ "text": text });
 	if let Some(source_id) = source_envelope_id {
 		payload["source_envelope_id"] = json!(source_id);
+	}
+	// These fixture values intentionally model two reads of one path so the
+	// evaluation can pin the current absence of same-path freshness deduplication.
+	if text == STALE_BYTES || text == CURRENT_BYTES {
+		payload["tool_name"] = json!("read");
+		payload["path"] = json!("src/target.rs");
 	}
 	append_store
 		.append_event(RawEventAppendRequestV0 {
@@ -275,7 +284,7 @@ async fn long_session_context_evaluation_pins_retrieval_isolation_and_budget_met
 		19,
 		19,
 		EventKind::UserTurn,
-		&format!("unrelated user question with {IRRELEVANT_LEXICAL_SENTINEL}"),
+		&format!("unrelated user question with {USER_TURN_SENTINEL}"),
 		None,
 		None,
 	)
@@ -376,7 +385,7 @@ async fn long_session_context_evaluation_pins_retrieval_isolation_and_budget_met
 	assert_eq!(
 		included_titles(&response.context_items),
 		vec![
-			"current bytes contain F4_CURRENT_ALPHA_SENTINEL and fresh implementation",
+			"read src/target.rs",
 			"prior tool output with F4_RELEVANT_PRIOR_TOOL_SENTINEL",
 			"command manual text with grep usage, intentionally outside final five",
 			"older filler artifact F4_FILLER_18",
@@ -401,7 +410,7 @@ async fn long_session_context_evaluation_pins_retrieval_isolation_and_budget_met
 		.cloned()
 		.collect();
 	assert_no_sentinel(&included_items, STALE_BYTES);
-	assert_no_sentinel(&included_items, IRRELEVANT_LEXICAL_SENTINEL);
+	assert_no_sentinel(&included_items, USER_TURN_SENTINEL);
 	assert_no_sentinel(&included_items, "assistant claim/report");
 	assert_no_sentinel(&included_items, OTHER_SESSION_SENTINEL);
 	assert_no_sentinel(&response.context_items, CURRENT_TURN_SENTINEL);
@@ -536,4 +545,112 @@ async fn long_session_context_evaluation_required_source_path_pins_exact_inclusi
 		0,
 		"excluded required-source bytes are never injection-eligible"
 	);
+}
+
+#[tokio::test]
+async fn long_session_context_evaluation_exposes_artifact_lexical_contamination_limitation() {
+	let append_db = TempDbPath::new("f4-artifact-lexical-contamination");
+	let append_store = SqliteAppendStore::connect(append_db.as_str())
+		.await
+		.expect("append store opens");
+	let artifact_store = SqliteArtifactStore::connect(append_db.as_str())
+		.await
+		.expect("artifact store opens");
+	let session_id = create_session(&append_store, "artifact-lexical", WORKSPACE_ID).await;
+	append_event(
+		&append_store,
+		&artifact_store,
+		&session_id,
+		301,
+		301,
+		EventKind::ToolResult,
+		"relevant implementation context",
+		Some("src_00000000000000000000000000000301"),
+		Some("art_00000000000000000000000000000301"),
+	)
+	.await;
+	append_event(
+		&append_store,
+		&artifact_store,
+		&session_id,
+		302,
+		302,
+		EventKind::ToolResult,
+		&format!(
+			"irrelevant command manual that collides with deterministic context assembly terms: \
+			 {ARTIFACT_LEXICAL_SENTINEL}"
+		),
+		Some("src_00000000000000000000000000000302"),
+		Some("art_00000000000000000000000000000302"),
+	)
+	.await;
+
+	let response = AssemblyServiceV0::new(append_store, artifact_store)
+		.assemble(&assemble_request(&session_id, &turn_id_string(303), 10, 4_000))
+		.await
+		.expect("assembly succeeds");
+	let included = rendered_texts(&response.context_items);
+	assert_eq!(included.len(), 2, "both artifact-bearing candidates are retrieval-eligible");
+	assert!(
+		included
+			.iter()
+			.any(|text| text.contains(ARTIFACT_LEXICAL_SENTINEL)),
+		"current recency-only baseline includes an artifact-bearing lexical contaminant"
+	);
+	assert!(
+		response
+			.context_items
+			.iter()
+			.all(|item| item.score.to_bits() == 1.0f64.to_bits()),
+		"current scorer exposes no relevance distinction; semantic ranking is a follow-up lane"
+	);
+}
+
+#[tokio::test]
+async fn long_session_context_evaluation_exposes_same_path_stale_content_limitation() {
+	let append_db = TempDbPath::new("f4-same-path-stale-content");
+	let append_store = SqliteAppendStore::connect(append_db.as_str())
+		.await
+		.expect("append store opens");
+	let artifact_store = SqliteArtifactStore::connect(append_db.as_str())
+		.await
+		.expect("artifact store opens");
+	let session_id = create_session(&append_store, "same-path", WORKSPACE_ID).await;
+	append_event(
+		&append_store,
+		&artifact_store,
+		&session_id,
+		401,
+		401,
+		EventKind::ToolResult,
+		STALE_BYTES,
+		Some("src_00000000000000000000000000000401"),
+		Some("art_00000000000000000000000000000401"),
+	)
+	.await;
+	append_event(
+		&append_store,
+		&artifact_store,
+		&session_id,
+		402,
+		402,
+		EventKind::ToolResult,
+		CURRENT_BYTES,
+		Some("src_00000000000000000000000000000402"),
+		Some("art_00000000000000000000000000000402"),
+	)
+	.await;
+
+	let response = AssemblyServiceV0::new(append_store, artifact_store)
+		.assemble(&assemble_request(&session_id, &turn_id_string(403), 10, 4_000))
+		.await
+		.expect("assembly succeeds");
+	assert_eq!(
+		included_titles(&response.context_items),
+		vec!["read src/target.rs", "read src/target.rs"],
+		"both versions of the same path are currently included in recency order"
+	);
+	let included = rendered_texts(&response.context_items);
+	assert!(included.iter().any(|text| text.contains(CURRENT_BYTES)));
+	assert!(included.iter().any(|text| text.contains(STALE_BYTES)));
 }

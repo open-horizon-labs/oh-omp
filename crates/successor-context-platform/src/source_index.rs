@@ -80,7 +80,7 @@ pub async fn build_session_indexes(
 				&& let Some(tool_call_id) = event.entity_ids.tool_call_id.clone()
 				&& let Some(metadata) = read_tool_request_metadata(&event.payload)
 			{
-				read_requests.insert(tool_call_id, metadata);
+				read_requests.entry(tool_call_id).or_insert(metadata);
 			}
 			if let Some(source_envelope_id) = event.entity_ids.source_envelope_id.clone() {
 				indexes.sources.push(SourceIndexEntryV0 {
@@ -182,6 +182,13 @@ mod tests {
 	);
 
 	async fn seed_successful_turn(append_store: &SqliteAppendStore) -> SessionId {
+		seed_successful_turn_with_duplicate_read_request(append_store, false).await
+	}
+
+	async fn seed_successful_turn_with_duplicate_read_request(
+		append_store: &SqliteAppendStore,
+		duplicate_read_request: bool,
+	) -> SessionId {
 		let session = append_store
 			.create_session(CreateSessionRequestV0 {
 				workspace:  WorkspaceV0 {
@@ -211,13 +218,35 @@ mod tests {
 		}
 
 		for event in events {
-			let request: RawEventAppendRequestV0 = serde_json::from_value(event).expect(
+			let mut request: RawEventAppendRequestV0 = serde_json::from_value(event).expect(
 				"fixture event must deserialize as an append request once session_seq is stripped",
 			);
+			let duplicate = if duplicate_read_request
+				&& request.event_type == RawEventType::ToolCallRequested
+				&& request.payload.get("tool_name").and_then(Value::as_str) == Some("read")
+			{
+				request.payload["arguments"]["offset"] = serde_json::json!(10);
+				request.payload["arguments"]["limit"] = serde_json::json!(20);
+				let mut duplicate = request.clone();
+				duplicate.event_id =
+					EventId::try_from("evt_00000000-0000-4000-8000-999999999998".to_owned()).unwrap();
+				duplicate.idempotency_key = "fixture:tool-requested:read:duplicate".to_owned();
+				duplicate.payload["arguments"]["offset"] = serde_json::json!(999);
+				duplicate.payload["arguments"]["limit"] = serde_json::json!(1);
+				Some(duplicate)
+			} else {
+				None
+			};
 			append_store
 				.append_event(request)
 				.await
 				.expect("fixture append must succeed");
+			if let Some(duplicate) = duplicate {
+				append_store
+					.append_event(duplicate)
+					.await
+					.expect("duplicate read request append must succeed");
+			}
 		}
 
 		session.session_id
@@ -271,6 +300,29 @@ mod tests {
 				entry.artifact_id
 			);
 		}
+	}
+
+	#[tokio::test]
+	async fn duplicate_read_request_keeps_first_persisted_range_metadata() {
+		let append_store = SqliteAppendStore::connect_in_memory().await.unwrap();
+		let session_id = seed_successful_turn_with_duplicate_read_request(&append_store, true).await;
+		let indexes = build_session_indexes(&append_store, &session_id)
+			.await
+			.unwrap();
+		let read_artifact = indexes
+			.artifacts
+			.iter()
+			.find(|entry| entry.artifact_id.as_str() == "art_00000000-0000-4000-8000-000000000002")
+			.expect("canonical read artifact is indexed");
+		assert_eq!(
+			read_artifact.read_metadata,
+			Some(ReadToolMetadataV0 {
+				path:   "packages/coding-agent/src/context/concept-graph.ts".to_owned(),
+				offset: Some(10),
+				limit:  Some(20),
+			}),
+			"later duplicate request metadata must not overwrite the first persisted request"
+		);
 	}
 
 	#[tokio::test]

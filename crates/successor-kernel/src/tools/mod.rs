@@ -37,6 +37,7 @@ pub mod find;
 pub mod grep;
 pub mod list_dir;
 pub mod read;
+pub mod registry;
 pub mod search_files;
 
 use std::{

@@ -42,7 +42,6 @@ use std::{collections::VecDeque, future::Future, path::Path, sync::Arc};
 
 use serde_json::{Value as WireJson, json};
 use successor_protocol::{
-	artifact::ArtifactHash,
 	ids::{
 		ContextItemId, EventId, FrameId, MessageId, RequestId, SessionId, SourceEnvelopeId,
 		ToolCallId, TurnId,
@@ -71,7 +70,7 @@ use crate::{
 	platform_error::PlatformClientError,
 	provider::{auth::ProviderAuthOutcome, credentials::AnthropicApiKey, projection},
 	state_machine::{MAX_EXECUTABLE_TOOL_ROUNDS, TurnFailure, TurnPhase, TurnState},
-	tools::{self, catalog},
+	tools::{catalog, registry},
 	turn_trace::{TurnAttempt, TurnTrace},
 };
 
@@ -457,24 +456,6 @@ const fn api_shape_label(shape: &ProviderApiShapeV0) -> &'static str {
 	}
 }
 
-fn artifact_ref(
-	sha256: ArtifactHash,
-	byte_length: u64,
-	media_type: &str,
-	preview: &str,
-	content_bytes: &[u8],
-) -> RawEventArtifactRef {
-	RawEventArtifactRef {
-		artifact_id: None,
-		sha256,
-		byte_length,
-		media_type: media_type.to_owned(),
-		encoding: Some("utf-8".to_owned()),
-		preview: Some(preview.to_owned()),
-		content: Some(String::from_utf8_lossy(content_bytes).into_owned()),
-	}
-}
-
 // ---------------------------------------------------------------------
 // TurnRunner
 // ---------------------------------------------------------------------
@@ -509,33 +490,6 @@ pub struct ToolDispatchSuccess {
 	/// to build the next `send_round` call; it is never persisted as raw
 	/// event/frame bytes, so it cannot perturb any fixture-pinned oracle.
 	pub provider_result_text: String,
-}
-
-/// Contract §8.1 bounds the provider-visible `read` result to 200,000
-/// bytes. Full file content is sent verbatim to the provider under that
-/// bound; a deterministic truncation marker is appended when the file
-/// exceeds it. The underlying artifact (`content.bytes`, `sha256`,
-/// `byte_length`) recorded in `tool_result.recorded` is always the
-/// complete, untruncated read — only this provider-facing projection is
-/// bounded (<agent://256> dissent ruling, item B: full-file for normal
-/// files, bounded for huge ones).
-const MAX_PROVIDER_VISIBLE_READ_BYTES: usize = 200_000;
-
-/// Builds the model-visible text for a successful `read`, bounded per
-/// [`MAX_PROVIDER_VISIBLE_READ_BYTES`]. Never a preview-only or
-/// artifact-handle-only projection (<agent://256> dissent ruling, item B;
-/// forbidden pattern: "Projecting `preview`, first line, or
-/// `artifact:<id>` as the only model-visible result for a successful
-/// `read`").
-fn bound_provider_visible_text(text: &str) -> String {
-	if text.len() <= MAX_PROVIDER_VISIBLE_READ_BYTES {
-		return text.to_owned();
-	}
-	let mut boundary = MAX_PROVIDER_VISIBLE_READ_BYTES;
-	while !text.is_char_boundary(boundary) {
-		boundary -= 1;
-	}
-	format!("{}\n...[truncated: showing {boundary} of {} bytes]", &text[..boundary], text.len())
 }
 
 impl<P: ProviderExecutor> TurnRunner<P> {
@@ -872,131 +826,18 @@ impl<P: ProviderExecutor> TurnRunner<P> {
 		})
 	}
 
-	/// Runs the underlying tool executor for the four Slice 0 read-only
-	/// tools, producing the raw-event payload/artifact pair. Returns
-	/// `Err(reason)` on a typed tool-level rejection (bad args, out-of-root
-	/// path, ...) rather than panicking.
+	/// Runs the underlying Slice 0 tool executor through the registry, producing
+	/// the raw-event payload/artifact pair. Returns `Err(reason)` on a typed
+	/// tool-level rejection (bad args, out-of-root path, ...) rather than
+	/// panicking.
 	fn execute_tool(
 		&self,
 		tool_name: &str,
 		arguments: &WireJson,
 	) -> Result<(WireJson, RawEventArtifactRef, String), String> {
-		match tool_name {
-			"search_files" => {
-				let args: tools::search_files::SearchFilesArgs =
-					serde_json::from_value(arguments.clone()).map_err(|err| err.to_string())?;
-				let result = tools::search_files::search_files(
-					&self.workspace_root,
-					&args.query,
-					args.max_matches,
-				)
-				.map_err(|err| err.to_string())?;
-				let preview = result
-					.matches
-					.first()
-					.map_or_else(|| "no matches".to_owned(), |m| m.path.clone());
-				let payload = json!({ "source_kind": "tool_result", "tool_name": "search_files", "matches": result.matches });
-				let provider_text = payload.to_string();
-				Ok((
-					payload,
-					artifact_ref(
-						result.sha256.clone(),
-						result.byte_length,
-						"application/json",
-						&preview,
-						&result.bytes,
-					),
-					provider_text,
-				))
-			},
-			"read" => {
-				let args: tools::read::ReadArgs =
-					serde_json::from_value(arguments.clone()).map_err(|err| err.to_string())?;
-				let content =
-					tools::read::read(&self.workspace_root, &args.path, args.offset, args.limit)
-						.map_err(|err| err.to_string())?;
-				let text = String::from_utf8_lossy(&content.bytes).into_owned();
-				let preview = text.strip_suffix('\n').unwrap_or(&text);
-				let provider_text = bound_provider_visible_text(&text);
-				Ok((
-					json!({
-						"source_kind": "tool_result",
-						"tool_name": "read",
-						"path": args.path,
-						"truncated": false,
-						"preview": preview,
-					}),
-					artifact_ref(
-						content.sha256.clone(),
-						content.byte_length,
-						"text/plain",
-						preview,
-						&content.bytes,
-					),
-					provider_text,
-				))
-			},
-			"list_dir" => {
-				let args: tools::list_dir::ListDirArgs =
-					serde_json::from_value(arguments.clone()).map_err(|err| err.to_string())?;
-				let result = tools::list_dir::list_dir(&self.workspace_root, &args.path)
-					.map_err(|err| err.to_string())?;
-				let payload = json!({ "source_kind": "tool_result", "tool_name": "list_dir", "entries": result.entries, "truncated": result.truncated });
-				let provider_text = payload.to_string();
-				Ok((
-					payload,
-					artifact_ref(
-						result.sha256.clone(),
-						result.byte_length,
-						"application/json",
-						"list_dir results",
-						&result.bytes,
-					),
-					provider_text,
-				))
-			},
-			"find" => {
-				let args: tools::find::FindArgs =
-					serde_json::from_value(arguments.clone()).map_err(|err| err.to_string())?;
-				let result = tools::find::find(&self.workspace_root, &args.glob, 2_000)
-					.map_err(|err| err.to_string())?;
-				let payload = json!({ "source_kind": "tool_result", "tool_name": "find", "matches": result.entries });
-				let provider_text = payload.to_string();
-				Ok((
-					payload,
-					artifact_ref(
-						result.sha256.clone(),
-						result.byte_length,
-						"application/json",
-						"find results",
-						&result.bytes,
-					),
-					provider_text,
-				))
-			},
-			"grep" => {
-				let args: tools::grep::GrepArgs =
-					serde_json::from_value(arguments.clone()).map_err(|err| err.to_string())?;
-				let result = tools::grep::grep(&self.workspace_root, &args.pattern, 2_000)
-					.map_err(|err| err.to_string())?;
-				let payload = json!({ "source_kind": "tool_result", "tool_name": "grep", "matches": result.matches });
-				let provider_text = payload.to_string();
-				Ok((
-					payload,
-					artifact_ref(
-						result.sha256.clone(),
-						result.byte_length,
-						"application/json",
-						"grep results",
-						&result.bytes,
-					),
-					provider_text,
-				))
-			},
-			other => {
-				Err(format!("tool `{other}` is executable per the catalog but has no dispatch wiring"))
-			},
-		}
+		let execution =
+			registry::slice0_registry().execute(&self.workspace_root, tool_name, arguments)?;
+		Ok((execution.payload, execution.artifact, execution.provider_result_text))
 	}
 
 	#[expect(

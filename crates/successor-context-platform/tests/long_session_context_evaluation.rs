@@ -7,7 +7,7 @@ use successor_context_platform::{
 };
 use successor_protocol::{
 	artifact::{ArtifactHash, ArtifactV0},
-	ids::{ArtifactId, EventId, RequestId, SessionId, SourceEnvelopeId, TurnId},
+	ids::{ArtifactId, EventId, RequestId, SessionId, SourceEnvelopeId, ToolCallId, TurnId},
 	platform_api::{
 		AssembleIntentV0, AssemblePhaseV0, AssembleRequestV0, AssembleWorkspaceV0, AssemblyBudgetV0,
 		ContextItemV0, CreateSessionRequestV0, CreatedByV0, RawEventAppendRequestV0, WorkspaceV0,
@@ -204,52 +204,83 @@ async fn append_read_event(
 	offset: Option<u64>,
 	limit: Option<u64>,
 ) {
-	let event_id: EventId = id(&format!("evt_{seq:032x}"));
+	let request_event_id: EventId = id(&format!("evt_{:032x}", seq * 2));
+	let result_event_id: EventId = id(&format!("evt_{:032x}", seq * 2 + 1));
 	let request_id: RequestId = id(&format!("req_{seq:032x}"));
 	let turn_id: TurnId = id(&format!("turn_{turn:032x}"));
+	let tool_call_id: ToolCallId = id(&format!("tool_{seq:032x}"));
 	let artifact = artifact_id.map(|raw_id| artifact_for(&id(raw_id), text));
 	let artifact_ref = artifact.as_ref().map(artifact_ref);
-	let mut entity_ids = EntityIdsV0::default();
-	if let Some(artifact) = &artifact {
-		entity_ids.artifact_id = Some(artifact.artifact_id.clone());
-	}
-	entity_ids.source_envelope_id = Some(id(source_envelope_id));
-	let mut payload = json!({
-		"text": text,
-		"source_envelope_id": source_envelope_id,
-		"tool_name": "read",
-		"path": path,
-	});
+	let mut arguments = json!({ "path": path });
 	if let Some(offset) = offset {
-		payload["offset"] = json!(offset);
+		arguments["offset"] = json!(offset);
 	}
 	if let Some(limit) = limit {
-		payload["limit"] = json!(limit);
+		arguments["limit"] = json!(limit);
+	}
+	append_store
+		.append_event(RawEventAppendRequestV0 {
+			schema_version:     "platform.raw_event.v0".to_owned(),
+			event_id:           request_event_id.clone(),
+			idempotency_key:    format!("long-session-context-read-request-{seq}"),
+			event_type:         RawEventType::ToolCallRequested,
+			session_id:         session_id.clone(),
+			turn_id:            Some(turn_id.clone()),
+			request_id:         request_id.clone(),
+			occurred_at:        format!("2026-01-01T00:{:02}:00Z", (seq * 2) % 60),
+			producer:           RawEventProducerV0::default(),
+			causation_event_id: None,
+			correlation_id:     request_id.clone(),
+			entity_ids:         EntityIdsV0 {
+				tool_call_id: Some(tool_call_id.clone()),
+				..EntityIdsV0::default()
+			},
+			visibility:         VisibilityV0::default(),
+			redaction:          RedactionLevelV0::Sensitive,
+			payload:            json!({ "tool_name": "read", "arguments": arguments }),
+			artifact:           None,
+		})
+		.await
+		.expect("read request event append succeeds");
+	let mut entity_ids = EntityIdsV0 {
+		tool_call_id: Some(tool_call_id),
+		source_envelope_id: Some(id(source_envelope_id)),
+		..EntityIdsV0::default()
+	};
+	if let Some(artifact) = &artifact {
+		entity_ids.artifact_id = Some(artifact.artifact_id.clone());
 	}
 	append_store
 		.append_event(RawEventAppendRequestV0 {
 			schema_version: "platform.raw_event.v0".to_owned(),
-			event_id: event_id.clone(),
-			idempotency_key: format!("long-session-context-read-{seq}"),
+			event_id: result_event_id.clone(),
+			idempotency_key: format!("long-session-context-read-result-{seq}"),
 			event_type: RawEventType::ToolResultRecorded,
 			session_id: session_id.clone(),
 			turn_id: Some(turn_id),
 			request_id: request_id.clone(),
-			occurred_at: format!("2026-01-01T00:{:02}:00Z", seq % 60),
+			occurred_at: format!("2026-01-01T00:{:02}:01Z", (seq * 2) % 60),
 			producer: RawEventProducerV0::default(),
-			causation_event_id: None,
+			causation_event_id: Some(request_event_id),
 			correlation_id: request_id,
 			entity_ids,
 			visibility: VisibilityV0::default(),
 			redaction: RedactionLevelV0::Sensitive,
-			payload,
+			payload: json!({
+				"source_kind": "tool_result",
+				"source_envelope_id": source_envelope_id,
+				"tool_name": "read",
+				"path": path,
+				"truncated": false,
+				"preview": text,
+			}),
 			artifact: artifact_ref,
 		})
 		.await
-		.expect("read event append succeeds");
+		.expect("read result event append succeeds");
 	if let Some(artifact) = artifact {
 		artifact_store
-			.put_inline_artifact(&event_id, session_id, artifact)
+			.put_inline_artifact(&result_event_id, session_id, artifact)
 			.await
 			.expect("read artifact storage succeeds");
 	}

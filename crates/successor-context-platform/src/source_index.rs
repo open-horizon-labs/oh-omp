@@ -9,8 +9,13 @@
 //! what `entity_ids` on its persisted raw events already say. This module
 //! never scrapes `raw_events`/`sessions` `SQLite` tables directly.
 
+use std::collections::HashMap;
+
 use serde_json::Value;
-use successor_protocol::ids::{ArtifactId, EventId, SessionId, SourceEnvelopeId};
+use successor_protocol::{
+	ids::{ArtifactId, EventId, SessionId, SourceEnvelopeId, ToolCallId},
+	raw_event::RawEventType,
+};
 
 use crate::{error::PlatformResult, store::RawEventAppendStore};
 
@@ -64,12 +69,19 @@ pub async fn build_session_indexes(
 	session_id: &SessionId,
 ) -> PlatformResult<SessionIndexesV0> {
 	let mut indexes = SessionIndexesV0::default();
+	let mut read_requests = HashMap::<ToolCallId, ReadToolMetadataV0>::new();
 	let mut after_seq = 0u64;
 	loop {
 		let page = store
 			.read_session_events(session_id, after_seq, INDEX_PAGE_SIZE)
 			.await?;
 		for event in &page.events {
+			if event.event_type == RawEventType::ToolCallRequested
+				&& let Some(tool_call_id) = event.entity_ids.tool_call_id.clone()
+				&& let Some(metadata) = read_tool_request_metadata(&event.payload)
+			{
+				read_requests.insert(tool_call_id, metadata);
+			}
 			if let Some(source_envelope_id) = event.entity_ids.source_envelope_id.clone() {
 				indexes.sources.push(SourceIndexEntryV0 {
 					source_envelope_id,
@@ -83,7 +95,12 @@ pub async fn build_session_indexes(
 					event_id: event.event_id.clone(),
 					session_seq: event.session_seq,
 					source_envelope_id: event.entity_ids.source_envelope_id.clone(),
-					read_metadata: read_tool_metadata(&event.payload),
+					read_metadata: event
+						.entity_ids
+						.tool_call_id
+						.as_ref()
+						.and_then(|tool_call_id| read_requests.get(tool_call_id).cloned())
+						.or_else(|| read_tool_result_metadata(&event.payload)),
 				});
 			}
 		}
@@ -95,14 +112,26 @@ pub async fn build_session_indexes(
 	Ok(indexes)
 }
 
-fn read_tool_metadata(payload: &Value) -> Option<ReadToolMetadataV0> {
+fn read_tool_request_metadata(payload: &Value) -> Option<ReadToolMetadataV0> {
+	if payload.get("tool_name").and_then(Value::as_str) != Some("read") {
+		return None;
+	}
+	let arguments = payload.get("arguments")?;
+	Some(ReadToolMetadataV0 {
+		path:   arguments.get("path")?.as_str()?.to_owned(),
+		offset: arguments.get("offset").and_then(Value::as_u64),
+		limit:  arguments.get("limit").and_then(Value::as_u64),
+	})
+}
+
+fn read_tool_result_metadata(payload: &Value) -> Option<ReadToolMetadataV0> {
 	if payload.get("tool_name").and_then(Value::as_str) != Some("read") {
 		return None;
 	}
 	Some(ReadToolMetadataV0 {
 		path:   payload.get("path")?.as_str()?.to_owned(),
-		offset: payload.get("offset").and_then(Value::as_u64),
-		limit:  payload.get("limit").and_then(Value::as_u64),
+		offset: None,
+		limit:  None,
 	})
 }
 

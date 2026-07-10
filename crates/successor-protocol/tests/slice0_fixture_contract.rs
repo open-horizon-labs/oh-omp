@@ -56,8 +56,17 @@ fn provider_shape_normalization_parses_with_three_required_wire_shapes() {
 #[test]
 fn kernel_frame_stream_parses_full_turn_lifecycle() {
 	let frames = fixtures::kernel_frame_stream();
-	assert_eq!(frames.len(), 10);
+	assert_eq!(frames.len(), 11);
 	assert_eq!(frames.first().expect("non-empty").kind, KernelFrameKindV0::TurnStarted);
+	assert_eq!(
+		frames
+			.iter()
+			.filter(|frame| frame.kind == KernelFrameKindV0::ProviderDelta)
+			.count(),
+		1
+	);
+	assert_eq!(frames[9].kind, KernelFrameKindV0::ProviderDelta);
+	assert_eq!(frames[10].kind, KernelFrameKindV0::TurnCompleted);
 	assert_eq!(frames.last().expect("non-empty").kind, KernelFrameKindV0::TurnCompleted);
 	assert_eq!(
 		frames

@@ -1,6 +1,6 @@
 //! Integration tests for Lane C2 `KernelFrameStream`.
 //!
-//! Covers: reproducing the canonical 10-frame fixture through the producer
+//! Covers: reproducing the canonical 11-frame fixture through the producer
 //! API field-for-field; dense `stream_seq` under concurrent producers on
 //! one stream; independent sequences on separate streams; subscriber-drop
 //! safety; and deterministic close semantics. SSE byte-well-formedness and
@@ -37,7 +37,7 @@ fn fields_from_fixture(expected: &KernelFrameV0) -> FrameFields {
 	}
 }
 
-/// Reproduces the canonical 10-frame fixture stream through the producer
+/// Reproduces the canonical 11-frame fixture stream through the producer
 /// API and asserts field-for-field equality with the fixture.
 ///
 /// Fixture-comparison approach: `frame_id` and `ts` are caller-supplied
@@ -51,7 +51,7 @@ fn fields_from_fixture(expected: &KernelFrameV0) -> FrameFields {
 #[tokio::test]
 async fn producer_reproduces_canonical_fixture_stream_field_for_field() {
 	let expected_frames = fixtures::kernel_frame_stream();
-	assert_eq!(expected_frames.len(), 10, "canonical fixture is pinned at 10 frames");
+	assert_eq!(expected_frames.len(), 11, "canonical fixture is pinned at 11 frames");
 
 	let sink = FrameSink::new(KernelFrameStream::new());
 	let mut produced = Vec::with_capacity(expected_frames.len());
@@ -70,12 +70,12 @@ async fn producer_reproduces_canonical_fixture_stream_field_for_field() {
 	assert_eq!(
 		produced, expected_frames,
 		"producer output must match the canonical fixture field-for-field, including stream_seq \
-		 (kernel-assigned, must land on the fixture's dense 1..=10) and frame_id/ts \
+		 (kernel-assigned, must land on the fixture's dense 1..=11) and frame_id/ts \
 		 (caller-supplied fixture values, not minted by the sink)"
 	);
 
 	let seqs: Vec<u64> = produced.iter().map(|frame| frame.stream_seq).collect();
-	assert_eq!(seqs, (1..=10).collect::<Vec<u64>>(), "fixture stream_seq must be dense 1..=10");
+	assert_eq!(seqs, (1..=11).collect::<Vec<u64>>(), "fixture stream_seq must be dense 1..=11");
 }
 
 fn minimal_fields(frame_id: String) -> FrameFields {

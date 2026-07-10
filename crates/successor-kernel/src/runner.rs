@@ -1634,6 +1634,29 @@ impl<P: ProviderExecutor> TurnRunner<P> {
 						.await?;
 					state = state.validate_next(TurnState::AssistantTurnRecorded)?;
 
+
+					if !outcome.response.text.is_empty() {
+						let provider_delta_fields = self.frame_fields(
+							&ctx,
+							KernelFrameKindV0::ProviderDelta,
+							Some(RawEventRef::new(
+								assistant_turn_event_id.clone(),
+								assistant_turn_response.session_seq,
+							)),
+							EntityIdsV0 {
+								message_id: Some(assistant_message_id.clone()),
+								source_envelope_id: Some(assistant_source_envelope_id.clone()),
+								..EntityIdsV0::default()
+							},
+							json!({ "text": outcome.response.text }),
+						);
+						let provider_delta_frame = self.emit(&mut trace, FrameFields {
+							causation_frame_id: Some(last_frame_id),
+							..provider_delta_fields
+						});
+						last_frame_id = provider_delta_frame.frame_id;
+					}
+
 					let turn_completed_fields = self.frame_fields(
 						&ctx,
 						KernelFrameKindV0::TurnCompleted,

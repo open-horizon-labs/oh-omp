@@ -107,7 +107,7 @@ use successor_context_platform::{
 };
 use successor_kernel::{
 	frame_sink::FrameSink,
-	id_factory::{Clock, IdFactory, ScriptedClock, ScriptedIdFactory},
+	id_factory::{Clock, IdFactory, RealClock, RealIdFactory, ScriptedClock, ScriptedIdFactory},
 	platform_client::{EntitlementToken, KernelPlatformClient},
 	provider::auth::{ProviderAuthOutcome, ProviderSlot},
 	runner::{
@@ -944,6 +944,7 @@ fn scripted_clock_for_successful_turn() -> ScriptedClock {
 		ts(20),
 		ts(21),
 		ts(22),
+		frame_ts(kernel_frame::KernelFrameKindV0::ProviderDelta, 0),
 		frame_ts(kernel_frame::KernelFrameKindV0::TurnCompleted, 0),
 	])
 }
@@ -1151,6 +1152,40 @@ async fn successful_turn_reproduces_the_fixtures_raw_events_projection_and_frame
 		fixture_frames.len(),
 		"produced frame count must match kernel-frame-stream.json exactly"
 	);
+	let provider_delta_frames: Vec<_> = produced_frames
+		.iter()
+		.filter(|frame| frame.kind == kernel_frame::KernelFrameKindV0::ProviderDelta)
+		.collect();
+	assert_eq!(
+		provider_delta_frames.len(),
+		1,
+		"exactly one provider_delta frame is emitted for the final non-empty assistant text; \
+		 tool-call rounds emit none"
+	);
+	let provider_delta_frame = provider_delta_frames
+		.first()
+		.expect("provider_delta frame must be present after the final assistant append");
+	assert_eq!(
+		provider_delta_frame
+			.payload
+			.get("text")
+			.and_then(serde_json::Value::as_str),
+		Some(assistant_text.as_str()),
+		"provider_delta text must be byte-equal to the durable assistant text"
+	);
+	assert_eq!(
+		provider_delta_frame.raw_event_session_seq,
+		produced_events.last().map(|event| event.session_seq),
+		"provider_delta must reference the already persisted assistant_turn raw event"
+	);
+	assert!(
+		produced_frames
+			.windows(2)
+			.any(|window| window[0].kind == kernel_frame::KernelFrameKindV0::ProviderDelta
+				&& window[1].kind == kernel_frame::KernelFrameKindV0::TurnCompleted),
+		"turn_completed must follow the provider_delta terminal chain"
+	);
+
 	for (produced_frame, fixture_frame) in produced_frames.iter().zip(fixture_frames.iter()) {
 		let mut normalized_frame = produced_frame.clone();
 		normalized_frame.session_id =
@@ -1198,6 +1233,51 @@ async fn successful_turn_reproduces_the_fixtures_raw_events_projection_and_frame
 		produced_projection, expected_projection,
 		"project_session on this run's own (session_id/assemble_id/context_item_id-normalized) \
 		 events must be byte-identical to expected-session-projection.json"
+	);
+
+	cleanup_workspace(&workspace_root);
+}
+
+#[tokio::test]
+async fn empty_final_assistant_text_emits_no_provider_delta() {
+	let server = TestServer::start("empty-final-delta").await;
+	let client = server.client();
+	let workspace_root = seed_workspace("empty-final-delta");
+	let provider = ScriptedProviderExecutor::new(
+		"anthropic-fixture",
+		successor_protocol::provider::ProviderApiShapeV0::AnthropicMessages,
+		"claude-fixture",
+		[ScriptedRound::Final { text: String::new(), summary: String::new() }],
+	);
+	let frame_sink = FrameSink::new(KernelFrameStream::new());
+	let runner = TurnRunner::new(
+		client,
+		frame_sink,
+		Arc::new(RealIdFactory::new()) as Arc<dyn IdFactory>,
+		Arc::new(RealClock) as Arc<dyn Clock>,
+		provider,
+		&workspace_root,
+	);
+
+	let attempt = runner
+		.execute_turn(TurnInput {
+			user_text:      "Return an empty response.".to_owned(),
+			assembly_query: None,
+		})
+		.await;
+
+	assert!(attempt.trace.succeeded());
+	let assistant_text = attempt
+		.outcome
+		.expect("a scripted empty final response still completes the turn");
+	assert_eq!(assistant_text, "");
+	assert!(
+		!attempt
+			.trace
+			.frames()
+			.iter()
+			.any(|frame| frame.kind == kernel_frame::KernelFrameKindV0::ProviderDelta),
+		"empty final assistant text must not emit provider_delta"
 	);
 
 	cleanup_workspace(&workspace_root);

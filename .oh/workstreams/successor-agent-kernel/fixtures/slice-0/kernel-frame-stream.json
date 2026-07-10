@@ -142,10 +142,25 @@
     "turn_id": "turn_00000000-0000-4000-8000-000000000001",
     "request_id": "req_00000000-0000-4000-8000-000000000001",
     "ts": "2026-06-23T12:00:22Z",
-    "kind": "turn_completed",
+    "kind": "provider_delta",
     "raw_event_id": "evt_00000000-0000-4000-8000-000000000023",
     "raw_event_session_seq": 23,
     "causation_frame_id": "frame_00000000-0000-4000-8000-000000000009",
+    "entity_ids": { "message_id": "msg_00000000-0000-4000-8000-000000000002", "tool_call_id": null, "source_envelope_id": "src_00000000-0000-4000-8000-000000000004", "artifact_id": null, "assemble_id": null, "context_item_ids": [], "trace_id": null, "error_id": null, "provider_event_id": null },
+    "payload": { "text": "The concept graph resolver fixture coordinates concept context retrieval and reports degraded/no-context conditions explicitly." }
+  },
+  {
+    "schema_version": "kernel.frame.v0",
+    "frame_id": "frame_00000000-0000-4000-8000-000000000011",
+    "stream_seq": 11,
+    "session_id": "ses_00000000-0000-4000-8000-000000000001",
+    "turn_id": "turn_00000000-0000-4000-8000-000000000001",
+    "request_id": "req_00000000-0000-4000-8000-000000000001",
+    "ts": "2026-06-23T12:00:23Z",
+    "kind": "turn_completed",
+    "raw_event_id": "evt_00000000-0000-4000-8000-000000000023",
+    "raw_event_session_seq": 23,
+    "causation_frame_id": "frame_00000000-0000-4000-8000-000000000010",
     "entity_ids": { "message_id": "msg_00000000-0000-4000-8000-000000000002", "tool_call_id": null, "source_envelope_id": "src_00000000-0000-4000-8000-000000000004", "artifact_id": null, "assemble_id": null, "context_item_ids": [], "trace_id": null, "error_id": null, "provider_event_id": null },
     "payload": { "finish_reason": "stop" }
   }

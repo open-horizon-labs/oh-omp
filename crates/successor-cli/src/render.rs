@@ -165,6 +165,42 @@ mod tests {
 	}
 
 	#[test]
+	fn provider_delta_renders_answer_before_turn_completed_marker() {
+		let session_id =
+			SessionId::try_from("ses_test0000000000000001".to_owned()).expect("valid session id");
+		let turn_id =
+			TurnId::try_from("turn_test0000000000000001".to_owned()).expect("valid turn id");
+		let request_id =
+			RequestId::try_from("req_test0000000000000001".to_owned()).expect("valid request id");
+		let provider_delta = KernelFrameV0::new(
+			FrameId::try_from("frame_1".to_owned()).expect("valid frame id"),
+			1,
+			session_id.clone(),
+			turn_id.clone(),
+			request_id.clone(),
+			KernelFrameKindV0::ProviderDelta,
+			"2024-01-01T00:00:00Z",
+			serde_json::json!({"text": "answer text"}),
+		);
+		let turn_completed = KernelFrameV0::new(
+			FrameId::try_from("frame_2".to_owned()).expect("valid frame id"),
+			2,
+			session_id,
+			turn_id,
+			request_id,
+			KernelFrameKindV0::TurnCompleted,
+			"2024-01-01T00:00:01Z",
+			serde_json::json!({"finish_reason": "stop"}),
+		);
+		let mut out = Vec::new();
+		render_frame_text(&mut out, &provider_delta).expect("provider_delta render must not fail");
+		render_frame_text(&mut out, &turn_completed).expect("turn_completed render must not fail");
+		let rendered = String::from_utf8(out).expect("rendered text is valid utf-8");
+
+		assert_eq!(rendered, "answer text\n[turn completed]\n");
+	}
+
+	#[test]
 	fn turn_failed_prefers_a_nested_error_envelope_message_over_the_literal_fallback() {
 		let rendered = render_turn_failed(serde_json::json!({
 			"error": {

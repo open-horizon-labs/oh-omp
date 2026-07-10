@@ -37,6 +37,7 @@ use crate::{
 	runner::{ProviderExecutor, TurnInput, TurnRunner},
 	sse::render_kernel_frame_sse,
 	stream::KernelFrameStream,
+	tools::registry::EffectiveToolAuthority,
 };
 
 fn decode_body<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, String> {
@@ -60,6 +61,24 @@ fn internal_error<P: ProviderExecutor + Send + Sync + 'static>(
 			correlation_id,
 			"kernel_rpc.internal",
 			message,
+			false,
+			false,
+		),
+	)
+}
+
+fn tool_authority_denied<P: ProviderExecutor + Send + Sync + 'static>(
+	state: &AppState<P>,
+	correlation_id: &RequestId,
+	detail: impl Into<String>,
+) -> KernelRpcError {
+	KernelRpcError::new(
+		StatusCode::UNPROCESSABLE_ENTITY,
+		build_envelope(
+			state.ids.error_id(),
+			correlation_id,
+			"kernel_rpc.tool_authority_denied",
+			detail,
 			false,
 			false,
 		),
@@ -186,17 +205,15 @@ pub async fn submit_turn<P: ProviderExecutor + Send + Sync + 'static>(
 				.into_response();
 		},
 	};
-	if request.tool_authority.is_some() {
-		return KernelRpcError::new(
-			StatusCode::UNPROCESSABLE_ENTITY,
-			build_envelope(
-				state.ids.error_id(),
-				&correlation_id,
-				"kernel_rpc.tool_authority_unsupported",
-				"explicit tool_authority requests are not supported by this kernel version",
-				false,
-				false,
-			),
+
+	if let Err(err) = EffectiveToolAuthority::resolve(
+		request.tool_authority.as_ref(),
+		&state.trusted_tool_authority_ceiling,
+	) {
+		return tool_authority_denied(
+			&state,
+			&correlation_id,
+			format!("requested tool authority is not permitted: {err}"),
 		)
 		.into_response();
 	}
@@ -218,14 +235,26 @@ pub async fn submit_turn<P: ProviderExecutor + Send + Sync + 'static>(
 	// before the runner is driven.
 	let frame_stream = KernelFrameStream::new();
 	let mut receiver = frame_stream.subscribe();
-	let runner = TurnRunner::new(
+	let runner = match TurnRunner::with_tool_authority(
 		state.platform.clone(),
 		FrameSink::new(frame_stream.clone()),
 		Arc::clone(&state.ids),
 		Arc::clone(&state.clock),
 		provider,
 		state.workspace_root.clone(),
-	);
+		request.tool_authority.as_ref(),
+		&state.trusted_tool_authority_ceiling,
+	) {
+		Ok(runner) => runner,
+		Err(err) => {
+			return tool_authority_denied(
+				&state,
+				&correlation_id,
+				format!("requested tool authority is not permitted: {err}"),
+			)
+			.into_response();
+		},
+	};
 	let session_id = request.session_id.clone();
 	let input: TurnInput = request.into();
 	let mut task = tokio::spawn(async move {

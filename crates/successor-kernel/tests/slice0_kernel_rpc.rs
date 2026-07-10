@@ -39,7 +39,7 @@ use successor_protocol::{
 	},
 	provider::ProviderApiShapeV0,
 	raw_event::RawEventType,
-	tool_catalog::ToolCatalogV0,
+	tool_catalog::{ToolAuthorityClassV0, ToolCatalogV0, ToolStatusV0},
 };
 use tower::ServiceExt;
 
@@ -129,30 +129,6 @@ fn scripted_state(
 		workspace_root,
 		ProviderSlot::Anthropic,
 		move || {
-			Ok(ScriptedProviderExecutor::new(
-				"scripted",
-				ProviderApiShapeV0::AnthropicMessages,
-				"scripted-model",
-				rounds.clone(),
-			))
-		},
-	)
-}
-
-fn counted_scripted_state(
-	platform: KernelPlatformClient,
-	workspace_root: std::path::PathBuf,
-	rounds: Vec<ScriptedRound>,
-	factory_calls: Arc<AtomicU64>,
-) -> AppState<ScriptedProviderExecutor> {
-	AppState::new(
-		platform,
-		Arc::new(RealIdFactory::new()),
-		Arc::new(RealClock),
-		workspace_root,
-		ProviderSlot::Anthropic,
-		move || {
-			factory_calls.fetch_add(1, Ordering::SeqCst);
 			Ok(ScriptedProviderExecutor::new(
 				"scripted",
 				ProviderApiShapeV0::AnthropicMessages,
@@ -384,6 +360,188 @@ async fn body_bytes(response: axum::response::Response) -> Vec<u8> {
 		.to_vec()
 }
 
+struct AuthorityProviderExecutor {
+	inner:       ScriptedProviderExecutor,
+	catalog_log: Arc<Mutex<Vec<Vec<String>>>>,
+}
+
+impl ProviderExecutor for AuthorityProviderExecutor {
+	fn provider_id(&self) -> &str {
+		self.inner.provider_id()
+	}
+
+	fn api_shape(&self) -> ProviderApiShapeV0 {
+		self.inner.api_shape()
+	}
+
+	fn model(&self) -> &str {
+		self.inner.model()
+	}
+
+	async fn send_round(
+		&self,
+		user_text: &str,
+		completed_rounds: &[projection::CompletedToolRoundV0],
+		catalog: &ToolCatalogV0,
+		message_id: MessageId,
+		tool_call_id: ToolCallId,
+	) -> Result<ProviderRoundOutcome, TurnFailure> {
+		let names = catalog
+			.tools
+			.iter()
+			.filter(|tool| tool.status == ToolStatusV0::Executable)
+			.map(|tool| tool.name.clone())
+			.collect();
+		self
+			.catalog_log
+			.lock()
+			.expect("authority catalog log mutex")
+			.push(names);
+		self
+			.inner
+			.send_round(user_text, completed_rounds, catalog, message_id, tool_call_id)
+			.await
+	}
+}
+
+fn authority_request(classes: &[&str]) -> serde_json::Value {
+	serde_json::json!({ "classes": classes })
+}
+
+fn submit_turn_body(
+	user_text: &str,
+	session_id: Option<&successor_protocol::ids::SessionId>,
+	tool_authority: Option<serde_json::Value>,
+) -> serde_json::Value {
+	let mut body = serde_json::json!({ "user_text": user_text });
+	if let Some(session_id) = session_id {
+		body["session_id"] = serde_json::Value::String(session_id.as_str().to_owned());
+	}
+	if let Some(tool_authority) = tool_authority {
+		body["tool_authority"] = tool_authority;
+	}
+	body
+}
+
+async fn submit_turn_json<P: ProviderExecutor + Send + Sync + 'static>(
+	state: AppState<P>,
+	body: serde_json::Value,
+) -> axum::response::Response {
+	build_router(state)
+		.oneshot(
+			Request::builder()
+				.method("POST")
+				.uri("/v0/turns")
+				.header("content-type", "application/json")
+				.body(Body::from(serde_json::to_vec(&body).unwrap()))
+				.unwrap(),
+		)
+		.await
+		.unwrap()
+}
+
+async fn read_all_session_events(
+	client: &KernelPlatformClient,
+	session_id: &successor_protocol::ids::SessionId,
+) -> Vec<successor_protocol::raw_event::RawEventV0> {
+	client
+		.read_session_events(session_id, None, Some(100))
+		.await
+		.unwrap()
+		.events
+}
+
+fn raw_event_payloads_of_type(
+	events: &[successor_protocol::raw_event::RawEventV0],
+	event_type: RawEventType,
+) -> Vec<serde_json::Value> {
+	events
+		.iter()
+		.filter(|event| event.event_type == event_type)
+		.map(|event| event.payload.clone())
+		.collect()
+}
+
+fn authority_decision_payload(payload: &serde_json::Value) -> Option<&serde_json::Value> {
+	payload.get("authority_decision")
+}
+
+fn assert_authority_decision(
+	payload: &serde_json::Value,
+	requested: &[&str],
+	ceiling: &[&str],
+	effective: &[&str],
+) {
+	let decision = authority_decision_payload(payload).expect("authority decision must be present");
+	assert_eq!(decision.get("requested").unwrap(), &serde_json::json!(requested));
+	assert_eq!(decision.get("trusted_ceiling").unwrap(), &serde_json::json!(ceiling));
+	assert_eq!(decision.get("effective").unwrap(), &serde_json::json!(effective));
+}
+
+fn recorded_catalog_names(catalog_log: &Arc<Mutex<Vec<Vec<String>>>>, index: usize) -> Vec<String> {
+	catalog_log.lock().expect("authority catalog log mutex")[index].clone()
+}
+
+fn authority_final_round(text: &str) -> ScriptedRound {
+	ScriptedRound::Final { text: text.to_owned(), summary: text.to_owned() }
+}
+
+#[expect(
+	clippy::type_complexity,
+	reason = "authority route tests keep state, counters, recorder, and workspace together"
+)]
+fn authority_state(
+	server: &TestServer,
+	label: &str,
+	rounds: Vec<ScriptedRound>,
+) -> (
+	AppState<AuthorityProviderExecutor>,
+	Arc<AtomicU64>,
+	Arc<Mutex<Vec<Vec<String>>>>,
+	std::path::PathBuf,
+) {
+	let workspace = seed_workspace(label);
+	let factory_count = Arc::new(AtomicU64::new(0));
+	let catalog_log = Arc::new(Mutex::new(Vec::new()));
+	let platform = server.client();
+	let count_for_factory = factory_count.clone();
+	let log_for_factory = catalog_log.clone();
+	let state = AppState::new(
+		platform,
+		Arc::new(RealIdFactory::new()),
+		Arc::new(RealClock),
+		workspace.clone(),
+		ProviderSlot::Anthropic,
+		move || {
+			count_for_factory.fetch_add(1, Ordering::SeqCst);
+			Ok(AuthorityProviderExecutor {
+				inner:       ScriptedProviderExecutor::new(
+					"scripted",
+					ProviderApiShapeV0::AnthropicMessages,
+					"scripted-model",
+					rounds.clone(),
+				),
+				catalog_log: log_for_factory.clone(),
+			})
+		},
+	);
+	(state, factory_count, catalog_log, workspace)
+}
+
+fn session_id_from_sse_body(body: &[u8]) -> SessionId {
+	let text = std::str::from_utf8(body).expect("SSE body is utf8");
+	text
+		.lines()
+		.filter_map(|line| line.strip_prefix("data: "))
+		.map(|line| {
+			serde_json::from_str::<successor_protocol::kernel_frame::KernelFrameV0>(line)
+				.expect("SSE data is a kernel frame")
+		})
+		.next()
+		.expect("submit turn emits at least one kernel frame")
+		.session_id
+}
+
 // ---------------------------------------------------------------------
 // 1. Route surface exists and rejects malformed bodies.
 // ---------------------------------------------------------------------
@@ -424,88 +582,215 @@ async fn malformed_request_bodies_are_rejected_with_a_kernel_rpc_error_envelope(
 }
 
 #[tokio::test]
-async fn explicit_tool_authority_requests_are_rejected_before_provider_activity() {
-	for (label, classes) in [
-		("explicit-safe-read", serde_json::json!(["safe_read"])),
-		("explicit-broader", serde_json::json!(["safe_read", "workspace_mutation", "local_process"])),
-	] {
-		let server = TestServer::start(label).await;
-		let workspace = seed_workspace(label);
-		let factory_calls = Arc::new(AtomicU64::new(0));
-		let state = counted_scripted_state(
-			server.client(),
-			workspace.clone(),
-			vec![ScriptedRound::Final {
-				text:    "provider must not run".to_owned(),
-				summary: "provider must not run".to_owned(),
-			}],
-			factory_calls.clone(),
-		);
-		let router = build_router(state);
-		let request = Request::builder()
-			.method("POST")
-			.uri("/v0/turns")
-			.header("content-type", "application/json")
-			.body(Body::from(
-				serde_json::json!({
-					"user_text": "hello",
-					"tool_authority": { "classes": classes }
-				})
-				.to_string(),
-			))
-			.expect("build explicit authority request");
+async fn explicit_safe_read_is_accepted_and_persists_conditional_authority_decision() {
+	let server = TestServer::start("tool-authority-safe-read").await;
+	let (state, factory_count, catalog_log, workspace) =
+		authority_state(&server, "tool-authority-safe-read", vec![authority_final_round("ok")]);
 
-		let response = router
-			.oneshot(request)
-			.await
-			.expect("router rejects explicit authority without panicking");
-		assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
-		let envelope: ErrorEnvelopeV0 = serde_json::from_slice(&body_bytes(response).await)
-			.expect("error body is a valid ErrorEnvelopeV0");
-		assert_eq!(envelope.code, "kernel_rpc.tool_authority_unsupported");
-		assert_eq!(
-			factory_calls.load(Ordering::SeqCst),
-			0,
-			"explicit authority request {label} must fail before provider factory activity"
-		);
+	let response = submit_turn_json(
+		state,
+		submit_turn_body("hello", None, Some(authority_request(&["safe_read"]))),
+	)
+	.await;
 
+	assert_eq!(response.status(), StatusCode::OK);
+	assert_eq!(factory_count.load(Ordering::SeqCst), 1);
+	let body = body_bytes(response).await;
+	assert!(
+		std::str::from_utf8(&body)
+			.unwrap()
+			.contains("turn_completed")
+	);
+	let session_id = session_id_from_sse_body(&body);
+
+	let events = read_all_session_events(&server.client(), &session_id).await;
+	let catalogs = raw_event_payloads_of_type(&events, RawEventType::ToolCatalogPublished);
+	assert_eq!(catalogs.len(), 1);
+	assert_authority_decision(&catalogs[0], &["safe_read"], &["safe_read"], &["safe_read"]);
+	assert_eq!(recorded_catalog_names(&catalog_log, 0), vec![
+		"search_files",
+		"read",
+		"find",
+		"grep",
+		"list_dir"
+	]);
+	cleanup_workspace(&workspace);
+}
+
+#[tokio::test]
+async fn explicit_empty_authority_is_accepted_with_zero_executable_tools() {
+	let server = TestServer::start("tool-authority-empty").await;
+	let (state, factory_count, catalog_log, workspace) =
+		authority_state(&server, "tool-authority-empty", vec![authority_final_round("ok")]);
+
+	let response =
+		submit_turn_json(state, submit_turn_body("hello", None, Some(authority_request(&[])))).await;
+
+	assert_eq!(response.status(), StatusCode::OK);
+	assert_eq!(factory_count.load(Ordering::SeqCst), 1);
+	let body = body_bytes(response).await;
+	let session_id = session_id_from_sse_body(&body);
+	let events = read_all_session_events(&server.client(), &session_id).await;
+	let catalogs = raw_event_payloads_of_type(&events, RawEventType::ToolCatalogPublished);
+	assert_eq!(catalogs.len(), 1);
+	assert_authority_decision(&catalogs[0], &[], &["safe_read"], &[]);
+	assert!(recorded_catalog_names(&catalog_log, 0).is_empty());
+	cleanup_workspace(&workspace);
+}
+
+#[tokio::test]
+async fn broader_authority_under_default_ceiling_is_denied_before_provider_or_session_activity() {
+	let server = TestServer::start("tool-authority-denied").await;
+	let (state, factory_count, catalog_log, workspace) =
+		authority_state(&server, "tool-authority-denied", vec![authority_final_round(
+			"should-not-run",
+		)]);
+
+	let response = submit_turn_json(
+		state,
+		submit_turn_body(
+			"hello",
+			None,
+			Some(authority_request(&["safe_read", "workspace_mutation"])),
+		),
+	)
+	.await;
+
+	assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+	assert_eq!(factory_count.load(Ordering::SeqCst), 0);
+	assert!(
+		catalog_log
+			.lock()
+			.expect("authority catalog log mutex")
+			.is_empty()
+	);
+	let body: serde_json::Value = serde_json::from_slice(&body_bytes(response).await).unwrap();
+	assert_eq!(body["code"], "kernel_rpc.tool_authority_denied");
+	assert!(!body.to_string().contains(SENTINEL_ANTHROPIC_KEY));
+	cleanup_workspace(&workspace);
+}
+
+#[tokio::test]
+async fn nondefault_ceiling_accepts_broader_request_without_creating_new_executors() {
+	let server = TestServer::start("tool-authority-nondefault-ceiling").await;
+	let (state, factory_count, catalog_log, workspace) =
+		authority_state(&server, "tool-authority-nondefault-ceiling", vec![authority_final_round(
+			"ok",
+		)]);
+	let state = state.with_trusted_tool_authority_ceiling(vec![
+		ToolAuthorityClassV0::SafeRead,
+		ToolAuthorityClassV0::WorkspaceMutation,
+	]);
+
+	let response = submit_turn_json(
+		state,
+		submit_turn_body(
+			"hello",
+			None,
+			Some(authority_request(&["safe_read", "workspace_mutation"])),
+		),
+	)
+	.await;
+
+	assert_eq!(response.status(), StatusCode::OK);
+	assert_eq!(factory_count.load(Ordering::SeqCst), 1);
+	let body = body_bytes(response).await;
+	let session_id = session_id_from_sse_body(&body);
+	let events = read_all_session_events(&server.client(), &session_id).await;
+	let catalogs = raw_event_payloads_of_type(&events, RawEventType::ToolCatalogPublished);
+	assert_eq!(catalogs.len(), 1);
+	assert_authority_decision(
+		&catalogs[0],
+		&["safe_read", "workspace_mutation"],
+		&["safe_read", "workspace_mutation"],
+		&["safe_read", "workspace_mutation"],
+	);
+	assert_eq!(recorded_catalog_names(&catalog_log, 0), vec![
+		"search_files",
+		"read",
+		"find",
+		"grep",
+		"list_dir"
+	]);
+	cleanup_workspace(&workspace);
+}
+
+#[tokio::test]
+async fn absent_and_explicit_null_tool_authority_preserve_default_path_without_conditional_decision()
+ {
+	for (label, tool_authority) in [("absent", None), ("null", Some(serde_json::Value::Null))] {
+		let server = TestServer::start(&format!("tool-authority-{label}")).await;
+		let (state, factory_count, _catalog_log, workspace) =
+			authority_state(&server, &format!("tool-authority-{label}"), vec![authority_final_round(
+				"ok",
+			)]);
+
+		let response = submit_turn_json(state, submit_turn_body("hello", None, tool_authority)).await;
+
+		assert_eq!(response.status(), StatusCode::OK);
+		assert_eq!(factory_count.load(Ordering::SeqCst), 1);
+		let body = body_bytes(response).await;
+		let session_id = session_id_from_sse_body(&body);
+		let events = read_all_session_events(&server.client(), &session_id).await;
+		let catalogs = raw_event_payloads_of_type(&events, RawEventType::ToolCatalogPublished);
+		assert_eq!(catalogs.len(), 1);
+		assert!(authority_decision_payload(&catalogs[0]).is_none());
 		cleanup_workspace(&workspace);
 	}
 }
 
 #[tokio::test]
-async fn absent_tool_authority_preserves_existing_submit_turn_path() {
-	let server = TestServer::start("absent-tool-authority").await;
-	let workspace = seed_workspace("absent-tool-authority");
-	let factory_calls = Arc::new(AtomicU64::new(0));
-	let state = counted_scripted_state(
-		server.client(),
-		workspace.clone(),
-		vec![ScriptedRound::Final { text: "accepted".to_owned(), summary: "accepted".to_owned() }],
-		factory_calls.clone(),
-	);
-	let router = build_router(state);
-	let request = Request::builder()
-		.method("POST")
-		.uri("/v0/turns")
-		.header("content-type", "application/json")
-		.body(Body::from(serde_json::json!({ "user_text": "hello" }).to_string()))
-		.expect("build absent authority request");
+async fn continuation_turn_may_narrow_authority_without_inherited_widening() {
+	let server = TestServer::start("tool-authority-continuation-narrow").await;
+	let (state, factory_count, _catalog_log, workspace) =
+		authority_state(&server, "tool-authority-continuation-narrow", vec![
+			authority_final_round("first"),
+			authority_final_round("second"),
+		]);
 
-	let response = router
-		.oneshot(request)
-		.await
-		.expect("router accepts absent authority request");
-	assert_eq!(response.status(), StatusCode::OK);
-	let body = body_bytes(response).await;
-	assert!(
-		String::from_utf8(body)
-			.expect("sse body is utf8")
-			.contains("event: kernel_frame"),
-		"accepted absent authority path must stream kernel frames"
-	);
-	assert_eq!(factory_calls.load(Ordering::SeqCst), 1);
+	let first = submit_turn_json(
+		state.clone(),
+		submit_turn_body("first", None, Some(authority_request(&["safe_read"]))),
+	)
+	.await;
+	assert_eq!(first.status(), StatusCode::OK);
+	let first_body = body_bytes(first).await;
+	let session_id = session_id_from_sse_body(&first_body);
 
+	let second = submit_turn_json(
+		state,
+		submit_turn_body("second", Some(&session_id), Some(authority_request(&[]))),
+	)
+	.await;
+
+	assert_eq!(second.status(), StatusCode::OK);
+	assert_eq!(factory_count.load(Ordering::SeqCst), 2);
+	let events = read_all_session_events(&server.client(), &session_id).await;
+	let catalogs = raw_event_payloads_of_type(&events, RawEventType::ToolCatalogPublished);
+	assert_eq!(catalogs.len(), 2);
+	assert_authority_decision(&catalogs[0], &["safe_read"], &["safe_read"], &["safe_read"]);
+	assert_authority_decision(&catalogs[1], &[], &["safe_read"], &[]);
+	cleanup_workspace(&workspace);
+}
+
+#[tokio::test]
+async fn duplicate_authority_class_request_is_denied_before_provider_activity() {
+	let server = TestServer::start("tool-authority-duplicate-denied").await;
+	let (state, factory_count, _catalog_log, workspace) =
+		authority_state(&server, "tool-authority-duplicate-denied", vec![authority_final_round(
+			"should-not-run",
+		)]);
+
+	let response = submit_turn_json(
+		state,
+		submit_turn_body("hello", None, Some(authority_request(&["safe_read", "safe_read"]))),
+	)
+	.await;
+
+	assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+	assert_eq!(factory_count.load(Ordering::SeqCst), 0);
+	let body: serde_json::Value = serde_json::from_slice(&body_bytes(response).await).unwrap();
+	assert_eq!(body["code"], "kernel_rpc.tool_authority_denied");
 	cleanup_workspace(&workspace);
 }
 

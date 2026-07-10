@@ -10,6 +10,7 @@ use axum::{
 	Router,
 	routing::{get, post},
 };
+use successor_protocol::tool_catalog::ToolAuthorityClassV0;
 
 use crate::{
 	id_factory::{Clock, IdFactory},
@@ -33,22 +34,24 @@ use crate::{
 /// [`crate::runner::require_provider_credential`]) and Dissent ruling 5's
 /// "fresh local state" requirement.
 pub struct AppState<P: ProviderExecutor + Send + Sync + 'static> {
-	pub(crate) platform:         KernelPlatformClient,
-	pub(crate) ids:              Arc<dyn IdFactory>,
-	pub(crate) clock:            Arc<dyn Clock>,
-	pub(crate) workspace_root:   PathBuf,
-	pub(crate) provider_slot:    ProviderSlot,
+	pub(crate) platform: KernelPlatformClient,
+	pub(crate) ids: Arc<dyn IdFactory>,
+	pub(crate) clock: Arc<dyn Clock>,
+	pub(crate) workspace_root: PathBuf,
+	pub(crate) provider_slot: ProviderSlot,
+	pub(crate) trusted_tool_authority_ceiling: Vec<ToolAuthorityClassV0>,
 	pub(crate) provider_factory: Arc<dyn Fn() -> Result<P, TurnFailure> + Send + Sync>,
 }
 
 impl<P: ProviderExecutor + Send + Sync + 'static> Clone for AppState<P> {
 	fn clone(&self) -> Self {
 		Self {
-			platform:         self.platform.clone(),
-			ids:              Arc::clone(&self.ids),
-			clock:            Arc::clone(&self.clock),
-			workspace_root:   self.workspace_root.clone(),
-			provider_slot:    self.provider_slot,
+			platform: self.platform.clone(),
+			ids: Arc::clone(&self.ids),
+			clock: Arc::clone(&self.clock),
+			workspace_root: self.workspace_root.clone(),
+			provider_slot: self.provider_slot,
+			trusted_tool_authority_ceiling: self.trusted_tool_authority_ceiling.clone(),
 			provider_factory: Arc::clone(&self.provider_factory),
 		}
 	}
@@ -73,8 +76,17 @@ impl<P: ProviderExecutor + Send + Sync + 'static> AppState<P> {
 			clock,
 			workspace_root: workspace_root.into(),
 			provider_slot,
+			trusted_tool_authority_ceiling: vec![ToolAuthorityClassV0::SafeRead],
 			provider_factory: Arc::new(provider_factory),
 		}
+	}
+
+	pub fn with_trusted_tool_authority_ceiling(
+		mut self,
+		trusted_tool_authority_ceiling: impl Into<Vec<ToolAuthorityClassV0>>,
+	) -> Self {
+		self.trusted_tool_authority_ceiling = trusted_tool_authority_ceiling.into();
+		self
 	}
 }
 

@@ -16,6 +16,7 @@ use successor_protocol::{
 	error::ErrorEnvelopeV0,
 	ids::{ErrorId, RequestId, SessionId},
 	platform_api::{CreateSessionResponseV0, EventPageV0, SessionSnapshotV0},
+	tool_catalog::ToolAuthorityRequestV0,
 };
 
 use crate::{platform_error::PlatformClientError, runner::TurnInput, state_machine::TurnFailure};
@@ -39,8 +40,8 @@ pub type CreateSessionResponse = CreateSessionResponseV0;
 /// the platform's own snapshot DTO, unchanged.
 pub type SessionAttachResponse = SessionSnapshotV0;
 
-/// Request body for `POST /v0/turns`. Converts directly into the accepted C7
-/// [`TurnInput`]; carries no field `TurnInput` does not already have.
+/// Request body for `POST /v0/turns`. Converts into the accepted C7
+/// [`TurnInput`] while keeping authority negotiation route-local during F3a.
 ///
 /// `session_id` is optional (contract §9/§11 continuation amendment, ruling
 /// 270): absent, `POST /v0/turns` starts a fresh runner-owned session,
@@ -58,6 +59,8 @@ pub struct SubmitTurnRequest {
 	pub assembly_query: Option<String>,
 	#[serde(default)]
 	pub session_id:     Option<SessionId>,
+	#[serde(default)]
+	pub tool_authority: Option<ToolAuthorityRequestV0>,
 }
 
 impl From<SubmitTurnRequest> for TurnInput {

@@ -139,6 +139,30 @@ fn scripted_state(
 	)
 }
 
+fn counted_scripted_state(
+	platform: KernelPlatformClient,
+	workspace_root: std::path::PathBuf,
+	rounds: Vec<ScriptedRound>,
+	factory_calls: Arc<AtomicU64>,
+) -> AppState<ScriptedProviderExecutor> {
+	AppState::new(
+		platform,
+		Arc::new(RealIdFactory::new()),
+		Arc::new(RealClock),
+		workspace_root,
+		ProviderSlot::Anthropic,
+		move || {
+			factory_calls.fetch_add(1, Ordering::SeqCst);
+			Ok(ScriptedProviderExecutor::new(
+				"scripted",
+				ProviderApiShapeV0::AnthropicMessages,
+				"scripted-model",
+				rounds.clone(),
+			))
+		},
+	)
+}
+
 /// Wraps a [`ScriptedProviderExecutor`] with a two-party rendezvous so two
 /// concurrent turns can be driven to genuinely overlap inside
 /// `execute_turn` — a deterministic barrier, not a sleep — exercising the
@@ -395,6 +419,92 @@ async fn malformed_request_bodies_are_rejected_with_a_kernel_rpc_error_envelope(
 			.expect("error body is a valid ErrorEnvelopeV0");
 		assert_eq!(envelope.code, "kernel_rpc.malformed_request");
 	}
+
+	cleanup_workspace(&workspace);
+}
+
+#[tokio::test]
+async fn explicit_tool_authority_requests_are_rejected_before_provider_activity() {
+	for (label, classes) in [
+		("explicit-safe-read", serde_json::json!(["safe_read"])),
+		("explicit-broader", serde_json::json!(["safe_read", "workspace_mutation", "local_process"])),
+	] {
+		let server = TestServer::start(label).await;
+		let workspace = seed_workspace(label);
+		let factory_calls = Arc::new(AtomicU64::new(0));
+		let state = counted_scripted_state(
+			server.client(),
+			workspace.clone(),
+			vec![ScriptedRound::Final {
+				text:    "provider must not run".to_owned(),
+				summary: "provider must not run".to_owned(),
+			}],
+			factory_calls.clone(),
+		);
+		let router = build_router(state);
+		let request = Request::builder()
+			.method("POST")
+			.uri("/v0/turns")
+			.header("content-type", "application/json")
+			.body(Body::from(
+				serde_json::json!({
+					"user_text": "hello",
+					"tool_authority": { "classes": classes }
+				})
+				.to_string(),
+			))
+			.expect("build explicit authority request");
+
+		let response = router
+			.oneshot(request)
+			.await
+			.expect("router rejects explicit authority without panicking");
+		assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+		let envelope: ErrorEnvelopeV0 = serde_json::from_slice(&body_bytes(response).await)
+			.expect("error body is a valid ErrorEnvelopeV0");
+		assert_eq!(envelope.code, "kernel_rpc.tool_authority_unsupported");
+		assert_eq!(
+			factory_calls.load(Ordering::SeqCst),
+			0,
+			"explicit authority request {label} must fail before provider factory activity"
+		);
+
+		cleanup_workspace(&workspace);
+	}
+}
+
+#[tokio::test]
+async fn absent_tool_authority_preserves_existing_submit_turn_path() {
+	let server = TestServer::start("absent-tool-authority").await;
+	let workspace = seed_workspace("absent-tool-authority");
+	let factory_calls = Arc::new(AtomicU64::new(0));
+	let state = counted_scripted_state(
+		server.client(),
+		workspace.clone(),
+		vec![ScriptedRound::Final { text: "accepted".to_owned(), summary: "accepted".to_owned() }],
+		factory_calls.clone(),
+	);
+	let router = build_router(state);
+	let request = Request::builder()
+		.method("POST")
+		.uri("/v0/turns")
+		.header("content-type", "application/json")
+		.body(Body::from(serde_json::json!({ "user_text": "hello" }).to_string()))
+		.expect("build absent authority request");
+
+	let response = router
+		.oneshot(request)
+		.await
+		.expect("router accepts absent authority request");
+	assert_eq!(response.status(), StatusCode::OK);
+	let body = body_bytes(response).await;
+	assert!(
+		String::from_utf8(body)
+			.expect("sse body is utf8")
+			.contains("event: kernel_frame"),
+		"accepted absent authority path must stream kernel frames"
+	);
+	assert_eq!(factory_calls.load(Ordering::SeqCst), 1);
 
 	cleanup_workspace(&workspace);
 }
@@ -899,6 +1009,7 @@ fn submit_turn_request_converts_into_a_turn_input() {
 		user_text:      "hello".to_owned(),
 		assembly_query: Some("hello, but override".to_owned()),
 		session_id:     None,
+		tool_authority: None,
 	};
 	let input: successor_kernel::runner::TurnInput = request.into();
 	assert_eq!(input.user_text, "hello");

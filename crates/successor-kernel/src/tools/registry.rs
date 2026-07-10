@@ -1,8 +1,10 @@
-use std::path::Path;
+use std::{collections::HashSet, path::Path};
 
 use serde_json::{Value as WireJson, json};
 use successor_protocol::{
-	artifact::ArtifactHash, raw_event::RawEventArtifactRef, tool_catalog::ToolStatusV0,
+	artifact::ArtifactHash,
+	raw_event::RawEventArtifactRef,
+	tool_catalog::{ToolAuthorityClassV0, ToolAuthorityRequestV0, ToolStatusV0},
 };
 
 use super::{catalog, find, grep, list_dir, read, search_files};
@@ -33,6 +35,62 @@ const EXECUTABLE_TOOLS: &[ExecutableTool] = &[
 
 pub const fn slice0_registry() -> ToolRegistry {
 	ToolRegistry
+}
+
+#[rustfmt::skip]
+const AUTHORITY_CANONICAL_ORDER: &[ToolAuthorityClassV0] = &[
+	ToolAuthorityClassV0::SafeRead,
+	ToolAuthorityClassV0::WorkspaceMutation,
+	ToolAuthorityClassV0::LocalProcess,
+];
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ToolAuthorityResolutionError {
+	DuplicateClass { class: ToolAuthorityClassV0 },
+	ClassOutsideTrustedCeiling { class: ToolAuthorityClassV0 },
+}
+
+impl std::fmt::Display for ToolAuthorityResolutionError {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		match self {
+			Self::DuplicateClass { class } => {
+				write!(f, "duplicate requested tool authority class `{class}`")
+			},
+			Self::ClassOutsideTrustedCeiling { class } => {
+				write!(f, "requested tool authority class `{class}` exceeds trusted ceiling")
+			},
+		}
+	}
+}
+
+impl std::error::Error for ToolAuthorityResolutionError {}
+
+pub fn resolve_tool_authority_classes(
+	request: Option<&ToolAuthorityRequestV0>,
+	trusted_ceiling: &[ToolAuthorityClassV0],
+) -> Result<Vec<ToolAuthorityClassV0>, ToolAuthorityResolutionError> {
+	let requested =
+		request.map_or(&[ToolAuthorityClassV0::SafeRead][..], |request| request.classes.as_slice());
+
+	let mut seen = HashSet::new();
+	for class in requested {
+		if !seen.insert(*class) {
+			return Err(ToolAuthorityResolutionError::DuplicateClass { class: *class });
+		}
+	}
+
+	let ceiling: HashSet<ToolAuthorityClassV0> = trusted_ceiling.iter().copied().collect();
+	for class in requested {
+		if !ceiling.contains(class) {
+			return Err(ToolAuthorityResolutionError::ClassOutsideTrustedCeiling { class: *class });
+		}
+	}
+
+	Ok(AUTHORITY_CANONICAL_ORDER
+		.iter()
+		.copied()
+		.filter(|class| seen.contains(class))
+		.collect())
 }
 
 impl ToolRegistry {
@@ -210,4 +268,102 @@ fn execute_grep(workspace_root: &Path, arguments: &WireJson) -> Result<ToolExecu
 		),
 		provider_result_text,
 	})
+}
+
+#[cfg(test)]
+mod tests {
+	use successor_protocol::tool_catalog::{ToolAuthorityClassV0, ToolAuthorityRequestV0};
+
+	use super::{ToolAuthorityResolutionError, resolve_tool_authority_classes};
+
+	const SAFE_READ_CEILING: &[ToolAuthorityClassV0] = &[ToolAuthorityClassV0::SafeRead];
+	const FULL_CEILING: &[ToolAuthorityClassV0] = &[
+		ToolAuthorityClassV0::SafeRead,
+		ToolAuthorityClassV0::WorkspaceMutation,
+		ToolAuthorityClassV0::LocalProcess,
+	];
+
+	#[test]
+	fn authority_absence_canonicalizes_to_safe_read() {
+		assert_eq!(
+			resolve_tool_authority_classes(None, SAFE_READ_CEILING).expect("absent request resolves"),
+			vec![ToolAuthorityClassV0::SafeRead]
+		);
+	}
+
+	#[test]
+	fn explicit_safe_read_within_ceiling_resolves() {
+		let request = ToolAuthorityRequestV0 { classes: vec![ToolAuthorityClassV0::SafeRead] };
+		assert_eq!(
+			resolve_tool_authority_classes(Some(&request), SAFE_READ_CEILING)
+				.expect("safe_read request resolves"),
+			vec![ToolAuthorityClassV0::SafeRead]
+		);
+	}
+
+	#[test]
+	fn explicit_request_is_deterministically_canonical_ordered() {
+		let request = ToolAuthorityRequestV0 {
+			classes: vec![
+				ToolAuthorityClassV0::LocalProcess,
+				ToolAuthorityClassV0::SafeRead,
+				ToolAuthorityClassV0::WorkspaceMutation,
+			],
+		};
+		assert_eq!(
+			resolve_tool_authority_classes(Some(&request), FULL_CEILING)
+				.expect("full request resolves"),
+			vec![
+				ToolAuthorityClassV0::SafeRead,
+				ToolAuthorityClassV0::WorkspaceMutation,
+				ToolAuthorityClassV0::LocalProcess,
+			]
+		);
+	}
+
+	#[test]
+	fn duplicate_requested_classes_are_rejected_not_deduped() {
+		let request = ToolAuthorityRequestV0 {
+			classes: vec![ToolAuthorityClassV0::SafeRead, ToolAuthorityClassV0::SafeRead],
+		};
+		assert_eq!(
+			resolve_tool_authority_classes(Some(&request), FULL_CEILING),
+			Err(ToolAuthorityResolutionError::DuplicateClass {
+				class: ToolAuthorityClassV0::SafeRead,
+			})
+		);
+	}
+
+	#[test]
+	fn request_not_subset_of_ceiling_is_rejected() {
+		let request =
+			ToolAuthorityRequestV0 { classes: vec![ToolAuthorityClassV0::WorkspaceMutation] };
+		assert_eq!(
+			resolve_tool_authority_classes(Some(&request), SAFE_READ_CEILING),
+			Err(ToolAuthorityResolutionError::ClassOutsideTrustedCeiling {
+				class: ToolAuthorityClassV0::WorkspaceMutation,
+			})
+		);
+	}
+
+	#[test]
+	fn empty_explicit_authority_request_resolves_to_no_tools() {
+		let request = ToolAuthorityRequestV0 { classes: Vec::new() };
+		assert_eq!(
+			resolve_tool_authority_classes(Some(&request), SAFE_READ_CEILING)
+				.expect("empty explicit request is valid"),
+			Vec::<ToolAuthorityClassV0>::new()
+		);
+	}
+
+	#[test]
+	fn request_never_establishes_its_own_ceiling() {
+		let request = ToolAuthorityRequestV0 { classes: vec![ToolAuthorityClassV0::LocalProcess] };
+		assert_eq!(
+			resolve_tool_authority_classes(Some(&request), &[ToolAuthorityClassV0::SafeRead]),
+			Err(ToolAuthorityResolutionError::ClassOutsideTrustedCeiling {
+				class: ToolAuthorityClassV0::LocalProcess,
+			})
+		);
+	}
 }

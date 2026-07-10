@@ -10,6 +10,38 @@ use serde::{Deserialize, Serialize};
 
 pub const TOOL_CATALOG_SCHEMA_VERSION: &str = "kernel.tool_catalog.v0";
 
+#[derive(
+	Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolAuthorityClassV0 {
+	SafeRead,
+	WorkspaceMutation,
+	LocalProcess,
+}
+
+impl ToolAuthorityClassV0 {
+	pub const fn as_str(self) -> &'static str {
+		match self {
+			Self::SafeRead => "safe_read",
+			Self::WorkspaceMutation => "workspace_mutation",
+			Self::LocalProcess => "local_process",
+		}
+	}
+}
+
+impl std::fmt::Display for ToolAuthorityClassV0 {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		f.write_str(self.as_str())
+	}
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ToolAuthorityRequestV0 {
+	pub classes: Vec<ToolAuthorityClassV0>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolStatusV0 {
@@ -138,6 +170,62 @@ mod tests {
 		assert!(
 			serde_json::from_value::<ToolCatalogV0>(value).is_err(),
 			"tool catalog must reject unknown tool definition fields"
+		);
+	}
+
+	#[test]
+	fn tool_authority_class_wire_strings_are_stable() {
+		assert_eq!(
+			serde_json::to_value(ToolAuthorityClassV0::SafeRead).expect("serialize safe_read"),
+			serde_json::json!("safe_read")
+		);
+		assert_eq!(
+			serde_json::to_value(ToolAuthorityClassV0::WorkspaceMutation)
+				.expect("serialize workspace_mutation"),
+			serde_json::json!("workspace_mutation")
+		);
+		assert_eq!(
+			serde_json::to_value(ToolAuthorityClassV0::LocalProcess).expect("serialize local_process"),
+			serde_json::json!("local_process")
+		);
+	}
+
+	#[test]
+	fn tool_authority_request_rejects_unknown_fields_and_classes() {
+		let unknown_field = serde_json::json!({
+			"classes": ["safe_read"],
+			"provider_policy": "sk-not-real"
+		});
+		assert!(
+			serde_json::from_value::<ToolAuthorityRequestV0>(unknown_field).is_err(),
+			"tool authority request must reject unknown fields"
+		);
+
+		let unknown_class = serde_json::json!({ "classes": ["safe_read", "network"] });
+		assert!(
+			serde_json::from_value::<ToolAuthorityRequestV0>(unknown_class).is_err(),
+			"tool authority request must reject unknown classes at the serde boundary"
+		);
+	}
+
+	#[test]
+	fn tool_authority_request_round_trips_and_generates_schema() {
+		let request = ToolAuthorityRequestV0 {
+			classes: vec![ToolAuthorityClassV0::SafeRead, ToolAuthorityClassV0::LocalProcess],
+		};
+
+		let value = serde_json::to_value(&request).expect("serialize authority request");
+		assert_eq!(value, serde_json::json!({ "classes": ["safe_read", "local_process"] }));
+		let decoded: ToolAuthorityRequestV0 =
+			serde_json::from_value(value).expect("deserialize authority request");
+		assert_eq!(decoded, request);
+
+		let schema = schemars::schema_for!(ToolAuthorityRequestV0);
+		let schema_value = serde_json::to_value(schema).expect("schema is json");
+		assert_eq!(schema_value["type"], "object");
+		assert!(
+			schema_value["properties"].get("classes").is_some(),
+			"generated schema must expose the stable class collection field"
 		);
 	}
 }

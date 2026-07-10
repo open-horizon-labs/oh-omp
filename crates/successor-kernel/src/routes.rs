@@ -186,6 +186,20 @@ pub async fn submit_turn<P: ProviderExecutor + Send + Sync + 'static>(
 				.into_response();
 		},
 	};
+	if request.tool_authority.is_some() {
+		return KernelRpcError::new(
+			StatusCode::UNPROCESSABLE_ENTITY,
+			build_envelope(
+				state.ids.error_id(),
+				&correlation_id,
+				"kernel_rpc.tool_authority_unsupported",
+				"explicit tool_authority requests are not supported by this kernel version",
+				false,
+				false,
+			),
+		)
+		.into_response();
+	}
 
 	let provider = match (state.provider_factory)() {
 		Ok(provider) => provider,

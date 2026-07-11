@@ -45,6 +45,10 @@ globset = { version = "0.4", default-features = false }
 walkdir = "2"
 axum = "0.8"
 tokio-stream = { version = "0.1", features = ["sync"] }
+# I2 bounded local-process executor: direct correctness dependencies for process-group
+# termination and incremental full-stream SHA-256 capture.
+libc = "0.2"
+sha2 = "0.10"
 
 [dev-dependencies]
 # Test-only: binds the accepted platform router (successor-context-platform::http::build_router)

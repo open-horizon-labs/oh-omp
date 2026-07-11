@@ -32,6 +32,7 @@
 //!    arguments, environment variables, or the process's current working
 //!    directory.
 
+pub mod bash;
 pub mod edit;
 pub mod mutation;
 

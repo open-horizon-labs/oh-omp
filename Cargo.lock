@@ -4461,11 +4461,13 @@ version = "13.19.0"
 dependencies = [
  "axum",
  "globset",
+ "libc",
  "regex",
  "reqwest",
  "schemars",
  "serde",
  "serde_json",
+ "sha2",
  "successor-context-platform",
  "successor-protocol",
  "thiserror 2.0.18",

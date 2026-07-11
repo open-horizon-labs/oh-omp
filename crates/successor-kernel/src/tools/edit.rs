@@ -106,7 +106,8 @@ fn resolve_ranges(source: &[u8], edits: &[EditRange]) -> Result<Vec<ByteRange>, 
 		}
 		ranges.push(ByteRange { start, end, edit_index });
 	}
-	ranges.sort_by_key(|range| (range.start, range.end));
+	// The derived order pins same-coordinate application during reverse traversal.
+	ranges.sort();
 	for pair in ranges.windows(2) {
 		if ranges_conflict(pair[0], pair[1]) {
 			return Err(MutationRejection::OverlappingEdits);
@@ -144,21 +145,21 @@ fn position_to_offset(source: &[u8], position: EditPosition) -> Result<usize, Mu
 	Ok(offset)
 }
 
-const fn ranges_conflict(left: ByteRange, right: ByteRange) -> bool {
+fn ranges_conflict(left: ByteRange, right: ByteRange) -> bool {
 	if left.start == left.end && right.start == right.end {
 		return left.start == right.start;
 	}
 	if left.start == left.end {
-		let point_is_after_start = left.start >= right.start;
-		let point_is_before_end = left.start <= right.end;
-		return point_is_after_start && point_is_before_end;
+		return point_is_strictly_inside(left.start, right);
 	}
 	if right.start == right.end {
-		let point_is_after_start = right.start >= left.start;
-		let point_is_before_end = right.start <= left.end;
-		return point_is_after_start && point_is_before_end;
+		return point_is_strictly_inside(right.start, left);
 	}
 	left.start < right.end && right.start < left.end
+}
+
+fn point_is_strictly_inside(point: usize, range: ByteRange) -> bool {
+	point != range.start && (range.start..range.end).contains(&point)
 }
 
 fn apply_ranges(

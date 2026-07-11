@@ -107,6 +107,43 @@ fn edit_applies_original_byte_coordinates_preserving_crlf_and_hashes() {
 }
 
 #[test]
+fn edit_allows_boundary_insertions_in_deterministic_original_coordinate_order() {
+	let root = unique_temp_dir("edit-boundaries");
+	let before = b"abcdef";
+	let file = root.join("file.txt");
+	fs::write(&file, before).unwrap();
+
+	let receipt = edit::execute(
+		&root,
+		&edit_args(
+			"file.txt",
+			before,
+			json!([
+				edit_range(1, 4, 1, 4, "E"),
+				edit_range(1, 2, 1, 4, "R"),
+				edit_range(1, 2, 1, 2, "S"),
+			]),
+		),
+	)
+	.unwrap();
+	assert_eq!(fs::read(&file).unwrap(), b"abSREef");
+	assert_eq!(receipt.edits_applied, Some(3));
+
+	for edits in [
+		json!([edit_range(1, 2, 1, 4, "R"), edit_range(1, 3, 1, 3, "I")]),
+		json!([edit_range(1, 2, 1, 2, "S"), edit_range(1, 2, 1, 2, "D")]),
+	] {
+		fs::write(&file, before).unwrap();
+		assert_eq!(
+			edit::execute(&root, &edit_args("file.txt", before, edits)).unwrap_err(),
+			MutationRejection::OverlappingEdits
+		);
+		assert_eq!(fs::read(&file).unwrap(), before);
+	}
+	fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn stale_edit_and_replace_leave_existing_bytes_unchanged() {
 	let root = unique_temp_dir("stale");
 	fs::write(root.join("file.txt"), "current").unwrap();

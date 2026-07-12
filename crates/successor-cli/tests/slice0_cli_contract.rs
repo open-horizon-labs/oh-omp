@@ -417,6 +417,384 @@ fn inspect_session_help_states_inspection_only_never_continuation() {
 }
 
 // ---------------------------------------------------------------------
+// `--allow-executable`: grammar validation, split_once('=') path-with-'='
+// preservation, deterministic pre-filesystem-probing duplicate rejection,
+// and mutual exclusion with --kernel-url in both orders. clap itself never
+// runs a fallible value-parser over this flag (a `Vec<String>` field always
+// parses), because clap's own usage-error diagnostics echo an invalid raw
+// value back to the caller verbatim -- exactly what a path, logical name,
+// or embedded secret in this flag must never do. Every diagnostic below is
+// therefore generic and constructed in the client's bootstrap step, never
+// in `args.rs`. Filesystem/identity validation (nonexistent/nonregular/
+// nonexecutable) and bootstrap ordering against a real fixture executable
+// live in `slice0_cli_smoke.rs`, which can assert against a real compiled
+// binary.
+// ---------------------------------------------------------------------
+
+/// Removes the wrapped path on both normal test return and unwind (e.g. a
+/// failing `assert!` mid-test), so a fixture from one run can never survive
+/// to collide with a later run using an overlapping name.
+struct TempFixture(std::path::PathBuf);
+
+impl Drop for TempFixture {
+	fn drop(&mut self) {
+		let _ = std::fs::remove_file(&self.0);
+	}
+}
+
+/// A unique suffix for fixture filenames: a process-lifetime monotonic
+/// counter combined with the process id, so two fixtures created in the
+/// same test binary (even concurrently, on different threads) never
+/// collide, and repeated runs never collide with a lingering file from a
+/// prior run either.
+fn unique_fixture_suffix() -> String {
+	static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+	let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+	format!("{}-{n}", std::process::id())
+}
+
+#[test]
+fn ask_help_documents_the_allow_executable_flag() {
+	let output = run_cli(&["ask", "--help"], &[]);
+	assert_eq!(output.status, 0);
+	assert!(
+		output.stdout.contains("--allow-executable"),
+		"ask --help must document --allow-executable: {output:?}"
+	);
+}
+
+#[test]
+fn ask_accepts_a_well_formed_allow_executable_mapping_and_proceeds_past_grammar_validation() {
+	let mapping = format!("helper={}", cli_bin());
+	let output = run_cli(
+		&[
+			"ask",
+			"--workspace-root",
+			env!("CARGO_MANIFEST_DIR"),
+			"--prompt",
+			"hi",
+			"--allow-executable",
+			&mapping,
+		],
+		&[],
+	);
+	assert_eq!(
+		output.status, 3,
+		"a well-formed mapping to a real executable must clear grammar validation and reach the \
+		 existing MEMEX_LICENSE bootstrap failure, not a usage error: {output:?}"
+	);
+	assert!(
+		output.stderr.contains("MEMEX_LICENSE"),
+		"must fail at the pre-existing bootstrap step, not at --allow-executable parsing: {output:?}"
+	);
+}
+
+#[test]
+fn ask_accepts_repeated_allow_executable_flags_with_distinct_logical_names() {
+	let one = format!("helper_one={}", cli_bin());
+	let two = format!("helper_two={}", cli_bin());
+	let output = run_cli(
+		&[
+			"ask",
+			"--workspace-root",
+			env!("CARGO_MANIFEST_DIR"),
+			"--prompt",
+			"hi",
+			"--allow-executable",
+			&one,
+			"--allow-executable",
+			&two,
+		],
+		&[],
+	);
+	assert_eq!(
+		output.status, 3,
+		"two distinct logical names mapped to the same real executable must both clear grammar \
+		 validation and reach the pre-existing bootstrap failure: {output:?}"
+	);
+}
+
+#[test]
+#[cfg(unix)]
+fn ask_accepts_a_path_containing_an_equals_sign_because_split_once_only_splits_the_first() {
+	let marker =
+		std::env::temp_dir().join(format!("d1-allow-exec-eq=marker-{}", unique_fixture_suffix()));
+	std::os::unix::fs::symlink(cli_bin(), &marker)
+		.expect("create a symlink fixture whose path contains a literal '='");
+	let _guard = TempFixture(marker.clone());
+	let mapping = format!("helper={}", marker.display());
+	let output = run_cli(
+		&[
+			"ask",
+			"--workspace-root",
+			env!("CARGO_MANIFEST_DIR"),
+			"--prompt",
+			"hi",
+			"--allow-executable",
+			&mapping,
+		],
+		&[],
+	);
+	assert_eq!(
+		output.status, 3,
+		"a path containing '=' after the first separator must survive split_once('=') intact and \
+		 reach the existing bootstrap failure, not a usage error caused by mis-splitting at the \
+		 wrong '=': {output:?}"
+	);
+}
+
+#[test]
+fn ask_rejects_allow_executable_missing_the_equals_separator() {
+	let output = run_cli(
+		&[
+			"ask",
+			"--workspace-root",
+			env!("CARGO_MANIFEST_DIR"),
+			"--prompt",
+			"hi",
+			"--allow-executable",
+			"no-equals-here",
+		],
+		&[],
+	);
+	assert_eq!(output.status, 2, "a value with no '=' must be a usage error: {output:?}");
+	assert!(
+		output.stderr.contains("no `=`"),
+		"the usage error must explain the expected <logical>=<path> grammar: {output:?}"
+	);
+}
+
+#[test]
+fn ask_rejects_allow_executable_with_an_empty_logical_name() {
+	let output = run_cli(
+		&[
+			"ask",
+			"--workspace-root",
+			env!("CARGO_MANIFEST_DIR"),
+			"--prompt",
+			"hi",
+			"--allow-executable",
+			"=/tmp/x",
+		],
+		&[],
+	);
+	assert_eq!(
+		output.status, 2,
+		"an empty logical name before '=' must be a usage error: {output:?}"
+	);
+	assert!(output.stderr.contains("non-empty logical name"), "{output:?}");
+}
+
+#[test]
+fn ask_rejects_allow_executable_with_an_empty_path() {
+	let output = run_cli(
+		&[
+			"ask",
+			"--workspace-root",
+			env!("CARGO_MANIFEST_DIR"),
+			"--prompt",
+			"hi",
+			"--allow-executable",
+			"logical=",
+		],
+		&[],
+	);
+	assert_eq!(output.status, 2, "an empty path after '=' must be a usage error: {output:?}");
+	assert!(output.stderr.contains("non-empty path"), "{output:?}");
+}
+
+#[test]
+fn ask_rejects_allow_executable_with_a_relative_path() {
+	let output = run_cli(
+		&[
+			"ask",
+			"--workspace-root",
+			env!("CARGO_MANIFEST_DIR"),
+			"--prompt",
+			"hi",
+			"--allow-executable",
+			"logical=relative/path",
+		],
+		&[],
+	);
+	assert_eq!(
+		output.status, 2,
+		"a relative path must be a usage error before any kernel or platform request: {output:?}"
+	);
+	assert!(output.stderr.contains("absolute path"), "{output:?}");
+}
+
+#[test]
+fn ask_rejects_duplicate_allow_executable_logical_names_before_filesystem_probing_without_leaking_them()
+ {
+	let output = run_cli(
+		&[
+			"ask",
+			"--workspace-root",
+			env!("CARGO_MANIFEST_DIR"),
+			"--prompt",
+			"hi",
+			"--allow-executable",
+			"sk-ant-dup-secret=/nonexistent/one-does-not-exist-secret-path",
+			"--allow-executable",
+			"sk-ant-dup-secret=/nonexistent/two-does-not-exist-secret-path",
+		],
+		&[],
+	);
+	assert_eq!(
+		output.status, 2,
+		"a repeated logical name must be rejected deterministically even though neither path exists \
+		 on disk, proving detection precedes filesystem probing: {output:?}"
+	);
+	assert!(output.stderr.contains("more than once"), "{output:?}");
+	assert!(
+		!output.stderr.contains("sk-ant-dup-secret") && !output.stderr.contains("secret-path"),
+		"neither the offending logical name nor either candidate path may reach stderr: {output:?}"
+	);
+}
+
+#[test]
+fn ask_rejects_allow_executable_combined_with_kernel_url() {
+	let output = run_cli(
+		&[
+			"ask",
+			"--workspace-root",
+			env!("CARGO_MANIFEST_DIR"),
+			"--prompt",
+			"hi",
+			"--allow-executable",
+			"logical=/tmp/does-not-matter",
+			"--kernel-url",
+			"http://127.0.0.1:1",
+		],
+		&[],
+	);
+	assert_eq!(output.status, 2, "--allow-executable must conflict with --kernel-url: {output:?}");
+	assert!(
+		output.stderr.contains("--allow-executable") && output.stderr.contains("--kernel-url"),
+		"the conflict error must name both flags: {output:?}"
+	);
+}
+
+#[test]
+fn ask_rejects_kernel_url_combined_with_allow_executable_in_the_opposite_order() {
+	let output = run_cli(
+		&[
+			"ask",
+			"--workspace-root",
+			env!("CARGO_MANIFEST_DIR"),
+			"--prompt",
+			"hi",
+			"--kernel-url",
+			"http://127.0.0.1:1",
+			"--allow-executable",
+			"logical=/tmp/does-not-matter",
+		],
+		&[],
+	);
+	assert_eq!(output.status, 2, "the conflict must hold regardless of flag order: {output:?}");
+	assert!(
+		output.stderr.contains("--allow-executable") && output.stderr.contains("--kernel-url"),
+		"the conflict error must name both flags: {output:?}"
+	);
+}
+
+#[test]
+fn ask_rejects_a_secret_looking_relative_allow_executable_path_without_leaking_it() {
+	let output = run_cli(
+		&[
+			"ask",
+			"--workspace-root",
+			env!("CARGO_MANIFEST_DIR"),
+			"--prompt",
+			"hi",
+			"--allow-executable",
+			"logical=relative/sk-ant-d1-contract-secret9f3c1a2b/path",
+		],
+		&[],
+	);
+	assert_eq!(
+		output.status, 2,
+		"a relative path must be a usage error before any kernel or platform request: {output:?}"
+	);
+	assert!(output.stderr.contains("absolute path"), "{output:?}");
+	assert!(
+		!output.stderr.contains("sk-ant-d1-contract-secret9f3c1a2b")
+			&& !output.stderr.contains("relative/sk-ant"),
+		"the raw path (and any secret-looking substring embedded in it) must never reach stderr, \
+		 because clap's own fallible value-parser was removed for exactly this reason: {output:?}"
+	);
+}
+
+#[test]
+fn ask_rejects_an_allow_executable_logical_name_containing_control_and_ansi_bytes_without_leaking_it()
+ {
+	// `evil\x1b[31mname\n` fails
+	// `successor_kernel::tools::bash::validate_logical_name`'s grammar (lowercase
+	// ascii letters/digits/'_'/'-' only), which `TrustedExecutable::new` checks
+	// before ever canonicalizing the path, so this never touches the filesystem
+	// either.
+	let mapping = "evil\u{1b}[31mname\n=/definitely/does/not/exist-control-bytes";
+	let output = run_cli(
+		&[
+			"ask",
+			"--workspace-root",
+			env!("CARGO_MANIFEST_DIR"),
+			"--prompt",
+			"hi",
+			"--allow-executable",
+			mapping,
+		],
+		&[],
+	);
+	assert_eq!(
+		output.status, 2,
+		"a logical name with control/ANSI bytes must fail grammar validation as a usage error: \
+		 {output:?}"
+	);
+	assert!(
+		!output.stderr.contains("evil") && !output.stderr.contains('\u{1b}'),
+		"the raw logical name, including its control/ANSI bytes, must never reach stderr: {output:?}"
+	);
+	assert!(
+		!output.stderr.contains("does/not/exist"),
+		"the path half of the mapping must not reach stderr either: {output:?}"
+	);
+}
+
+#[test]
+fn ask_rejects_kernel_url_combined_with_a_malformed_secret_looking_allow_executable_mapping() {
+	let output = run_cli(
+		&[
+			"ask",
+			"--workspace-root",
+			env!("CARGO_MANIFEST_DIR"),
+			"--prompt",
+			"hi",
+			"--kernel-url",
+			"http://127.0.0.1:1",
+			"--allow-executable",
+			"sk-ant-super-secret-token-no-equals-sign",
+		],
+		&[],
+	);
+	assert_eq!(
+		output.status, 2,
+		"the flag conflict must dominate even over a malformed value, because a `Vec<String>` field \
+		 always parses and clap's `conflicts_with` runs regardless of value content: {output:?}"
+	);
+	assert!(
+		output.stderr.contains("--allow-executable") && output.stderr.contains("--kernel-url"),
+		"the conflict error must name both flags: {output:?}"
+	);
+	assert!(
+		!output.stderr.contains("sk-ant-super-secret-token"),
+		"the malformed/secret-looking raw value must never reach stderr: proof that clap's own \
+		 fallible-value-parser echo path is no longer used for this flag: {output:?}"
+	);
+}
+
+// ---------------------------------------------------------------------
 // Statelessness: independent invocations write nothing under a controlled
 // HOME/user-dir, and behave identically (no hidden cross-invocation state).
 // ---------------------------------------------------------------------

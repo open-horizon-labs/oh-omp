@@ -22,6 +22,7 @@ use crate::{
 	routes,
 	runner::{AnthropicProviderExecutor, ProviderExecutor, require_provider_credential},
 	state_machine::TurnFailure,
+	tools::bash::TrustedExecutableAllowlist,
 };
 
 /// Shared application state for the kernel's local RPC/SSE surface.
@@ -40,6 +41,13 @@ pub struct AppState<P: ProviderExecutor + Send + Sync + 'static> {
 	pub(crate) workspace_root: PathBuf,
 	pub(crate) provider_slot: ProviderSlot,
 	pub(crate) trusted_tool_authority_ceiling: Vec<ToolAuthorityClassV0>,
+	/// Executables the local `bash` tool may trust under a stable logical
+	/// name once `local_process` authority is granted. Defaults empty in
+	/// every constructor; set explicitly via
+	/// [`AppState::with_trusted_executable_allowlist`]. Not yet read by any
+	/// route or the runner, and does not by itself grant `local_process`
+	/// authority — that remains gated by `trusted_tool_authority_ceiling`.
+	pub(crate) trusted_executable_allowlist: Arc<TrustedExecutableAllowlist>,
 	pub(crate) provider_factory: Arc<dyn Fn() -> Result<P, TurnFailure> + Send + Sync>,
 }
 
@@ -52,6 +60,7 @@ impl<P: ProviderExecutor + Send + Sync + 'static> Clone for AppState<P> {
 			workspace_root: self.workspace_root.clone(),
 			provider_slot: self.provider_slot,
 			trusted_tool_authority_ceiling: self.trusted_tool_authority_ceiling.clone(),
+			trusted_executable_allowlist: Arc::clone(&self.trusted_executable_allowlist),
 			provider_factory: Arc::clone(&self.provider_factory),
 		}
 	}
@@ -77,6 +86,7 @@ impl<P: ProviderExecutor + Send + Sync + 'static> AppState<P> {
 			workspace_root: workspace_root.into(),
 			provider_slot,
 			trusted_tool_authority_ceiling: vec![ToolAuthorityClassV0::SafeRead],
+			trusted_executable_allowlist: Arc::new(TrustedExecutableAllowlist::default()),
 			provider_factory: Arc::new(provider_factory),
 		}
 	}
@@ -86,6 +96,18 @@ impl<P: ProviderExecutor + Send + Sync + 'static> AppState<P> {
 		trusted_tool_authority_ceiling: impl Into<Vec<ToolAuthorityClassV0>>,
 	) -> Self {
 		self.trusted_tool_authority_ceiling = trusted_tool_authority_ceiling.into();
+		self
+	}
+
+	/// Sets the trusted-executable allowlist explicitly. Production wiring
+	/// (Wave D CLI composition) builds this from parsed `--allow-executable`
+	/// mappings before any entitlement, listener, provider, or network step;
+	/// test seams may inject a scripted allowlist directly.
+	pub fn with_trusted_executable_allowlist(
+		mut self,
+		allowlist: TrustedExecutableAllowlist,
+	) -> Self {
+		self.trusted_executable_allowlist = Arc::new(allowlist);
 		self
 	}
 }

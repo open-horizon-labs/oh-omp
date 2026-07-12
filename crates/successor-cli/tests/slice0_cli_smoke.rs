@@ -420,6 +420,219 @@ fn kernel_url_mode_authority_request_contains_no_ceiling() {
 	assert!(!body.contains("ceiling"), "remote mode must not serialize ceiling: {body}");
 }
 
+// ---------------------------------------------------------------------
+// `--allow-executable`: filesystem/identity validation and bootstrap
+// ordering against a real compiled binary. Grammar-only validation
+// (split_once('='), malformed/empty/relative, duplicate-name usage-error
+// shape, --kernel-url conflict both orders) lives in
+// `slice0_cli_contract.rs`; these tests instead prove ordering against the
+// real filesystem and the pre-existing local-bootstrap entitlement
+// failure.
+// ---------------------------------------------------------------------
+
+/// Removes the wrapped path on both normal test return and unwind (e.g. a
+/// failing `assert!` mid-test, or a panicking `.expect()` between fixture
+/// creation and the point a manual cleanup line would otherwise run), so a
+/// fixture from one run can never survive to collide with a later run.
+struct TempFixture(PathBuf);
+
+impl Drop for TempFixture {
+	fn drop(&mut self) {
+		let _ = std::fs::remove_file(&self.0);
+	}
+}
+
+/// A unique suffix for fixture filenames: a process-lifetime monotonic
+/// counter combined with the process id, so two fixtures created in the
+/// same test binary (even concurrently, on different threads) never
+/// collide, and repeated runs never collide with a lingering file from a
+/// prior run either.
+fn unique_fixture_suffix() -> String {
+	static COUNTER: AtomicU64 = AtomicU64::new(0);
+	let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+	format!("{}-{n}", std::process::id())
+}
+
+#[test]
+fn ask_rejects_a_nonexistent_allow_executable_path_before_entitlement() {
+	let output = run_cli(
+		&[
+			"ask",
+			"--workspace-root",
+			env!("CARGO_MANIFEST_DIR"),
+			"--prompt",
+			"hi",
+			"--allow-executable",
+			"helper=/definitely/does/not/exist-d2-cli-smoke",
+		],
+		&[],
+	);
+	let stderr = String::from_utf8_lossy(&output.stderr);
+	assert_eq!(
+		output.status, 2,
+		"a nonexistent --allow-executable path must fail before the MEMEX_LICENSE entitlement check \
+		 (which would otherwise exit 3), not after: {stderr}"
+	);
+	assert!(
+		!stderr.contains("MEMEX_LICENSE"),
+		"must not have reached the entitlement bootstrap step: {stderr}"
+	);
+}
+
+#[test]
+fn ask_rejects_a_nonregular_allow_executable_path_before_entitlement() {
+	let mapping = format!("helper={}", std::env::temp_dir().display());
+	let output = run_cli(
+		&[
+			"ask",
+			"--workspace-root",
+			env!("CARGO_MANIFEST_DIR"),
+			"--prompt",
+			"hi",
+			"--allow-executable",
+			&mapping,
+		],
+		&[],
+	);
+	let stderr = String::from_utf8_lossy(&output.stderr);
+	assert_eq!(
+		output.status, 2,
+		"a directory is not a regular file and must fail before entitlement: {stderr}"
+	);
+	assert!(
+		!stderr.contains("MEMEX_LICENSE"),
+		"must not have reached the entitlement bootstrap step: {stderr}"
+	);
+}
+
+#[test]
+#[cfg(unix)]
+fn ask_rejects_a_nonexecutable_allow_executable_file_before_entitlement() {
+	use std::os::unix::fs::PermissionsExt as _;
+
+	let path = std::env::temp_dir()
+		.join(format!("d2-cli-smoke-allow-exec-nonexec-{}", unique_fixture_suffix()));
+	std::fs::write(&path, b"not executable")
+		.expect("create a real regular non-executable fixture file");
+	let _guard = TempFixture(path.clone());
+	std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644))
+		.expect("clear the executable bits on the fixture file");
+	let mapping = format!("helper={}", path.display());
+	let output = run_cli(
+		&[
+			"ask",
+			"--workspace-root",
+			env!("CARGO_MANIFEST_DIR"),
+			"--prompt",
+			"hi",
+			"--allow-executable",
+			&mapping,
+		],
+		&[],
+	);
+	let stderr = String::from_utf8_lossy(&output.stderr);
+	assert_eq!(
+		output.status, 2,
+		"a real regular file without the executable bit set must fail before entitlement: {stderr}"
+	);
+	assert!(
+		!stderr.contains("MEMEX_LICENSE"),
+		"must not have reached the entitlement bootstrap step: {stderr}"
+	);
+}
+
+#[test]
+fn ask_rejects_duplicate_allow_executable_logical_names_before_entitlement() {
+	let one = format!("sk-ant-dup-secret={}", cli_bin());
+	let two = format!("sk-ant-dup-secret={}", cli_bin());
+	let output = run_cli(
+		&[
+			"ask",
+			"--workspace-root",
+			env!("CARGO_MANIFEST_DIR"),
+			"--prompt",
+			"hi",
+			"--allow-executable",
+			&one,
+			"--allow-executable",
+			&two,
+		],
+		&[],
+	);
+	let stderr = String::from_utf8_lossy(&output.stderr);
+	assert_eq!(
+		output.status, 2,
+		"a duplicate logical name must fail before the entitlement bootstrap step even when both \
+		 occurrences are the same valid real executable: {stderr}"
+	);
+	assert!(
+		!stderr.contains("MEMEX_LICENSE"),
+		"must not have reached the entitlement bootstrap step: {stderr}"
+	);
+	assert!(
+		!stderr.contains("sk-ant-dup-secret") && stderr.contains("more than once"),
+		"the duplicate must be caught by the deterministic pre-filesystem-probing check (not merely \
+		 as an incidental side effect of allowlist assembly), and the offending logical name must \
+		 never reach stderr: {stderr}"
+	);
+}
+
+#[test]
+fn ask_allows_a_valid_current_test_executable_mapping_to_reach_the_existing_entitlement_failure() {
+	let mapping = format!("helper={}", cli_bin());
+	let output = run_cli(
+		&[
+			"ask",
+			"--workspace-root",
+			env!("CARGO_MANIFEST_DIR"),
+			"--prompt",
+			"hi",
+			"--allow-executable",
+			&mapping,
+		],
+		&[],
+	);
+	let stderr = String::from_utf8_lossy(&output.stderr);
+	assert_eq!(
+		output.status, 3,
+		"a valid mapping to a real, executable, absolute path must clear --allow-executable \
+		 validation entirely and reach the pre-existing MEMEX_LICENSE bootstrap failure: {stderr}"
+	);
+	assert!(
+		stderr.contains("MEMEX_LICENSE"),
+		"must fail at the pre-existing bootstrap step, not at --allow-executable validation: \
+		 {stderr}"
+	);
+}
+
+#[test]
+fn ask_rejects_allow_executable_combined_with_kernel_url_without_probing_the_path() {
+	let output = run_cli(
+		&[
+			"ask",
+			"--workspace-root",
+			env!("CARGO_MANIFEST_DIR"),
+			"--prompt",
+			"hi",
+			"--kernel-url",
+			"http://127.0.0.1:1",
+			"--allow-executable",
+			"helper=/definitely/does/not/exist-d2-cli-smoke-external",
+		],
+		&[],
+	);
+	let stderr = String::from_utf8_lossy(&output.stderr);
+	assert_eq!(
+		output.status, 2,
+		"external-kernel mode conflicts with --allow-executable at clap parse time, before any \
+		 filesystem probing of the (deliberately nonexistent) path: {stderr}"
+	);
+	assert!(
+		stderr.contains("--kernel-url") && stderr.contains("--allow-executable"),
+		"the conflict error must name both flags: {stderr}"
+	);
+}
+
 #[test]
 fn local_bootstrap_ceiling_persists_nondefault_effective_authority_without_promoted_mutation_or_process_tools()
  {

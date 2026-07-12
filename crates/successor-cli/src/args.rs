@@ -175,6 +175,25 @@ pub struct AskArgs {
 	#[arg(long, value_enum, value_delimiter = ',', conflicts_with = "kernel_url")]
 	pub tool_authority_ceiling: Vec<CliToolAuthorityClass>,
 
+	/// Host-configured executable the in-process bootstrap may trust under
+	/// a stable logical name, repeatable as `--allow-executable
+	/// <logical>=<absolute path>`. Ask-only and only meaningful when this
+	/// invocation owns the ephemeral in-process kernel, so it conflicts
+	/// with `--kernel-url` (an external kernel's trusted executables are
+	/// fixed at its own construction, server-side, and this invocation
+	/// must never probe the local filesystem on its behalf). Collected as
+	/// opaque strings, not parsed here: a fallible clap value-parser would
+	/// echo the raw invalid input back to the caller in its own usage
+	/// error, which would leak exactly the value (a path, a logical name,
+	/// or an embedded secret) this flag exists to keep off the local
+	/// filesystem's trust boundary. Grammar, duplicate, and filesystem
+	/// validation instead happen in the client's bootstrap step, whose
+	/// diagnostics are constructed to never repeat the raw value. The
+	/// kernel stores the resulting allowlist; no route or tool consumes
+	/// it yet.
+	#[arg(long = "allow-executable", conflicts_with = "kernel_url")]
+	pub allow_executable: Vec<String>,
+
 	#[arg(long, value_enum, default_value_t = AskFormat::Text)]
 	pub format: AskFormat,
 

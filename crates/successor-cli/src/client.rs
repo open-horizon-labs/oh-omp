@@ -19,7 +19,7 @@
 //! server's [`tokio::task::JoinHandle`] is aborted when [`KernelHandle`]
 //! drops, so no ephemeral server outlives the command that started it.
 
-use std::{path::PathBuf, sync::Arc};
+use std::{collections::HashSet, path::PathBuf, sync::Arc};
 
 use futures_util::StreamExt as _;
 use reqwest::header::CONTENT_TYPE;
@@ -28,6 +28,7 @@ use successor_kernel::{
 	http::{AppState, serve},
 	id_factory::{Clock, IdFactory, RealClock, RealIdFactory},
 	platform_client::KernelPlatformClient,
+	tools::bash::{TrustedExecutable, TrustedExecutableAllowlist},
 };
 use successor_protocol::{
 	kernel_frame::{KernelFrameKindV0, KernelFrameV0},
@@ -51,6 +52,10 @@ const DEFAULT_MAX_TOKENS: u32 = 32768;
 /// Bucketed process exit codes (dissent ruling 6).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ExitBucket {
+	/// 2: CLI usage error caught after clap parsing succeeded but before any
+	/// bootstrap step (e.g. an `--allow-executable` mapping that fails
+	/// filesystem/identity validation).
+	Usage,
 	/// 3: in-process bootstrap/config failure before RPC was available.
 	Bootstrap,
 	/// 4: transport/protocol failure without a kernel `ErrorEnvelopeV0`.
@@ -62,6 +67,7 @@ enum ExitBucket {
 impl ExitBucket {
 	const fn code(self) -> u8 {
 		match self {
+			Self::Usage => 2,
 			Self::Bootstrap => 3,
 			Self::Transport => 4,
 			Self::KernelResult => 5,
@@ -79,6 +85,10 @@ struct CliFailure {
 }
 
 impl CliFailure {
+	fn usage(message: impl Into<String>) -> Self {
+		Self { bucket: ExitBucket::Usage, message: message.into() }
+	}
+
 	fn bootstrap(message: impl Into<String>) -> Self {
 		Self { bucket: ExitBucket::Bootstrap, message: message.into() }
 	}
@@ -122,6 +132,7 @@ async fn establish_kernel(
 	workspace_root: PathBuf,
 	model: String,
 	trusted_tool_authority_ceiling: Vec<successor_protocol::tool_catalog::ToolAuthorityClassV0>,
+	allow_executable: Vec<String>,
 ) -> Result<KernelHandle, CliFailure> {
 	if let Some(url) = kernel_url {
 		return Ok(KernelHandle {
@@ -130,6 +141,13 @@ async fn establish_kernel(
 			in_process_task: None,
 		});
 	}
+
+	// Validated before entitlement, listener bind, platform, provider auth,
+	// or network. External-kernel mode never reaches this line: clap's
+	// `conflicts_with` on `--allow-executable` guarantees `allow_executable`
+	// is empty whenever `kernel_url` is set, so this invocation can never
+	// probe the local filesystem on an external kernel's behalf.
+	let trusted_executable_allowlist = build_trusted_executable_allowlist(allow_executable)?;
 
 	let lookup = move |name: &str| -> Option<String> {
 		if name == PLATFORM_URL_ENV
@@ -161,6 +179,7 @@ async fn establish_kernel(
 	if !trusted_tool_authority_ceiling.is_empty() {
 		state = state.with_trusted_tool_authority_ceiling(trusted_tool_authority_ceiling);
 	}
+	state = state.with_trusted_executable_allowlist(trusted_executable_allowlist);
 
 	let listener = TcpListener::bind("127.0.0.1:0").await.map_err(|err| {
 		CliFailure::bootstrap(format!("failed to bind an ephemeral loopback listener: {err}"))
@@ -176,6 +195,91 @@ async fn establish_kernel(
 		base_url:        format!("http://{addr}"),
 		http:            reqwest::Client::new(),
 		in_process_task: Some(task),
+	})
+}
+
+/// A parsed `--allow-executable logical=/absolute/path` mapping, built only
+/// here in bootstrap (never by clap: see `AskArgs.allow_executable`'s doc
+/// comment for why). Grammar-only: the logical name's character grammar and
+/// every filesystem/identity check (existence, canonicalization,
+/// regular-file, executable-bit) are deferred to
+/// `successor_kernel::tools::bash::TrustedExecutable::new`, which validates
+/// logical-name grammar before ever touching the filesystem, so a single
+/// source of truth backs both.
+struct AllowExecutableMapping {
+	logical_name: String,
+	path:         PathBuf,
+}
+
+/// Parses one raw `--allow-executable` value into a grammar-valid mapping.
+/// Uses `split_once('=')` (splits at the *first* `=` only) so the path half
+/// may itself contain `=` characters; the path is not touched on disk here.
+/// Every returned error is a generic usage message: it never repeats the
+/// raw value, an unvalidated logical name, or a path, because that is
+/// exactly what a fallible clap value-parser would otherwise have echoed
+/// back verbatim in its own usage error.
+fn parse_allow_executable_mapping(raw: &str) -> Result<AllowExecutableMapping, CliFailure> {
+	let Some((logical_name, path)) = raw.split_once('=') else {
+		return Err(CliFailure::usage(
+			"--allow-executable requires `<logical>=<path>`; no `=` was found separating a logical \
+			 name from an absolute path",
+		));
+	};
+	if logical_name.is_empty() {
+		return Err(CliFailure::usage(
+			"--allow-executable requires a non-empty logical name before `=`",
+		));
+	}
+	if path.is_empty() {
+		return Err(CliFailure::usage("--allow-executable requires a non-empty path after `=`"));
+	}
+	let path = PathBuf::from(path);
+	if !path.is_absolute() {
+		return Err(CliFailure::usage(
+			"--allow-executable requires an absolute path after `=`; relative paths are rejected \
+			 before any kernel or platform request is made",
+		));
+	}
+	Ok(AllowExecutableMapping { logical_name: logical_name.to_owned(), path })
+}
+
+/// Parses every raw `--allow-executable` value, rejects duplicate logical
+/// names deterministically before any filesystem probing, then builds each
+/// `TrustedExecutable` (canonicalizes and checks regular-file/executable-bit
+/// identity) and assembles the allowlist. All failures are usage errors
+/// (exit 2) with generic, redaction-safe messages: none of them echo a raw
+/// `--allow-executable` value, an unvalidated logical name, or a path --
+/// `TrustedExecutable::new`'s own `ProcessRejection` is documented
+/// redaction-safe (no path in its `Display`), so its message is forwarded
+/// as-is without adding back the logical name that led to it.
+fn build_trusted_executable_allowlist(
+	raw_mappings: Vec<String>,
+) -> Result<TrustedExecutableAllowlist, CliFailure> {
+	let mut mappings = Vec::with_capacity(raw_mappings.len());
+	for raw in raw_mappings {
+		mappings.push(parse_allow_executable_mapping(&raw)?);
+	}
+
+	let mut seen_logical_names = HashSet::with_capacity(mappings.len());
+	for mapping in &mappings {
+		if !seen_logical_names.insert(mapping.logical_name.as_str()) {
+			return Err(CliFailure::usage(
+				"a --allow-executable logical name was supplied more than once; each logical name \
+				 must map to exactly one executable",
+			));
+		}
+	}
+
+	let mut entries = Vec::with_capacity(mappings.len());
+	for mapping in mappings {
+		let entry = TrustedExecutable::new(mapping.logical_name, &mapping.path, Vec::new())
+			.map_err(|err| CliFailure::usage(format!("--allow-executable entry rejected: {err}")))?;
+		entries.push(entry);
+	}
+	TrustedExecutableAllowlist::new(entries).map_err(|err| {
+		CliFailure::usage(format!(
+			"--allow-executable mappings could not be assembled into an allowlist: {err}"
+		))
 	})
 }
 
@@ -224,6 +328,7 @@ pub async fn run_ask(args: AskArgs) -> Result<(), u8> {
 		args.workspace_root,
 		args.model,
 		tool_authority_ceiling,
+		args.allow_executable,
 	)
 	.await
 	.map_err(CliFailure::report)?;
@@ -324,6 +429,7 @@ pub async fn run_resume(args: ResumeArgs) -> Result<(), u8> {
 		workspace_root,
 		DEFAULT_MODEL.to_owned(),
 		Vec::new(),
+		Vec::new(),
 	)
 	.await
 	.map_err(CliFailure::report)?;
@@ -340,6 +446,7 @@ pub async fn run_inspect_session(args: InspectSessionArgs) -> Result<(), u8> {
 		args.platform_url,
 		workspace_root,
 		DEFAULT_MODEL.to_owned(),
+		Vec::new(),
 		Vec::new(),
 	)
 	.await

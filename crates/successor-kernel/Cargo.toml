@@ -49,6 +49,18 @@ tokio-stream = { version = "0.1", features = ["sync"] }
 # termination and incremental full-stream SHA-256 capture.
 libc = "0.2"
 sha2 = "0.10"
+# Lane I3 `ast_grep` safe-read code-intelligence substrate. Version pinned to
+# `=0.39.9`: newer releases require tree-sitter 0.26, which cannot coexist
+# with this workspace's existing tree-sitter 0.25 resolution. The `tree-sitter`
+# feature enables in-process embedded parsing on `ast-grep-core`.
+# `ast-grep-language`'s `builtin-parser` feature is required: upstream's own
+# parser dispatch (`src/parsers.rs`) gates every language's actual parser
+# behind this single umbrella feature rather than exposing it per grammar, so
+# `builtin-parser` necessarily pulls in the full supported-grammar bundle, not
+# a per-language subset. `default-features = false` still drops `napi-lang`
+# (the only other bundle) and unrelated cli/wasm surface this crate never had.
+ast-grep-core = { version = "=0.39.9", default-features = false, features = ["tree-sitter"] }
+ast-grep-language = { version = "=0.39.9", default-features = false, features = ["builtin-parser"] }
 
 [dev-dependencies]
 # Test-only: binds the accepted platform router (successor-context-platform::http::build_router)

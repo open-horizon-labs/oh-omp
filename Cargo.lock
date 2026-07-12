@@ -157,6 +157,43 @@ dependencies = [
 ]
 
 [[package]]
+name = "ast-grep-language"
+version = "0.39.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "24b571f7f8cde8bd77ea48f63a81094b7ce0695da50d0dc956cc45f1e26533ce"
+dependencies = [
+ "ast-grep-core",
+ "ignore",
+ "serde",
+ "tree-sitter",
+ "tree-sitter-bash",
+ "tree-sitter-c",
+ "tree-sitter-c-sharp",
+ "tree-sitter-cpp",
+ "tree-sitter-css",
+ "tree-sitter-elixir",
+ "tree-sitter-go",
+ "tree-sitter-haskell",
+ "tree-sitter-hcl",
+ "tree-sitter-html",
+ "tree-sitter-java",
+ "tree-sitter-javascript",
+ "tree-sitter-json",
+ "tree-sitter-kotlin-sg",
+ "tree-sitter-lua",
+ "tree-sitter-nix",
+ "tree-sitter-php",
+ "tree-sitter-python",
+ "tree-sitter-ruby",
+ "tree-sitter-rust",
+ "tree-sitter-scala",
+ "tree-sitter-solidity",
+ "tree-sitter-swift",
+ "tree-sitter-typescript",
+ "tree-sitter-yaml",
+]
+
+[[package]]
 name = "astral-tl"
 version = "0.7.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4459,6 +4496,8 @@ dependencies = [
 name = "successor-kernel"
 version = "13.19.0"
 dependencies = [
+ "ast-grep-core",
+ "ast-grep-language",
  "axum",
  "globset",
  "libc",

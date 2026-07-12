@@ -716,6 +716,57 @@ async fn nondefault_ceiling_accepts_broader_request_without_creating_new_executo
 }
 
 #[tokio::test]
+async fn populated_trusted_executable_allowlist_never_activates_bash_in_the_published_roster() {
+	let server = TestServer::start("trusted-allowlist-does-not-activate-bash").await;
+	let (state, factory_count, catalog_log, workspace) =
+		authority_state(&server, "trusted-allowlist-does-not-activate-bash", vec![
+			authority_final_round("ok"),
+		]);
+	let state = state.with_trusted_tool_authority_ceiling(vec![
+		ToolAuthorityClassV0::SafeRead,
+		ToolAuthorityClassV0::WorkspaceMutation,
+		ToolAuthorityClassV0::LocalProcess,
+	]);
+	let mut allowlist = successor_kernel::tools::bash::TrustedExecutableAllowlist::default();
+	allowlist
+		.insert(
+			successor_kernel::tools::bash::TrustedExecutable::new(
+				"echo",
+				std::path::Path::new("/bin/echo"),
+				Vec::new(),
+			)
+			.expect("valid trusted executable"),
+		)
+		.expect("insert trusted executable");
+	let state = state.with_trusted_executable_allowlist(allowlist);
+
+	let response = submit_turn_json(
+		state,
+		submit_turn_body(
+			"hello",
+			None,
+			Some(authority_request(&["safe_read", "workspace_mutation", "local_process"])),
+		),
+	)
+	.await;
+
+	assert_eq!(response.status(), StatusCode::OK);
+	assert_eq!(factory_count.load(Ordering::SeqCst), 1);
+	let body = body_bytes(response).await;
+	let session_id = session_id_from_sse_body(&body);
+	let events = read_all_session_events(&server.client(), &session_id).await;
+	let catalogs = raw_event_payloads_of_type(&events, RawEventType::ToolCatalogPublished);
+	assert_eq!(catalogs.len(), 1);
+	// The base catalog fixture still pins `bash` to `stub_rejected`: a
+	// populated trusted-executable allowlist combined with granted
+	// `local_process` authority must not sovereign-activate it.
+	let published_names = recorded_catalog_names(&catalog_log, 0);
+	assert_eq!(published_names, vec!["search_files", "read", "find", "grep", "list_dir"]);
+	assert!(!published_names.contains(&"bash".to_owned()));
+	cleanup_workspace(&workspace);
+}
+
+#[tokio::test]
 async fn absent_and_explicit_null_tool_authority_preserve_default_path_without_conditional_decision()
  {
 	for (label, tool_authority) in [("absent", None), ("null", Some(serde_json::Value::Null))] {

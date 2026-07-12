@@ -116,7 +116,7 @@ use successor_kernel::{
 	},
 	state_machine::{TurnFailure, TurnPhase, TurnState},
 	stream::KernelFrameStream,
-	tools::{catalog, registry},
+	tools::{bash::TrustedExecutableAllowlist, catalog, registry},
 };
 use successor_protocol::{
 	fixtures, kernel_frame, raw_event,
@@ -600,7 +600,8 @@ fn effective_empty_authority_retains_catalog_but_removes_provider_executables() 
 		&[ToolAuthorityClassV0::SafeRead],
 	)
 	.expect("explicit empty authority resolves under safe_read ceiling");
-	let catalog = registry.effective_catalog(&authority);
+	let allowlist = TrustedExecutableAllowlist::default();
+	let catalog = registry.effective_catalog(&authority, &allowlist);
 
 	assert_eq!(catalog.tools.len(), catalog::slice0_catalog().tools.len());
 	assert_eq!(catalog.tools.len(), 35);
@@ -613,7 +614,7 @@ fn effective_empty_authority_retains_catalog_but_removes_provider_executables() 
 	assert_eq!(policy_rejected_names, ["search_files", "read", "find", "grep", "list_dir"]);
 	assert_eq!(
 		registry
-			.effective_executable_names(&authority)
+			.effective_executable_names(&authority, &allowlist)
 			.collect::<Vec<_>>(),
 		Vec::<&str>::new()
 	);
@@ -769,7 +770,8 @@ fn resolver_canonicalizes_ceiling_and_never_promotes_nonexistent_executors() {
 		],
 	)
 	.expect("non-read classes can resolve when trusted");
-	let catalog = registry::slice0_registry().effective_catalog(&authority);
+	let allowlist = TrustedExecutableAllowlist::default();
+	let catalog = registry::slice0_registry().effective_catalog(&authority, &allowlist);
 	assert_eq!(authority.classes(), [
 		ToolAuthorityClassV0::WorkspaceMutation,
 		ToolAuthorityClassV0::LocalProcess
@@ -787,6 +789,7 @@ fn resolver_canonicalizes_ceiling_and_never_promotes_nonexistent_executors() {
 #[test]
 fn advertised_executable_names_equal_registry_dispatchable_names_for_each_authority() {
 	let registry = registry::slice0_registry();
+	let allowlist = TrustedExecutableAllowlist::default();
 	for request in [
 		None,
 		Some(ToolAuthorityRequestV0 { classes: vec![] }),
@@ -796,14 +799,16 @@ fn advertised_executable_names_equal_registry_dispatchable_names_for_each_author
 			ToolAuthorityClassV0::SafeRead,
 		])
 		.expect("authority resolves");
-		let catalog = registry.effective_catalog(&authority);
+		let catalog = registry.effective_catalog(&authority, &allowlist);
 		let advertised: Vec<&str> = catalog
 			.tools
 			.iter()
 			.filter(|tool| tool.status == ToolStatusV0::Executable)
 			.map(|tool| tool.name.as_str())
 			.collect();
-		let dispatchable: Vec<&str> = registry.effective_executable_names(&authority).collect();
+		let dispatchable: Vec<&str> = registry
+			.effective_executable_names(&authority, &allowlist)
+			.collect();
 		assert_eq!(advertised, dispatchable);
 	}
 }

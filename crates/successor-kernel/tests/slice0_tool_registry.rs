@@ -4,7 +4,9 @@ use std::{
 };
 
 use serde_json::json;
-use successor_kernel::tools::{catalog, find, grep, list_dir, read, registry, search_files};
+use successor_kernel::tools::{
+	bash::TrustedExecutableAllowlist, catalog, find, grep, list_dir, read, registry, search_files,
+};
 use successor_protocol::{fixtures, tool_catalog::ToolStatusV0};
 
 fn unique_temp_dir(label: &str) -> PathBuf {
@@ -54,6 +56,9 @@ fn registry_executable_roster_matches_catalog_order_exactly() {
 fn every_executable_catalog_entry_dispatches_and_every_stub_does_not() {
 	let registry = registry::slice0_registry();
 	let root = seed_workspace("dispatchability");
+	let allowlist = TrustedExecutableAllowlist::default();
+	let ctx =
+		registry::ToolExecutionContext { workspace_root: &root, process_allowlist: &allowlist };
 	let catalog = catalog::slice0_catalog();
 
 	for tool in &catalog.tools {
@@ -68,7 +73,7 @@ fn every_executable_catalog_entry_dispatches_and_every_stub_does_not() {
 			};
 			assert!(registry.is_dispatchable(&tool.name), "{} must have registry dispatch", tool.name);
 			registry
-				.execute(&root, &tool.name, &args)
+				.execute(&ctx, &tool.name, &args)
 				.unwrap_or_else(|err| panic!("{} must dispatch successfully: {err}", tool.name));
 		} else {
 			assert!(
@@ -86,10 +91,13 @@ fn every_executable_catalog_entry_dispatches_and_every_stub_does_not() {
 fn unknown_tool_name_is_not_dispatchable_and_fails_before_any_executor_path() {
 	let registry = registry::slice0_registry();
 	let root = seed_workspace("unknown");
+	let allowlist = TrustedExecutableAllowlist::default();
+	let ctx =
+		registry::ToolExecutionContext { workspace_root: &root, process_allowlist: &allowlist };
 
 	assert!(!registry.is_dispatchable("definitely_not_real"));
 	let err = registry
-		.execute(&root, "definitely_not_real", &json!({}))
+		.execute(&ctx, "definitely_not_real", &json!({}))
 		.expect_err("unknown tool names must not dispatch");
 	assert!(
 		err.contains("has no dispatch wiring"),
@@ -103,9 +111,12 @@ fn unknown_tool_name_is_not_dispatchable_and_fails_before_any_executor_path() {
 fn registry_uses_existing_dto_parsers_and_tool_result_bytes() {
 	let registry = registry::slice0_registry();
 	let root = seed_workspace("semantics");
+	let allowlist = TrustedExecutableAllowlist::default();
+	let ctx =
+		registry::ToolExecutionContext { workspace_root: &root, process_allowlist: &allowlist };
 
 	let malformed = registry
-		.execute(&root, "read", &json!({ "path": "hello.txt", "max_bytes": 10 }))
+		.execute(&ctx, "read", &json!({ "path": "hello.txt", "max_bytes": 10 }))
 		.expect_err(
 			"read DTO deny_unknown_fields must remain the source of malformed-argument failures",
 		);
@@ -117,7 +128,7 @@ fn registry_uses_existing_dto_parsers_and_tool_result_bytes() {
 	let search_direct =
 		search_files::search_files(&root, "hello", 20).expect("direct search_files succeeds");
 	let search_registry = registry
-		.execute(&root, "search_files", &json!({ "query": "hello" }))
+		.execute(&ctx, "search_files", &json!({ "query": "hello" }))
 		.expect("registry search_files succeeds");
 	assert_eq!(search_registry.artifact.sha256, search_direct.sha256);
 	assert_eq!(search_registry.artifact.byte_length, search_direct.byte_length);
@@ -132,7 +143,7 @@ fn registry_uses_existing_dto_parsers_and_tool_result_bytes() {
 
 	let read_direct = read::read(&root, "hello.txt", None, None).expect("direct read succeeds");
 	let read_registry = registry
-		.execute(&root, "read", &json!({ "path": "hello.txt" }))
+		.execute(&ctx, "read", &json!({ "path": "hello.txt" }))
 		.expect("registry read succeeds");
 	assert_eq!(read_registry.artifact.sha256, read_direct.sha256);
 	assert_eq!(read_registry.artifact.byte_length, read_direct.byte_length);
@@ -140,7 +151,7 @@ fn registry_uses_existing_dto_parsers_and_tool_result_bytes() {
 
 	let list_direct = list_dir::list_dir(&root, ".").expect("direct list_dir succeeds");
 	let list_registry = registry
-		.execute(&root, "list_dir", &json!({ "path": "." }))
+		.execute(&ctx, "list_dir", &json!({ "path": "." }))
 		.expect("registry list_dir succeeds");
 	assert_eq!(list_registry.artifact.sha256, list_direct.sha256);
 	assert_eq!(
@@ -150,7 +161,7 @@ fn registry_uses_existing_dto_parsers_and_tool_result_bytes() {
 
 	let find_direct = find::find(&root, "**/*.txt", 2_000).expect("direct find succeeds");
 	let find_registry = registry
-		.execute(&root, "find", &json!({ "glob": "**/*.txt" }))
+		.execute(&ctx, "find", &json!({ "glob": "**/*.txt" }))
 		.expect("registry find succeeds");
 	assert_eq!(find_registry.artifact.sha256, find_direct.sha256);
 	assert_eq!(
@@ -160,7 +171,7 @@ fn registry_uses_existing_dto_parsers_and_tool_result_bytes() {
 
 	let grep_direct = grep::grep(&root, "hello", 2_000).expect("direct grep succeeds");
 	let grep_registry = registry
-		.execute(&root, "grep", &json!({ "pattern": "hello" }))
+		.execute(&ctx, "grep", &json!({ "pattern": "hello" }))
 		.expect("registry grep succeeds");
 	assert_eq!(grep_registry.artifact.sha256, grep_direct.sha256);
 	assert_eq!(

@@ -71,8 +71,9 @@ use crate::{
 	provider::{auth::ProviderAuthOutcome, credentials::AnthropicApiKey, projection},
 	state_machine::{MAX_EXECUTABLE_TOOL_ROUNDS, TurnFailure, TurnPhase, TurnState},
 	tools::{
+		bash::TrustedExecutableAllowlist,
 		catalog,
-		registry::{self, EffectiveToolAuthority},
+		registry::{self, EffectiveToolAuthority, ToolExecutionContext},
 	},
 	turn_trace::{TurnAttempt, TurnTrace},
 };
@@ -471,13 +472,14 @@ const fn api_shape_label(shape: &ProviderApiShapeV0) -> &'static str {
 /// runner API): production callers instantiate with an adapter-backed
 /// executor; replay tests instantiate with [`ScriptedProviderExecutor`].
 pub struct TurnRunner<P: ProviderExecutor> {
-	platform:            KernelPlatformClient,
-	frames:              FrameSink,
-	ids:                 Arc<dyn IdFactory>,
-	clock:               Arc<dyn Clock>,
-	provider:            P,
-	workspace_root:      std::path::PathBuf,
+	platform: KernelPlatformClient,
+	frames: FrameSink,
+	ids: Arc<dyn IdFactory>,
+	clock: Arc<dyn Clock>,
+	provider: P,
+	workspace_root: std::path::PathBuf,
 	effective_authority: EffectiveToolAuthority,
+	trusted_executable_allowlist: Arc<TrustedExecutableAllowlist>,
 }
 
 /// What [`TurnRunner::dispatch_tool_call`] returns on a successfully
@@ -560,7 +562,21 @@ impl<P: ProviderExecutor> TurnRunner<P> {
 			provider,
 			workspace_root: workspace_root.as_ref().to_path_buf(),
 			effective_authority,
+			trusted_executable_allowlist: Arc::new(TrustedExecutableAllowlist::default()),
 		}
+	}
+
+	/// Injects an explicit trusted-executable allowlist. Defaults to an
+	/// empty allowlist (see `with_effective_authority`); a nonempty allowlist
+	/// never self-grants `local_process` authority on its own — authority is
+	/// still resolved independently via
+	/// `with_tool_authority`/`EffectiveToolAuthority`.
+	pub fn with_trusted_executable_allowlist(
+		mut self,
+		allowlist: Arc<TrustedExecutableAllowlist>,
+	) -> Self {
+		self.trusted_executable_allowlist = allowlist;
+		self
 	}
 
 	fn map_transport(err: PlatformClientError) -> TurnFailure {
@@ -680,7 +696,8 @@ impl<P: ProviderExecutor> TurnRunner<P> {
 		causation_frame_id: Option<FrameId>,
 	) -> Result<ToolDispatchSuccess, TurnFailure> {
 		let registry = registry::slice0_registry();
-		let effective_catalog = registry.effective_catalog(&self.effective_authority);
+		let effective_catalog =
+			registry.effective_catalog(&self.effective_authority, &self.trusted_executable_allowlist);
 		let Some(status) = effective_catalog
 			.tools
 			.iter()
@@ -895,12 +912,12 @@ impl<P: ProviderExecutor> TurnRunner<P> {
 		arguments: &WireJson,
 	) -> Result<(WireJson, RawEventArtifactRef, String), String> {
 		let registry = registry::slice0_registry();
-		let execution = registry.execute_authorized(
-			&self.workspace_root,
-			tool_name,
-			arguments,
-			&self.effective_authority,
-		)?;
+		let ctx = ToolExecutionContext {
+			workspace_root:    &self.workspace_root,
+			process_allowlist: &self.trusted_executable_allowlist,
+		};
+		let execution =
+			registry.execute_authorized(&ctx, tool_name, arguments, &self.effective_authority)?;
 		Ok((execution.payload, execution.artifact, execution.provider_result_text))
 	}
 
@@ -1110,7 +1127,8 @@ impl<P: ProviderExecutor> TurnRunner<P> {
 			let mut state = TurnState::NotStarted;
 
 			let registry = registry::slice0_registry();
-			let catalog = registry.effective_catalog(&self.effective_authority);
+			let catalog = registry
+				.effective_catalog(&self.effective_authority, &self.trusted_executable_allowlist);
 			let (session_id, catalog_causation_event_id) = if let Some(existing_session_id) =
 				continue_session_id
 			{
@@ -1311,7 +1329,7 @@ impl<P: ProviderExecutor> TurnRunner<P> {
 				});
 				if phase.is_first() {
 					let tool_names: Vec<&str> = registry
-						.effective_executable_names(&self.effective_authority)
+						.effective_executable_names(&self.effective_authority, &self.trusted_executable_allowlist)
 						.collect();
 					request_payload["tool_names"] = json!(tool_names);
 				}

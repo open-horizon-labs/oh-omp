@@ -136,6 +136,19 @@ impl TrustedExecutableAllowlist {
 		Ok(())
 	}
 
+	/// True when no trusted executables are configured. `bash` dispatch and
+	/// schema narrowing are gated on this: an empty allowlist never grants
+	/// executable-tool availability.
+	pub(crate) fn is_empty(&self) -> bool {
+		self.entries.is_empty()
+	}
+
+	/// Trusted logical names in the allowlist, already sorted and deduped by
+	/// `BTreeMap` construction. Never exposes filesystem paths.
+	pub(crate) fn logical_names(&self) -> impl ExactSizeIterator<Item = &str> {
+		self.entries.keys().map(String::as_str)
+	}
+
 	fn select(&self, logical_name: &str) -> Result<&TrustedExecutable, ProcessRejection> {
 		let executable = self
 			.entries

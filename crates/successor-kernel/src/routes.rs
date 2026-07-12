@@ -245,7 +245,9 @@ pub async fn submit_turn<P: ProviderExecutor + Send + Sync + 'static>(
 		request.tool_authority.as_ref(),
 		&state.trusted_tool_authority_ceiling,
 	) {
-		Ok(runner) => runner,
+		Ok(runner) => {
+			runner.with_trusted_executable_allowlist(Arc::clone(&state.trusted_executable_allowlist))
+		},
 		Err(err) => {
 			return tool_authority_denied(
 				&state,

@@ -175,3 +175,82 @@ pub async fn serve<P: ProviderExecutor + Send + Sync + 'static>(
 ) -> std::io::Result<()> {
 	axum::serve(listener, build_router(state)).await
 }
+
+#[cfg(test)]
+mod tests {
+	use std::sync::Arc;
+
+	use successor_protocol::provider::ProviderApiShapeV0;
+
+	use super::*;
+	use crate::{
+		id_factory::{RealClock, RealIdFactory},
+		runner::ScriptedProviderExecutor,
+		tools::bash::TrustedExecutable,
+	};
+
+	fn test_state() -> AppState<ScriptedProviderExecutor> {
+		AppState::new(
+			KernelPlatformClient::new("http://127.0.0.1:0", "dev-license-http-test"),
+			Arc::new(RealIdFactory::new()),
+			Arc::new(RealClock),
+			std::env::temp_dir(),
+			ProviderSlot::Anthropic,
+			|| {
+				Ok(ScriptedProviderExecutor::new(
+					"scripted",
+					ProviderApiShapeV0::AnthropicMessages,
+					"model",
+					Vec::new(),
+				))
+			},
+		)
+	}
+
+	fn populated_allowlist() -> TrustedExecutableAllowlist {
+		let mut allowlist = TrustedExecutableAllowlist::default();
+		allowlist
+			.insert(
+				TrustedExecutable::new("echo", std::path::Path::new("/bin/echo"), Vec::new())
+					.expect("valid trusted executable"),
+			)
+			.expect("insert trusted executable");
+		allowlist
+	}
+
+	#[test]
+	fn trusted_executable_allowlist_defaults_to_empty() {
+		let state = test_state();
+		assert_eq!(
+			format!("{:?}", *state.trusted_executable_allowlist),
+			format!("{:?}", TrustedExecutableAllowlist::default()),
+			"AppState::new must default to an empty trusted executable allowlist"
+		);
+	}
+
+	#[test]
+	fn with_trusted_executable_allowlist_replaces_the_default_arc() {
+		let state = test_state();
+		let default_ptr = Arc::as_ptr(&state.trusted_executable_allowlist);
+		let state = state.with_trusted_executable_allowlist(populated_allowlist());
+		assert_ne!(
+			Arc::as_ptr(&state.trusted_executable_allowlist),
+			default_ptr,
+			"the builder must install a new Arc, not mutate the default in place"
+		);
+		assert_ne!(
+			format!("{:?}", *state.trusted_executable_allowlist),
+			format!("{:?}", TrustedExecutableAllowlist::default()),
+		);
+	}
+
+	#[test]
+	fn clone_preserves_the_same_trusted_executable_allowlist_arc() {
+		let state = test_state().with_trusted_executable_allowlist(populated_allowlist());
+		let cloned = state.clone();
+		assert!(
+			Arc::ptr_eq(&state.trusted_executable_allowlist, &cloned.trusted_executable_allowlist),
+			"Clone must preserve the exact same Arc, not deep-copy the allowlist"
+		);
+	}
+}

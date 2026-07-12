@@ -100,9 +100,9 @@ MEMEX_LICENSE=<license-or-dev-entitlement-token>
 
 Provider credentials follow the existing oh-omp-style local provider auth plane: provider API keys, OAuth/subscription login state, credential rotation, model/account selection, usage-limit/backoff state, and local credential storage. Those credentials are re-resolved locally on resume and are never sent to the remote context platform.
 
-### 2.5 Local authority is read-only
+### 2.5 Local authority is capability-gated
 
-Slice 0 executes only hardened local read/discovery tools. Mutation, shell/runtime, browser, subagent, notebook, and remote/web tools are catalog-visible but rejected/stubbed unless explicitly promoted in a later slice.
+Every tool has a runtime-owned authority class: `safe_read`, `workspace_mutation`, `local_process`, and future higher authorities (§7.3). Authority classes are registry/runtime metadata, not protocol catalog fields. Default session authority is `safe_read` only. The provider (model) can request only catalog-published capabilities and can never grant itself authority; effective authority and rejection are typed, auditable, and replayable. Local process authority additionally requires a nonempty, host-configured executable allowlist (§7.4); the provider never supplies a host path or triggers a `PATH` lookup. A tool whose authority class is absent from the session's effective authority is catalog-visible but policy-rejected, never a silent no-op or panic.
 
 ## 3. ID model
 
@@ -518,36 +518,41 @@ Returns `AssemblyTraceV0`.
 
 ## 7. Tool catalog v0
 
-Slice 0 publishes a protocol-visible tool catalog based on oh-omp’s core tools. Most tools are rejected/stubbed. Unsupported tools must produce deterministic events, not silent no-ops.
+Slice 0 publishes a protocol-visible tool catalog based on oh-omp's core tools. The catalog has two layers. The **base catalog** (§7.1, §7.2) is the sovereign, fixture-pinned set of 35 tool definitions and their executable/stub_rejected status; it changes only through an explicit sovereign contract/fixture amendment, never as a side effect of session configuration. The **effective catalog** (§7.3) is a runtime/session-specific projection of the base catalog through the session's effective authority classes and process-allowlist configuration (§7.4); it is published per turn (`tool_catalog.published`) and may mark a base-executable tool `policy_rejected` when the session lacks the required authority. Unsupported and policy-rejected tools must both produce deterministic events, not silent no-ops.
 
-### 7.1 Executable tools
+### 7.1 Base catalog: executable tools
 
-Executable read/discovery subset (no write/edit/shell authority):
+Base-catalog executable subset (nine tools; execution is still gated per-session by effective authority, §7.3):
 
-| Tool | Purpose | Notes |
-|---|---|---|
-| `search_files` | locate likely files/paths from a bounded query | successor locator tool; may use walkdir/ignore + lexical/regex matching |
-| `read` | read one relative file or a line range under the session workspace root | offset/limit are optional positive line-range parameters; returns an artifact for exactly the returned bytes |
-| `find` | glob/list files under session workspace root | bounded output |
-| `grep` | regex/text search under session workspace root | bounded output |
-| `list_dir` | list direct children of one relative directory under the session workspace root | sorted, bounded, metadata-only directory listing; no file content reads; no symlink traversal |
+| Tool | Purpose | Authority class | Notes |
+|---|---|---|---|
+| `search_files` | locate likely files/paths from a bounded query | `safe_read` | successor locator tool; may use walkdir/ignore + lexical/regex matching |
+| `read` | read one relative file or a line range under the session workspace root | `safe_read` | offset/limit are optional positive line-range parameters; returns an artifact for exactly the returned bytes |
+| `find` | glob/list files under session workspace root | `safe_read` | bounded output |
+| `grep` | regex/text search under session workspace root | `safe_read` | bounded output |
+| `list_dir` | list direct children of one relative directory under the session workspace root | `safe_read` | sorted, bounded, metadata-only directory listing; no file content reads; no symlink traversal |
+| `ast_grep` | structural syntax-tree search/match under session workspace root | `safe_read` | returns bounded artifact bytes; the same bytes are projected to payload/provider/artifact with no reserialization drift |
+| `edit` | apply one preconditioned, bounded workspace mutation | `workspace_mutation` | stale-write preconditions, atomic replacement, before/after hashes, bounded diff artifact |
+| `write` | create or replace bounded file content under the session workspace root | `workspace_mutation` | same preconditioned-mutation contract as `edit` |
+| `bash` | run one trusted, allowlisted executable with structured argv | `local_process` | never a shell string; requires a nonempty host-configured executable allowlist (§7.4); nonzero exit and timeout are ordinary successful receipts, not executor errors (§9.1) |
 
 `search_files` is included so the smoke target can be useful without a path-explicit prompt. (The `read` row and the `list_dir` row/tool were amended/added by the agent://269 Lane 3 dissent ruling.)
 
-### 7.2 Catalog-visible rejected/stubbed tools
+### 7.2 Base catalog: rejected/stubbed tools
 
-Catalog definitions should exist for these groups, with execution rejected unless a later slice promotes them:
+Catalog definitions should exist for these groups (26 tools), with execution rejected unless a later slice promotes them:
 
 ```text
-ast_grep, ast_edit, lsp
-edit, write, notebook
-bash, python, ssh, browser
+ast_edit, lsp, notebook
+python, ssh, browser
 fetch, web_search, gh_*
 ask, todo, todos, checkpoint, rewind, await, cancel_job, task
 recall, concept_graph
 calc, render_mermaid, inspect_image
 submit_result, report_finding, exit_plan_mode, resolve
 ```
+
+`ssh` is the sovereign amendment target for the unsupported-tool oracle fixture (`raw-events-unsupported-tool.json`), replacing the prior `bash` identity now that `bash` is a base-catalog executable tool (§7.1); the fixture is amended in place — tool identity, idempotency keys, payload, and rejection reason — not replaced, and event ordering is preserved.
 
 On unsupported tool request:
 
@@ -561,7 +566,37 @@ The raw events must preserve original arguments, `tool_call_id`, `error_id`, rej
 
 A catalog publication may be recorded as `tool_catalog.published` so replay can reconstruct what tools were advertised to the provider.
 
-## 8. Read/discovery tool authority
+### 7.3 Effective catalog and authority classes
+
+The effective catalog is computed once per session/turn from the base catalog (§7.1, §7.2) and the session's effective authority classes, and is what `tool_catalog.published` and the provider-normalized tool list actually expose. Authority classes are runtime registry metadata; they are not added as fields on the protocol catalog entry itself.
+
+| Authority class | Grants | Default session state |
+|---|---|---|
+| `safe_read` | `search_files`, `read`, `find`, `grep`, `list_dir`, `ast_grep` | always granted |
+| `workspace_mutation` | `edit`, `write` | not granted by default |
+| `local_process` | `bash`, further conditioned on a nonempty executable allowlist (§7.4) | not granted by default |
+
+Under the default `safe_read`-only session, the published effective catalog exposes six executable tools (the five prior read/discovery tools plus `ast_grep`); `edit`, `write`, and `bash` remain catalog-visible but `policy_rejected`. When executable, `bash`'s effective input schema MUST narrow its `executable` argument to an enum of the session's allowlisted logical names; this makes the published effective catalog session-specific and auditable, not a new sovereign base-catalog fixture. A request against a `policy_rejected` catalog entry follows the same rejection/error raw-event pair as an unsupported base-catalog tool (§7.2).
+
+### 7.4 Trusted process configuration
+
+Local process authority is granted only through explicit, host-owned configuration; there is no `PATH` lookup and the provider never supplies a host path. The CLI accepts a repeated flag:
+
+```text
+--allow-executable <logical-name>=<absolute-path>
+```
+
+Parsing/validation rules:
+
+- Parsed and validated before provider/network/auth bootstrap.
+- Conflicts with `--kernel-url`: local process trust is local-only configuration and is never forwarded to an external kernel over RPC.
+- Rejects an empty logical name, a duplicate logical name, a relative path, a path that does not canonicalize, a path that is not a regular file, and a path that is not executable.
+- Performs no `PATH` search; the path must already be absolute and canonicalizable to an executable file.
+- The provider may name only a trusted logical name in a `bash` call; it never supplies or overrides a host path.
+
+Embedders may inject a `TrustedExecutableAllowlist` directly into local `AppState` instead of going through CLI flags. The default allowlist is empty, which keeps `bash` `policy_rejected` even when `local_process` authority is otherwise granted (§7.3).
+
+## 8. Tool authority and argument contracts
 
 The session workspace root is trusted kernel/session configuration. The provider/model never supplies root.
 
@@ -609,6 +644,18 @@ Rules:
 ### 8.3 `find` and `grep`
 
 `find`/`grep` may be thin wrappers around the same safe read/discovery substrate. They must obey the same root, bounds, artifact, and error rules.
+
+### 8.4 `ast_grep`
+
+`ast_grep` is `safe_read` authority: no mutation, no process execution. It returns bounded artifact bytes (structural matches/spans) that are projected to provider text, event payload, and persisted artifact without reserialization drift — the same bytes every time, never a re-derived summary.
+
+### 8.5 `edit` and `write`
+
+`edit` and `write` require `workspace_mutation` authority (§7.3). Both use the preconditioned-mutation contract: a stale-write precondition (the caller's before-hash must match the file's current hash), atomic replacement, size bounds, before/after hashes, and a bounded diff artifact. A stale-hash mismatch is a recoverable tool error (§9.1), not a rejection: the provider is told so a repair round can re-read and retry. The event payload and the provider-visible receipt project the same canonical mutation-receipt JSON as the persisted artifact.
+
+### 8.6 `bash`
+
+`bash` requires `local_process` authority *and* a nonempty executable allowlist (§7.4); an empty allowlist keeps `bash` `policy_rejected` even under `local_process` authority. Arguments are a trusted logical executable name plus a structured argv list — never a shell string, never `sh -c`. Nonzero process exit and timeout are ordinary, successful `bash` tool results carrying receipt status/exit/duration fields so the provider can repair from stdout/stderr summaries; they are not executor errors and must never produce `error.recorded` (§9.1). The provider-visible receipt intentionally omits raw stdout/stderr artifact bytes; the persisted artifact carries the full bounded process receipt (stdout/stderr/exit/duration) with hash and length, so provider-visible text and the persisted artifact are not required to be byte-identical for this tool.
 
 ## 9. Successful turn state machine
 
@@ -667,6 +714,14 @@ tool_call.rejected
 error.recorded
 turn_failed or provider continuation with tool error, depending on provider protocol
 ```
+
+### 9.1 Recoverable tool executor errors
+
+Executor-level failures that occur after `tool_call.started` are distinct from pre-execution rejection/dispatch failures (which remain the `tool_call.rejected`/`error.recorded` pair above and never grant authority). They are structured `ToolExecutionError` values carrying a code, message, `recoverable`/`retryable` flags, provider-visible result text, and redaction-safe details. They are persisted, in order, as an `error.recorded` raw event with a stable, redaction-safe code/details, followed by the existing raw event `tool_call.failed`; the existing `tool_call_completed` frame is emitted with payload status `error` and a bounded preview. No new event or frame name is introduced, and no failure semantics are folded into an existing success event. When the error is recoverable, a provider-visible tool result string is returned and the turn continues into the next provider round so the provider can repair — for example a stale-write mismatch on `edit`/`write` (§8.5). Provider adapters SHOULD mark the tool result `is_error=true` where the wire shape supports it (e.g. Anthropic); other shapes carry status/error text without leaking details.
+
+Nonzero `bash` process exit and timeout are explicitly not executor errors: they are ordinary successful tool results (§8.6). Argument/schema/policy failures that occur before execution remain `tool_call.rejected`/`error.recorded` and never grant authority.
+
+If a durable raw-event append or artifact persistence fails, that is not recoverable in-memory: the turn stops rather than continuing with unverifiable state. Replay/resume must be able to project a failed tool call's facts without requiring a source artifact for that call, and must preserve every assistant/provider fact that followed it.
 
 ## 10. Provider projection v0
 
@@ -751,6 +806,12 @@ Fixture validation rules:
 - Unsupported tool fixture has `tool_call.requested`, `tool_call.rejected`, and `error.recorded`.
 - Replay of `raw-events-successful-turn.json` into accepted projections is byte-identical to `expected-session-projection.json`.
 - Fixtures contain no provider credentials, OAuth refresh tokens, subscription session material, or `MEMEX_LICENSE` values.
+The following bullets are accepted target fixture law from S1. They become byte-true only through the sovereign S6 base-catalog/unsupported-fixture amendment and the predicted S7 default-effective-catalog ripple; until those stages land, the checked-in fixtures remain the pre-amendment 35/5/30 catalog with `bash` as the unsupported-tool oracle.
+
+- Base catalog fixture (`tool-catalog.json`) is 35 tools: 9 executable (§7.1) and 26 `stub_rejected` (§7.2).
+- Unsupported-tool fixture (`raw-events-unsupported-tool.json`) exercises `ssh`, not `bash`, since `bash` is now a base-catalog executable tool.
+- Default `safe_read`-only fixtures (`raw-events-successful-turn.json`, `provider-shape-normalization.json`, `kernel-frame-stream.json`) show six executable tools (the prior five plus `ast_grep`) and `policy_rejected` `edit`/`write`/`bash`.
+- No fixture is regenerated wholesale outside its predicted catalog/tool-identity/projection fields; a wider byte change is a contract note first, per the tool-authoring blueprint's fixture-amendment protocol, never a silent regeneration.
 
 ## 13. Acceptance criteria
 

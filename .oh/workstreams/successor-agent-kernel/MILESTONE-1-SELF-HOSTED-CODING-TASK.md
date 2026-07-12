@@ -16,7 +16,7 @@ events/provenance rather than rendered transcript text.
 
 ## Proven base
 
-At wave base, the kernel has:
+At wave base, before serial integration stages S1-S8, the kernel has:
 
 - a live provider loop with eight bounded tool rounds;
 - five executable read/discovery tools: `search_files`, `read`, `find`, `grep`,
@@ -101,9 +101,7 @@ Promote selected `ast_grep` and `lsp` operations without mutation authority.
 `ast_edit` waits for I1 authority semantics. Tests pin DTO/schema/executor and
 provider-projection parity under the tool blueprint.
 
-The I-lanes implement disjoint modules/tests in parallel. A serial integration
-lane registers accepted tools and performs one sovereign catalog/contract
-amendment, preventing parallel edits to canonical fixtures.
+The I-lanes above describe target capability, not execution order. Serial staging integrates them: S1 amends contract/catalog law first (this document set); S2 adds local process-trust configuration while `bash` dispatch remains stubbed; S3 moves tool dispatch to a typed runtime context with registry-owned authority classes and availability predicates; S4 wires edit/write/ast_grep/bash adapters behind still-stubbed catalog statuses; S5 adds recoverable executor-error continuation and replay; S6 performs the one sovereign base-catalog amendment together with the `bash`-to-`ssh` unsupported-fixture amendment; S7 ripples only the predicted default-effective-catalog fixture/projection bytes; S8 proves cross-tool authority firings and a disposable-workspace smoke. Each stage is a 3-5 file lane, depends serially on the prior stage, and must pass `bun check` before the next stage starts; no stage activates a tool ahead of its catalog/authority gate.
 
 ## Reliability lanes before broad dogfood
 

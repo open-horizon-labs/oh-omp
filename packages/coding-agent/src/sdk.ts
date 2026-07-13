@@ -1676,6 +1676,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			license: memexLicense,
 			sessionId: sessionManager.getSessionId(),
 			projectCwd: cwd,
+			embedToolResults: settings.get("assembler.embedToolResults"),
 		});
 		passiveHydrator = new PassiveHydrator({
 			store: recallStore,

@@ -1,6 +1,7 @@
 /**
- * Ingest pipeline: persists and embeds all messages (user, assistant, tool results)
- * into LanceDB via the recall store.
+ * Ingest pipeline: persists semantic recall rows in LanceDB and lexical recall
+ * rows in SQLite. Tool-result semantic ingestion can be disabled independently
+ * while retaining exact keyword recall.
  *
  * Embedding is async and non-blocking. Failed embeddings log a warning but do not
  * crash the agent. An in-flight guard prevents unbounded background task spawning.
@@ -21,6 +22,7 @@ export interface IngestPipelineOptions {
 	license: string;
 	sessionId: string;
 	projectCwd: string;
+	embedToolResults?: boolean;
 }
 
 export interface IngestItem {
@@ -38,6 +40,7 @@ export class IngestPipeline {
 	#license: string;
 	#sessionId: string;
 	#projectCwd: string;
+	#embedToolResults: boolean;
 	#inFlight = 0;
 	#dropped = 0;
 
@@ -47,6 +50,7 @@ export class IngestPipeline {
 		this.#license = options.license;
 		this.#sessionId = options.sessionId;
 		this.#projectCwd = options.projectCwd;
+		this.#embedToolResults = options.embedToolResults ?? true;
 	}
 
 	/**
@@ -57,6 +61,20 @@ export class IngestPipeline {
 	ingest(item: IngestItem): void {
 		// Skip empty text
 		if (!item.text || item.text.trim().length === 0) return;
+
+		// Tool results remain available to exact keyword recall regardless of
+		// semantic-ingest policy or embedding backpressure.
+		if (item.role === "tool_result") {
+			this.#scheduleToolResultIndex(item);
+			if (!this.#embedToolResults) {
+				logger.debug("IngestPipeline: tool result semantic embedding disabled", {
+					sessionId: this.#sessionId,
+					toolName: item.toolName ?? null,
+					turn: item.turn,
+				});
+				return;
+			}
+		}
 
 		// In-flight guard: drop if too many concurrent embeds
 		if (this.#inFlight >= MAX_IN_FLIGHT) {
@@ -85,6 +103,51 @@ export class IngestPipeline {
 		return this.#inFlight;
 	}
 
+	#scheduleToolResultIndex(item: IngestItem): void {
+		setImmediate(() => this.#indexToolResult(item));
+	}
+
+	#indexToolResult(item: IngestItem): void {
+		if (!this.#toolResultStore) {
+			if (!this.#embedToolResults) {
+				logger.warn("IngestPipeline: tool result FTS unavailable while semantic embedding is disabled", {
+					role: item.role,
+					sessionId: this.#sessionId,
+					toolName: item.toolName ?? null,
+					turn: item.turn,
+				});
+			}
+			return;
+		}
+
+		try {
+			this.#toolResultStore.indexSync({
+				content: item.text,
+				role: item.role,
+				toolName: item.toolName ?? null,
+				sessionId: this.#sessionId,
+				projectCwd: this.#projectCwd,
+				turnNumber: item.turn,
+				paths: item.paths ?? [],
+				rowKey: buildRecallRowKey({
+					text: item.text,
+					role: item.role,
+					turn: item.turn,
+					tool_name: item.toolName ?? null,
+					session_id: this.#sessionId,
+				}),
+			});
+		} catch (err) {
+			logger.warn("IngestPipeline: tool result FTS indexing failed", {
+				error: err instanceof Error ? err.message : String(err),
+				role: item.role,
+				sessionId: this.#sessionId,
+				toolName: item.toolName ?? null,
+				turn: item.turn,
+			});
+		}
+	}
+
 	async #embedAndStore(item: IngestItem): Promise<void> {
 		try {
 			const vectors = await embed([item.text], this.#license);
@@ -104,7 +167,7 @@ export class IngestPipeline {
 			};
 
 			await this.#store.insert([row]);
-			if (this.#toolResultStore) {
+			if (this.#toolResultStore && item.role !== "tool_result") {
 				this.#toolResultStore.indexSync({
 					content: item.text,
 					role: item.role,

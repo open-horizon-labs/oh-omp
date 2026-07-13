@@ -1,14 +1,17 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, test, vi } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { EMBEDDING_DIM, type IngestItem, IngestPipeline, RecallStore } from "@oh-my-pi/pi-coding-agent/context/recall";
+import * as embedModule from "@oh-my-pi/pi-coding-agent/context/recall/embed";
 import {
 	extractAssistantText,
 	extractPathsFromText,
 	extractToolResultText,
 	extractUserText,
 } from "@oh-my-pi/pi-coding-agent/context/recall/message-text";
+import { ToolResultStore } from "@oh-my-pi/pi-coding-agent/context/recall/tool-result-store";
+import { logger } from "@oh-my-pi/pi-utils";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Test helpers
@@ -192,6 +195,25 @@ describe("IngestPipeline", () => {
 		await fs.rm(tmpDir, { recursive: true, force: true });
 	});
 
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
+
+	async function waitForIngest(pipeline: IngestPipeline): Promise<void> {
+		for (let attempt = 0; attempt < 100 && pipeline.inFlight > 0; attempt++) {
+			await Bun.sleep(10);
+		}
+		expect(pipeline.inFlight).toBe(0);
+	}
+
+	async function waitForCondition(condition: () => boolean): Promise<void> {
+		for (let attempt = 0; attempt < 100; attempt++) {
+			if (condition()) return;
+			await Bun.sleep(10);
+		}
+		expect(condition()).toBe(true);
+	}
+
 	test("ingest skips empty text", async () => {
 		const sessionDir = path.join(tmpDir, "skip-empty");
 		const store = await RecallStore.open({ agentDir: sessionDir, sessionId: "test-skip" });
@@ -214,6 +236,8 @@ describe("IngestPipeline", () => {
 	test("ingest respects in-flight guard", async () => {
 		const sessionDir = path.join(tmpDir, "inflight-guard");
 		const store = await RecallStore.open({ agentDir: sessionDir, sessionId: "test-inflight" });
+		const { promise, reject } = Promise.withResolvers<Float32Array[]>();
+		const embedSpy = vi.spyOn(embedModule, "embed").mockReturnValue(promise);
 		const pipeline = new IngestPipeline({
 			store,
 			license: "fake-license",
@@ -230,17 +254,17 @@ describe("IngestPipeline", () => {
 		expect(pipeline.dropped).toBeGreaterThan(0);
 		// But at most MAX_IN_FLIGHT should be in flight
 		expect(pipeline.inFlight).toBeLessThanOrEqual(4);
+		expect(embedSpy).toHaveBeenCalledTimes(4);
 
-		// Wait for in-flight tasks to settle (they will fail because license is fake)
-		await Bun.sleep(2000);
-
-		expect(pipeline.inFlight).toBe(0);
+		reject(new Error("simulated embed failure"));
+		await waitForIngest(pipeline);
 		store.close();
 	});
 
 	test("failed embed does not crash", async () => {
 		const sessionDir = path.join(tmpDir, "fail-graceful");
 		const store = await RecallStore.open({ agentDir: sessionDir, sessionId: "test-fail" });
+		vi.spyOn(embedModule, "embed").mockRejectedValue(new Error("simulated embed failure"));
 		const pipeline = new IngestPipeline({
 			store,
 			license: "invalid-license-that-will-fail",
@@ -256,14 +280,139 @@ describe("IngestPipeline", () => {
 			paths: ["src/main.ts"],
 		});
 
-		// Wait for the background task to fail gracefully
-		await Bun.sleep(3000);
-
-		expect(pipeline.inFlight).toBe(0);
+		await waitForIngest(pipeline);
 		// No row should have been stored (embed failed)
 		const results = await store.search(randomVector(EMBEDDING_DIM), 10);
 		expect(results.length).toBe(0);
 
+		store.close();
+	});
+
+	test("disabled tool-result embeddings retain exact keyword recall without semantic work", async () => {
+		const sessionDir = path.join(tmpDir, "tool-result-disabled");
+		const store = await RecallStore.open({ agentDir: sessionDir, sessionId: "test-tool-disabled" });
+		const toolResultStore = ToolResultStore.open(path.join(sessionDir, "tool-results.db"));
+		const embedSpy = vi.spyOn(embedModule, "embed").mockResolvedValue([new Float32Array(EMBEDDING_DIM)]);
+		const pipeline = new IngestPipeline({
+			store,
+			toolResultStore,
+			license: "fake-license",
+			sessionId: "test-tool-disabled",
+			projectCwd: "/tmp/test-project",
+			embedToolResults: false,
+		});
+
+		pipeline.ingest({
+			text: "Command failed with EXACT_TOOL_ERROR_42",
+			role: "tool_result",
+			turn: 7,
+			toolName: "bash",
+			paths: ["src/main.ts"],
+		});
+
+		expect(pipeline.inFlight).toBe(0);
+		expect(embedSpy).not.toHaveBeenCalled();
+		await waitForCondition(() => toolResultStore.search("EXACT_TOOL_ERROR_42", { role: "tool_result" }).length === 1);
+		expect(toolResultStore.search("EXACT_TOOL_ERROR_42", { role: "tool_result" })).toHaveLength(1);
+		expect(await store.search(randomVector(EMBEDDING_DIM), 10)).toHaveLength(0);
+
+		toolResultStore.close();
+		store.close();
+	});
+
+	test("tool-result embeddings remain enabled by default without duplicate FTS rows", async () => {
+		const sessionDir = path.join(tmpDir, "tool-result-default");
+		const store = await RecallStore.open({ agentDir: sessionDir, sessionId: "test-tool-default" });
+		const toolResultStore = ToolResultStore.open(path.join(sessionDir, "tool-results.db"));
+		const embedSpy = vi.spyOn(embedModule, "embed").mockResolvedValue([new Float32Array(EMBEDDING_DIM).fill(0.25)]);
+		const pipeline = new IngestPipeline({
+			store,
+			toolResultStore,
+			license: "fake-license",
+			sessionId: "test-tool-default",
+			projectCwd: "/tmp/test-project",
+		});
+
+		pipeline.ingest({
+			text: "Default semantic tool result",
+			role: "tool_result",
+			turn: 3,
+			toolName: "read",
+		});
+		await waitForIngest(pipeline);
+		await waitForCondition(
+			() => toolResultStore.search("semantic tool result", { role: "tool_result" }).length === 1,
+		);
+
+		expect(embedSpy).toHaveBeenCalledTimes(1);
+		expect(toolResultStore.search("semantic tool result", { role: "tool_result" })).toHaveLength(1);
+		expect(await store.search(randomVector(EMBEDDING_DIM), 10)).toHaveLength(1);
+
+		toolResultStore.close();
+		store.close();
+	});
+
+	test("disabling tool-result embeddings does not change user semantic ingestion", async () => {
+		const sessionDir = path.join(tmpDir, "user-with-tool-disabled");
+		const store = await RecallStore.open({ agentDir: sessionDir, sessionId: "test-user-unchanged" });
+		const toolResultStore = ToolResultStore.open(path.join(sessionDir, "tool-results.db"));
+		const embedSpy = vi.spyOn(embedModule, "embed").mockResolvedValue([new Float32Array(EMBEDDING_DIM).fill(0.5)]);
+		const pipeline = new IngestPipeline({
+			store,
+			toolResultStore,
+			license: "fake-license",
+			sessionId: "test-user-unchanged",
+			projectCwd: "/tmp/test-project",
+			embedToolResults: false,
+		});
+
+		pipeline.ingest({ text: "User semantic memory remains active", role: "user", turn: 1 });
+		await waitForIngest(pipeline);
+
+		expect(embedSpy).toHaveBeenCalledTimes(1);
+		expect(toolResultStore.search("semantic memory", { role: "user" })).toHaveLength(1);
+		expect(await store.search(randomVector(EMBEDDING_DIM), 10)).toHaveLength(1);
+
+		toolResultStore.close();
+		store.close();
+	});
+
+	test("tool-result FTS failures are surfaced with item identity", async () => {
+		const sessionDir = path.join(tmpDir, "tool-result-fts-failure");
+		const store = await RecallStore.open({ agentDir: sessionDir, sessionId: "test-fts-failure" });
+		const toolResultStore = ToolResultStore.open(path.join(sessionDir, "tool-results.db"));
+		const embedSpy = vi.spyOn(embedModule, "embed").mockResolvedValue([new Float32Array(EMBEDDING_DIM)]);
+		vi.spyOn(toolResultStore, "indexSync").mockImplementation(() => {
+			throw new Error("simulated FTS failure");
+		});
+		const warnSpy = vi.spyOn(logger, "warn").mockImplementation(() => {});
+		const pipeline = new IngestPipeline({
+			store,
+			toolResultStore,
+			license: "fake-license",
+			sessionId: "test-fts-failure",
+			projectCwd: "/tmp/test-project",
+			embedToolResults: false,
+		});
+
+		pipeline.ingest({
+			text: "Tool output whose FTS insert fails",
+			role: "tool_result",
+			turn: 9,
+			toolName: "grep",
+		});
+
+		expect(embedSpy).not.toHaveBeenCalled();
+		await waitForCondition(() => warnSpy.mock.calls.length > 0);
+		expect(warnSpy).toHaveBeenCalledWith("IngestPipeline: tool result FTS indexing failed", {
+			error: "simulated FTS failure",
+			role: "tool_result",
+			sessionId: "test-fts-failure",
+			toolName: "grep",
+			turn: 9,
+		});
+
+		toolResultStore.close();
 		store.close();
 	});
 

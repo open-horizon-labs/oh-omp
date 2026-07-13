@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added `assembler.embedToolResults` to disable semantic and automatic recall of tool results while retaining exact FTS keyword recall.
+
 ## [0.11.0] - 2026-07-13
 
 ### Added

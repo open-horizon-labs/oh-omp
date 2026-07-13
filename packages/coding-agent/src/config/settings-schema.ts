@@ -379,6 +379,18 @@ export const SETTINGS_SCHEMA = {
 			condition: "isAssemblerMode",
 		},
 	},
+	"assembler.embedToolResults": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "agent",
+			label: "Embed tool results",
+			description:
+				"Include tool results in semantic and automatic recall; disable to keep exact keyword recall only",
+			submenu: true,
+			condition: "isAssemblerMode",
+		},
+	},
 	"assembler.workingSetEnabled": {
 		type: "boolean",
 		default: true,
@@ -2206,6 +2218,7 @@ export interface AssemblerSettings {
 	messageBudgetPercent: number;
 	hydrationBudgetPercent: number;
 	passiveHydrationTimeoutMs: number;
+	embedToolResults: boolean;
 	hotWindowTurns: number;
 	recentWindowDays: number;
 	turnBufferPercent: number;

@@ -71,22 +71,30 @@ export class ToolResultStore {
 	#db: Database;
 
 	// Prepared statements
-	#insertResultStmt: Statement;
-	#insertFtsStmt: Statement;
-	#insertTrigramStmt: Statement;
-	#searchFtsStmt: Statement;
-	#searchTrigramStmt: Statement;
-	#getResultStmt: Statement;
-	#cleanupStmt: Statement;
-	#cleanupFtsStmt: Statement;
-	#cleanupTrigramStmt: Statement;
+	#insertResultStmt!: Statement;
+	#insertFtsStmt!: Statement;
+	#insertTrigramStmt!: Statement;
+	#searchFtsStmt!: Statement;
+	#searchTrigramStmt!: Statement;
+	#getResultStmt!: Statement;
+	#cleanupStmt!: Statement;
+	#cleanupFtsStmt!: Statement;
+	#cleanupTrigramStmt!: Statement;
 
 	constructor(dbPath: string) {
 		const dir = path.dirname(dbPath);
 		fs.mkdirSync(dir, { recursive: true });
 
 		this.#db = new Database(dbPath);
+		try {
+			this.#initialize(dbPath);
+		} catch (err) {
+			this.#db.close();
+			throw err;
+		}
+	}
 
+	#initialize(dbPath: string): void {
 		this.#db.exec(`
 PRAGMA journal_mode=WAL;
 PRAGMA synchronous=NORMAL;
@@ -104,10 +112,6 @@ CREATE TABLE IF NOT EXISTS results (
 	row_key TEXT NOT NULL DEFAULT '',
 	created_at INTEGER NOT NULL DEFAULT (unixepoch())
 );
-CREATE INDEX IF NOT EXISTS idx_results_session ON results(session_id);
-CREATE INDEX IF NOT EXISTS idx_results_project ON results(project_cwd);
-CREATE INDEX IF NOT EXISTS idx_results_row_key ON results(row_key);
-CREATE INDEX IF NOT EXISTS idx_results_created ON results(created_at);
 
 CREATE VIRTUAL TABLE IF NOT EXISTS results_fts USING fts5(
 	content,
@@ -122,6 +126,12 @@ CREATE VIRTUAL TABLE IF NOT EXISTS results_trigram USING fts5(
 		this.#ensureColumn("results", "role", "TEXT NOT NULL DEFAULT 'tool_result'");
 		this.#ensureColumn("results", "project_cwd", "TEXT NOT NULL DEFAULT ''");
 		this.#ensureColumn("results", "row_key", "TEXT NOT NULL DEFAULT ''");
+		this.#db.exec(`
+CREATE INDEX IF NOT EXISTS idx_results_session ON results(session_id);
+CREATE INDEX IF NOT EXISTS idx_results_project ON results(project_cwd);
+CREATE INDEX IF NOT EXISTS idx_results_row_key ON results(row_key);
+CREATE INDEX IF NOT EXISTS idx_results_created ON results(created_at);
+`);
 
 		this.#insertResultStmt = this.#db.prepare(
 			"INSERT INTO results (content, role, tool_name, paths, session_id, project_cwd, turn_number, row_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",

@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.11.2] - 2026-07-13
+
+### Fixed
+
+- Legacy exact-recall databases now migrate before new indexes are created, automatically restoring tool-result keyword recall on the first startup after updating.
+
 ## [0.11.1] - 2026-07-13
 
 ### Added

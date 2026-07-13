@@ -1,3 +1,4 @@
+import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -56,6 +57,54 @@ function makeEntry(overrides: {
 }
 
 describe("ToolResultStore", () => {
+	test("migrates the legacy schema before creating indexes", () => {
+		store.close();
+		const dir = path.dirname(dbPath);
+		fs.rmSync(dir, { recursive: true, force: true });
+		fs.mkdirSync(dir, { recursive: true });
+
+		const legacyDb = new Database(dbPath);
+		legacyDb.exec(`
+CREATE TABLE results (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	content TEXT NOT NULL,
+	tool_name TEXT NOT NULL,
+	paths TEXT NOT NULL DEFAULT '',
+	session_id TEXT NOT NULL,
+	turn_number INTEGER NOT NULL DEFAULT 0,
+	created_at INTEGER NOT NULL DEFAULT (unixepoch())
+);
+CREATE INDEX idx_results_session ON results(session_id);
+CREATE INDEX idx_results_created ON results(created_at);
+CREATE VIRTUAL TABLE results_fts USING fts5(content, tokenize='porter unicode61');
+CREATE VIRTUAL TABLE results_trigram USING fts5(content, tokenize='trigram');
+`);
+		legacyDb.close();
+
+		store = ToolResultStore.open(dbPath);
+		store.indexSync(
+			makeEntry({
+				content: "LEGACY_SCHEMA_MIGRATION_PROBE",
+				role: "tool_result",
+				toolName: "bash",
+				projectCwd: "/tmp/upgraded-project",
+				turnNumber: 9,
+			}),
+		);
+
+		const results = store.search("LEGACY_SCHEMA_MIGRATION_PROBE", {
+			role: "tool_result",
+			projectCwd: "/tmp/upgraded-project",
+		});
+		expect(results).toHaveLength(1);
+		expect(results[0]).toMatchObject({
+			role: "tool_result",
+			toolName: "bash",
+			projectCwd: "/tmp/upgraded-project",
+			turnNumber: 9,
+		});
+	});
+
 	test("insert and search finds exact match", () => {
 		store.indexSync(
 			makeEntry({

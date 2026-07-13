@@ -1147,7 +1147,6 @@ describe("deriveBudget", () => {
 	});
 });
 
-
 // ════════════════════════════════════════════════════════════════════════
 // Working-set retention
 // ════════════════════════════════════════════════════════════════════════
@@ -1176,11 +1175,9 @@ describe("working-set retention", () => {
 	}
 
 	function resultTextById(messages: AgentMessage[], idSuffix: number): string {
-		const msg = messages.find((m) => m.role === "toolResult" && m.toolCallId === `ws-${idSuffix}`);
+		const msg = messages.find(m => m.role === "toolResult" && m.toolCallId === `ws-${idSuffix}`);
 		if (!msg || msg.role !== "toolResult" || !Array.isArray(msg.content)) return "";
-		return msg.content
-			.map((c) => (typeof c === "object" && c.type === "text" ? c.text : ""))
-			.join("");
+		return msg.content.map(c => (typeof c === "object" && c.type === "text" ? c.text : "")).join("");
 	}
 
 	test("third unchanged read pins the canonical first-read turn beyond the hot window", () => {
@@ -1198,7 +1195,7 @@ describe("working-set retention", () => {
 		expect(resultTextById(result.messages, first)).toContain("CONTENT_A unique payload");
 		// The re-reads are still deduped/stubbed as usual.
 		expect(resultTextById(result.messages, first + 1)).not.toContain("CONTENT_A unique payload");
-		const decision = result.metadata.decisions.find((d) => d.turnIndex === 1);
+		const decision = result.metadata.decisions.find(d => d.turnIndex === 1);
 		expect(decision?.action).toBe("kept");
 		expect(decision?.reason).toBe("working-set");
 	});
@@ -1217,7 +1214,7 @@ describe("working-set retention", () => {
 			workingSet: { enabled: true, evictAfterTurns: 2 },
 		});
 		expect(resultTextById(result.messages, first)).not.toContain("CONTENT_A unique payload");
-		const decision = result.metadata.decisions.find((d) => d.turnIndex === 1);
+		const decision = result.metadata.decisions.find(d => d.turnIndex === 1);
 		expect(decision?.reason).not.toBe("working-set");
 	});
 
@@ -1263,7 +1260,7 @@ describe("working-set retention", () => {
 		const result = transformMessages(messages, { workingSet: { enabled: true } });
 		// The provably stale OLD version must not stay pinned.
 		expect(resultTextById(result.messages, first)).not.toContain("OLD content payload");
-		const pins = result.metadata.decisions.filter((d) => d.reason === "working-set");
+		const pins = result.metadata.decisions.filter(d => d.reason === "working-set");
 		expect(pins).toHaveLength(0);
 	});
 
@@ -1283,7 +1280,7 @@ describe("working-set retention", () => {
 		// RANGE_ONE read three times → its canonical turn (1) pins; the later
 		// different-range read is pagination, not proof of change.
 		expect(resultTextById(result.messages, first)).toContain("RANGE_ONE payload");
-		const decision = result.metadata.decisions.find((d) => d.turnIndex === 1);
+		const decision = result.metadata.decisions.find(d => d.turnIndex === 1);
 		expect(decision?.reason).toBe("working-set");
 	});
 
@@ -1297,7 +1294,7 @@ describe("working-set retention", () => {
 			...fillerTurns(2),
 		];
 		const result = transformMessages(messages, { workingSet: { enabled: true } });
-		const decisions = result.metadata.decisions.filter((d) => d.reason === "working-set");
+		const decisions = result.metadata.decisions.filter(d => d.reason === "working-set");
 		expect(decisions).toHaveLength(0);
 	});
 
@@ -1320,7 +1317,7 @@ describe("working-set retention", () => {
 		const result = transformMessages(messages, {
 			workingSet: { enabled: true, tokenCap: 200 },
 		});
-		const pinnedTurns = result.metadata.decisions.filter((d) => d.reason === "working-set");
+		const pinnedTurns = result.metadata.decisions.filter(d => d.reason === "working-set");
 		expect(pinnedTurns).toHaveLength(1);
 		// /b.ts touched later → wins the cap; /a.ts canonical stays compressed.
 		expect(resultTextById(result.messages, firstA)).not.toContain(bigA);
@@ -1348,11 +1345,9 @@ describe("stub recovery recipes", () => {
 	}
 
 	function resultText(messages: AgentMessage[], idSuffix: number): string {
-		const msg = messages.find((m) => m.role === "toolResult" && m.toolCallId === `rr-${idSuffix}`);
+		const msg = messages.find(m => m.role === "toolResult" && m.toolCallId === `rr-${idSuffix}`);
 		if (!msg || msg.role !== "toolResult" || !Array.isArray(msg.content)) return "";
-		return msg.content
-			.map((c) => (typeof c === "object" && c.type === "text" ? c.text : ""))
-			.join("");
+		return msg.content.map(c => (typeof c === "object" && c.type === "text" ? c.text : "")).join("");
 	}
 
 	const EIGHT_LINES = Array.from({ length: 8 }, (_, i) => `read content line ${i}`).join("\n");

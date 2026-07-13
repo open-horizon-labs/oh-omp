@@ -65,6 +65,7 @@ import {
 import { expandPromptTemplate, type PromptTemplate, renderPromptTemplate } from "../config/prompt-templates";
 import type { Settings, SkillsSettings } from "../config/settings";
 import type { ToolResultBridge } from "../context/bridge";
+import { resolveEffectivePromptContextWindow } from "../context/effective-context-window";
 import type { EffectivePromptSnapshot } from "../context/effective-prompt-snapshot";
 import type { RecallDebugTrace } from "../context/recall";
 import { type BashResult, executeBash as executeBashCommand } from "../exec/bash-executor";
@@ -118,7 +119,6 @@ import planModeToolDecisionReminderPrompt from "../prompts/system/plan-mode-tool
 	type: "text",
 };
 import ttsrInterruptTemplate from "../prompts/system/ttsr-interrupt.md" with { type: "text" };
-import { resolveEffectivePromptContextWindow } from "../context/effective-context-window";
 import { deobfuscateSessionContext, type SecretObfuscator } from "../secrets/obfuscator";
 import { resolveThinkingLevelForModel, toReasoningEffort } from "../thinking";
 import type { CheckpointState } from "../tools/checkpoint";

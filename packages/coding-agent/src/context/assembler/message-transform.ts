@@ -626,7 +626,7 @@ function computeWorkingSetExemptions(
 	}
 	const qualifying = [...tracks.values()]
 		.filter(
-			(t) =>
+			t =>
 				t.rereads >= 2 &&
 				latestTurn - t.lastTouchTurn <= evictAfterTurns &&
 				t.canonicalTurn < hotWindowStart &&

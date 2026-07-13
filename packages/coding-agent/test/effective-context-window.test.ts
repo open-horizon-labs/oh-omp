@@ -30,7 +30,12 @@ describe("resolveEffectivePromptContextWindow", () => {
 
 	test("preserves ordinary model context windows subject to assembler cap", () => {
 		const window = resolveEffectivePromptContextWindow({
-			model: makeModel({ api: "anthropic-messages", provider: "anthropic", contextWindow: 200_000, maxTokens: 64_000 }),
+			model: makeModel({
+				api: "anthropic-messages",
+				provider: "anthropic",
+				contextWindow: 200_000,
+				maxTokens: 64_000,
+			}),
 			contextWindowCap: 160_000,
 		});
 

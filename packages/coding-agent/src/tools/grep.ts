@@ -204,7 +204,11 @@ export class GrepTool implements AgentTool<typeof grepSchema, GrepToolDetails> {
 				pre !== undefined ||
 				post !== undefined ||
 				normalizedOffset > 0;
-			if (this.session.settings.get("rna.enabled") && !hasPrecisionFilters && looksLikeIdentifier(normalizedPattern)) {
+			if (
+				this.session.settings.get("rna.enabled") &&
+				!hasPrecisionFilters &&
+				looksLikeIdentifier(normalizedPattern)
+			) {
 				const rnaResult = await tryRnaSearch(normalizedPattern, this.session.cwd, searchDir?.trim() || undefined);
 				if (rnaResult) {
 					const details: GrepToolDetails = {

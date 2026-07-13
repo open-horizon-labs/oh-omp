@@ -2,13 +2,30 @@
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-07-13
+
 ### Added
 
-- Restored `/v` to toggle the context cockpit side pane for clean terminal selection/copy while preserving the default visible cockpit layout.
+- Added assembler working-set retention so frequently re-read unchanged files keep a canonical read available beyond the hot window, reducing avoidable recovery work while staying within the context budget.
+- Added actionable recovery recipes to compressed tool-result stubs, so the agent can recall the relevant file or re-read a stale snapshot at the point of use.
+- Added required nested input shapes to tool-validation errors, making malformed tool calls easier for models to correct.
+- Added workstream subagents for bounded, goal-oriented task execution.
+- Restored `/v` to toggle the context cockpit side pane while preserving the default visible cockpit layout.
 
 ### Changed
 
-- Assembled context injections (recalled-context, concept-graph facts, assembly summary) moved from the front of the message array to the tail. Front placement regenerated message 0 every request, invalidating the Anthropic prompt cache for the entire transcript each turn (measured cache write/read ratio 2.3–8.0 vs ~0.1 for non-assembler traffic); tail placement preserves the conversation prefix so cache writes are incremental.
+- Moved assembled context injections to the conversation tail, preserving the reusable transcript prefix and substantially improving Anthropic prompt-cache stability.
+- Made the assembler working set observable through its pin count in the assembly summary.
+- Exposed the context cap as a numeric setting so users can choose an explicit assembler budget.
+
+### Fixed
+
+- Repaired recall after session resume by seeding its turn counter from persisted session state, preventing unrelated historical turns from being merged.
+- Invalidated working-set pins when content changes, preventing stale file versions from being retained.
+- Automatically recover the task store from classified LanceDB stale-handle and corruption failures, preserving salvageable rows in a backup.
+- Made explicit `read` and `grep` precision requests bypass RNA structural shortcuts, so raw content, limits, filters, and search context are honored.
+- Prevented Bash interception from mistaking quoted text and composite commands for tool-redirectable shell syntax.
+- Kept Anthropic cache markers out of synthetic assembled context.
 
 ## [0.10.0] - 2026-06-01
 

@@ -626,7 +626,6 @@ describe("Tool argument coercion", () => {
 	});
 });
 
-
 describe("Validation error required-shape skeleton", () => {
 	const taskLikeTool: Tool = {
 		name: "task",

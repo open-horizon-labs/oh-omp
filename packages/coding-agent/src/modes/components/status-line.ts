@@ -287,8 +287,6 @@ export class StatusLineComponent implements Component {
 	}
 
 	#buildSegmentContext(width: number): SegmentContext {
-		const state = this.session.state;
-
 		// Get usage statistics
 		const aggregateUsageStats = this.session.sessionManager?.getUsageStatistics() ?? {
 			input: 0,
@@ -307,8 +305,7 @@ export class StatusLineComponent implements Component {
 		const contextUsage = this.session.getContextUsage();
 		const contextWindow = contextUsage?.contextWindow ?? this.session.getEffectiveContextWindow() ?? 0;
 		const contextTokens = contextUsage?.tokens ?? 0;
-		const contextPercent =
-			contextUsage?.percent ?? (contextWindow > 0 ? (contextTokens / contextWindow) * 100 : 0);
+		const contextPercent = contextUsage?.percent ?? (contextWindow > 0 ? (contextTokens / contextWindow) * 100 : 0);
 
 		const autoCompactEnabled = this.session.settings.get("compaction.enabled") ?? false;
 

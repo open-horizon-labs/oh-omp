@@ -50,8 +50,8 @@ import { dedupCodec, readCodec, warmCodec } from "./context/assembler/codecs";
 import { formatAssemblySummary } from "./context/assembly-summary";
 import { ToolResultBridge } from "./context/bridge";
 import { resolveConceptGraphInjection } from "./context/concept-graph-context";
-import { captureEffectivePromptSnapshot, type EffectivePromptSnapshot } from "./context/effective-prompt-snapshot";
 import { resolveEffectivePromptContextWindow } from "./context/effective-context-window";
+import { captureEffectivePromptSnapshot, type EffectivePromptSnapshot } from "./context/effective-prompt-snapshot";
 import { extractPaths } from "./context/extract-paths";
 import {
 	buildRecallDebugEntries,

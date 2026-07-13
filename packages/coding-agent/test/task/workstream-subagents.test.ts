@@ -20,7 +20,9 @@ describe("workstream subagents", () => {
 		expect(beancounter?.systemPrompt).toContain("### Execution Contract");
 		expect(beancounter?.systemPrompt).toContain("### Raw Request Alignment");
 		expect(beancounter?.systemPrompt).toContain("Ecosystem context, not scope");
-		expect(beancounter?.systemPrompt).toContain("Passing the OH Workstream Frame is not automatically the same as satisfying the original request");
+		expect(beancounter?.systemPrompt).toContain(
+			"Passing the OH Workstream Frame is not automatically the same as satisfying the original request",
+		);
 		expect(beancounter?.systemPrompt).toContain("**Worktree / branch contract:**");
 		expect(beancounter?.systemPrompt).toContain("**Delivery / PR contract:**");
 		expect(beancounter?.systemPrompt).toContain("canonical artifact");
@@ -86,14 +88,18 @@ describe("workstream subagents", () => {
 
 		expect(command).toBeDefined();
 		expect(command?.source).toBe("bundled");
-		expect(command?.description).toContain("OH-native Beancounter/Superego/Workstream-Expert/Coder/Verifier workflow");
+		expect(command?.description).toContain(
+			"OH-native Beancounter/Superego/Workstream-Expert/Coder/Verifier workflow",
+		);
 		expect(command?.instructions).toContain("Invoke `beancounter`");
 		expect(command?.instructions).toContain("Invoke `superego`");
 		expect(command?.instructions).toContain("Invoke `verifier`");
 		expect(command?.instructions).toContain("invoke `workstream-expert`");
 		expect(command?.instructions).toContain("# Workstream Expert System");
 		expect(command?.instructions).toContain("Workstream expert system satisfied");
-		expect(command?.instructions).toContain("Aim → Problem Space → Solution Space → Execution Contract → Verification/Learning");
+		expect(command?.instructions).toContain(
+			"Aim → Problem Space → Solution Space → Execution Contract → Verification/Learning",
+		);
 		expect(command?.instructions).toContain("## OH Workstream Frame");
 		expect(command?.instructions).toContain("Frame Delta");
 		expect(command?.instructions).toContain("Problem-space fidelity");
@@ -122,7 +128,9 @@ describe("workstream subagents", () => {
 		const builderCommand = getCommand(commands, "workstream-expert");
 		expect(builderCommand).toBeDefined();
 		expect(builderCommand?.source).toBe("bundled");
-		expect(builderCommand?.description).toContain("Interactively build or update a durable Workstream Expert System without coding");
+		expect(builderCommand?.description).toContain(
+			"Interactively build or update a durable Workstream Expert System without coding",
+		);
 		expect(builderCommand?.instructions).toContain("builder-only");
 		expect(builderCommand?.instructions).toContain("explicitly interactive");
 		expect(builderCommand?.instructions).toContain("Use `ask`");

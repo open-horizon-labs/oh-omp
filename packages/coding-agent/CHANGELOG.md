@@ -2,9 +2,15 @@
 
 ## [Unreleased]
 
+## [0.11.1] - 2026-07-13
+
 ### Added
 
-- Added `assembler.embedToolResults` to disable semantic and automatic recall of tool results while retaining exact FTS keyword recall.
+- Added `assembler.embedToolResults` to opt new tool results into semantic and automatic recall while retaining exact FTS keyword recall when disabled.
+
+### Changed
+
+- New tool results no longer consume embedding capacity or enter LanceDB by default, reducing centralized embedding load; existing semantic rows are unchanged and are not migrated automatically.
 
 ## [0.11.0] - 2026-07-13
 

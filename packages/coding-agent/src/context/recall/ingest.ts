@@ -50,7 +50,7 @@ export class IngestPipeline {
 		this.#license = options.license;
 		this.#sessionId = options.sessionId;
 		this.#projectCwd = options.projectCwd;
-		this.#embedToolResults = options.embedToolResults ?? true;
+		this.#embedToolResults = options.embedToolResults ?? false;
 	}
 
 	/**

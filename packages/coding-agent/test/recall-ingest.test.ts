@@ -2,6 +2,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, test, vi } from "bun:
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import { getDefault } from "@oh-my-pi/pi-coding-agent/config/settings-schema";
 import { EMBEDDING_DIM, type IngestItem, IngestPipeline, RecallStore } from "@oh-my-pi/pi-coding-agent/context/recall";
 import * as embedModule from "@oh-my-pi/pi-coding-agent/context/recall/embed";
 import {
@@ -288,7 +289,7 @@ describe("IngestPipeline", () => {
 		store.close();
 	});
 
-	test("disabled tool-result embeddings retain exact keyword recall without semantic work", async () => {
+	test("tool-result embeddings default off while retaining exact keyword recall", async () => {
 		const sessionDir = path.join(tmpDir, "tool-result-disabled");
 		const store = await RecallStore.open({ agentDir: sessionDir, sessionId: "test-tool-disabled" });
 		const toolResultStore = ToolResultStore.open(path.join(sessionDir, "tool-results.db"));
@@ -299,7 +300,6 @@ describe("IngestPipeline", () => {
 			license: "fake-license",
 			sessionId: "test-tool-disabled",
 			projectCwd: "/tmp/test-project",
-			embedToolResults: false,
 		});
 
 		pipeline.ingest({
@@ -320,7 +320,7 @@ describe("IngestPipeline", () => {
 		store.close();
 	});
 
-	test("tool-result embeddings remain enabled by default without duplicate FTS rows", async () => {
+	test("tool-result embeddings can be enabled explicitly without duplicate FTS rows", async () => {
 		const sessionDir = path.join(tmpDir, "tool-result-default");
 		const store = await RecallStore.open({ agentDir: sessionDir, sessionId: "test-tool-default" });
 		const toolResultStore = ToolResultStore.open(path.join(sessionDir, "tool-results.db"));
@@ -331,6 +331,7 @@ describe("IngestPipeline", () => {
 			license: "fake-license",
 			sessionId: "test-tool-default",
 			projectCwd: "/tmp/test-project",
+			embedToolResults: true,
 		});
 
 		pipeline.ingest({
@@ -350,6 +351,10 @@ describe("IngestPipeline", () => {
 
 		toolResultStore.close();
 		store.close();
+	});
+
+	test("settings schema defaults tool-result embeddings off", () => {
+		expect(getDefault("assembler.embedToolResults")).toBe(false);
 	});
 
 	test("disabling tool-result embeddings does not change user semantic ingestion", async () => {

@@ -381,12 +381,12 @@ export const SETTINGS_SCHEMA = {
 	},
 	"assembler.embedToolResults": {
 		type: "boolean",
-		default: true,
+		default: false,
 		ui: {
 			tab: "agent",
 			label: "Embed tool results",
 			description:
-				"Include tool results in semantic and automatic recall; disable to keep exact keyword recall only",
+				"Embed new tool results for semantic and automatic recall; exact keyword recall remains available when disabled",
 			submenu: true,
 			condition: "isAssemblerMode",
 		},

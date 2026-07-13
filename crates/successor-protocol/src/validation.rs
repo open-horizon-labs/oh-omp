@@ -53,6 +53,18 @@
 //!   events, a shared `error_id` between the rejection and the recorded error,
 //!   and that the referenced tool is present in the tool catalog with a
 //!   non-executable status (via [`validate_unsupported_tool_lifecycle`]).
+//! - **Typed recoverable-failure replay.** [`project_session`] accepts a
+//!   complete `tool_call.requested` -> `tool_call.started` -> `error.recorded`
+//!   -> `tool_call.failed` chain and projects it as a single
+//!   [`ToolCallProjectionV0`] row with
+//!   [`ToolCallStatus::Failed`](crate::projection::ToolCallStatus::Failed) plus
+//!   one typed [`ErrorProjectionV0`](crate::projection::ErrorProjectionV0),
+//!   never a result, completion, or artifact. Any other shape -- duplicate or
+//!   out-of-order transitions, cross-tool causation, a mismatched `error_id`,
+//!   or a chain left incomplete at end of stream (requested-only, started-only,
+//!   result-without-completed, or error-without-failed) -- is rejected. This
+//!   validator's bundle checks are unaffected: successful-turn byte equality
+//!   and the unsupported-tool rejection below both still hold unchanged.
 //!
 //! # Out of scope
 //!

@@ -367,6 +367,11 @@ pub struct CompletedToolRoundV0 {
 	pub tool_name:             String,
 	pub arguments:             WireJson,
 	pub result_text:           String,
+	/// `true` when this round is a recoverable executor failure. Anthropic
+	/// surfaces this as
+	/// `is_error: true` on the `tool_result` block; success omits the key
+	/// entirely so the byte-pinned success fixture is unaffected.
+	pub is_error:              bool,
 }
 
 /// Projects a full turn conversation -- the original user prompt plus
@@ -380,8 +385,8 @@ pub struct CompletedToolRoundV0 {
 /// (`tests/slice0_provider_shapes.rs::
 /// request_projection_matches_the_canonical_fixture_for_every_provider_shape`).
 ///
-/// Replaces the previous wholesale `round_text` replacement design
-/// (<agent://256> `item_b_fix_ruling`; <agent://259> finding 2 /
+/// Replaces the previous wholesale `round_text` replacement design:
+/// every prior round and the original
 /// `hydration_design_adjudication`): every prior round and the original
 /// prompt stay present in every subsequent request instead of being
 /// discarded after the first tool hop.
@@ -411,13 +416,17 @@ pub fn project_conversation_request_body(
 						"input": round.arguments,
 					}],
 				}));
+				let mut tool_result_content = serde_json::json!({
+					"type": "tool_result",
+					"tool_use_id": round.provider_tool_call_id,
+					"content": round.result_text,
+				});
+				if round.is_error {
+					tool_result_content["is_error"] = serde_json::Value::Bool(true);
+				}
 				messages.push(serde_json::json!({
 					"role": "user",
-					"content": [{
-						"type": "tool_result",
-						"tool_use_id": round.provider_tool_call_id,
-						"content": round.result_text,
-					}],
+					"content": [tool_result_content],
 				}));
 			}
 		},
@@ -944,6 +953,7 @@ mod tests {
 			tool_name:             "read".to_owned(),
 			arguments:             serde_json::json!({ "path": "a.txt" }),
 			result_text:           "file contents".to_owned(),
+			is_error:              false,
 		}];
 
 		let body = project_conversation_request_body(
@@ -985,6 +995,7 @@ mod tests {
 			tool_name:             "read".to_owned(),
 			arguments:             serde_json::json!({ "path": "a.txt" }),
 			result_text:           "file contents".to_owned(),
+			is_error:              false,
 		}];
 
 		let body = project_conversation_request_body(
@@ -1013,6 +1024,137 @@ mod tests {
 					"output": "file contents",
 				},
 			])
+		);
+	}
+
+	#[test]
+	fn project_conversation_request_body_pins_the_anthropic_continuation_message_shape_and_omits_is_error_on_success()
+	 {
+		let catalog = catalog_with(vec![]);
+		let completed_rounds = vec![CompletedToolRoundV0 {
+			provider_tool_call_id: "call_shape_anthropic_001".to_owned(),
+			tool_name:             "read".to_owned(),
+			arguments:             serde_json::json!({ "path": "a.txt" }),
+			result_text:           "file contents".to_owned(),
+			is_error:              false,
+		}];
+
+		let body = project_conversation_request_body(
+			&ProviderApiShapeV0::AnthropicMessages,
+			"what is in this workspace?",
+			&completed_rounds,
+			&catalog,
+		);
+
+		assert_eq!(
+			body["messages"],
+			serde_json::json!([
+				{ "role": "user", "content": [{ "type": "text", "text": "what is in this workspace?" }] },
+				{
+					"role": "assistant",
+					"content": [{
+						"type": "tool_use",
+						"id": "call_shape_anthropic_001",
+						"name": "read",
+						"input": { "path": "a.txt" },
+					}],
+				},
+				{
+					"role": "user",
+					"content": [{
+						"type": "tool_result",
+						"tool_use_id": "call_shape_anthropic_001",
+						"content": "file contents",
+					}],
+				},
+			])
+		);
+	}
+
+	#[test]
+	fn project_conversation_request_body_marks_a_failed_round_is_error_true_for_anthropic() {
+		let catalog = catalog_with(vec![]);
+		let completed_rounds = vec![CompletedToolRoundV0 {
+			provider_tool_call_id: "call_shape_anthropic_002".to_owned(),
+			tool_name:             "read".to_owned(),
+			arguments:             serde_json::json!({ "path": "missing.txt" }),
+			result_text:           "{\"status\":\"failed\"}".to_owned(),
+			is_error:              true,
+		}];
+
+		let body = project_conversation_request_body(
+			&ProviderApiShapeV0::AnthropicMessages,
+			"what is in this workspace?",
+			&completed_rounds,
+			&catalog,
+		);
+
+		let tool_result = &body["messages"][2]["content"][0];
+		assert_eq!(tool_result["is_error"], serde_json::json!(true));
+		assert_eq!(tool_result["content"], serde_json::json!("{\"status\":\"failed\"}"));
+	}
+
+	#[test]
+	fn project_conversation_request_body_preserves_the_bounded_failure_text_with_no_extra_flag_for_openai_chat_completions()
+	 {
+		let catalog = catalog_with(vec![]);
+		let completed_rounds = vec![CompletedToolRoundV0 {
+			provider_tool_call_id: "call_shape_openai_chat_002".to_owned(),
+			tool_name:             "read".to_owned(),
+			arguments:             serde_json::json!({ "path": "missing.txt" }),
+			result_text:           "{\"status\":\"failed\"}".to_owned(),
+			is_error:              true,
+		}];
+
+		let body = project_conversation_request_body(
+			&ProviderApiShapeV0::OpenAiChatCompletions,
+			"what is in this workspace?",
+			&completed_rounds,
+			&catalog,
+		);
+
+		assert_eq!(
+			body["messages"][2],
+			serde_json::json!({
+				"role": "tool",
+				"tool_call_id": "call_shape_openai_chat_002",
+				"content": "{\"status\":\"failed\"}",
+			}),
+			"a failed round must carry the same bounded JSON text through the existing `content` \
+			 field, with no added unsupported flag for a provider shape that has no wire concept of \
+			 is_error"
+		);
+	}
+
+	#[test]
+	fn project_conversation_request_body_preserves_the_bounded_failure_text_with_no_extra_flag_for_openai_responses()
+	 {
+		let catalog = catalog_with(vec![]);
+		let completed_rounds = vec![CompletedToolRoundV0 {
+			provider_tool_call_id: "call_shape_openai_resp_002".to_owned(),
+			tool_name:             "read".to_owned(),
+			arguments:             serde_json::json!({ "path": "missing.txt" }),
+			result_text:           "{\"status\":\"failed\"}".to_owned(),
+			is_error:              true,
+		}];
+
+		let body = project_conversation_request_body(
+			&ProviderApiShapeV0::OpenAiResponses,
+			"what is in this workspace?",
+			&completed_rounds,
+			&catalog,
+		);
+
+		assert_eq!(
+			body["input"][2],
+			serde_json::json!({
+				"type": "function_call_output",
+				"call_id": "call_shape_openai_resp_002",
+				"output": "{\"status\":\"failed\"}",
+			}),
+			"a failed round must carry the same bounded JSON text through the existing `output` \
+			 field, with no added unsupported flag for a provider shape that has no wire concept of \
+			 is_error"
 		);
 	}
 }

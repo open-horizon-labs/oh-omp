@@ -4,7 +4,7 @@ use serde::Serialize;
 
 use crate::{
 	error::{ProtocolResult, ProtocolViolation, ProtocolViolationCode},
-	projection::SessionProjectionV0,
+	projection::{SessionProjectionV0, ToolCallStatus},
 };
 
 /// Serialize any DTO as deterministic pretty JSON with a final newline.
@@ -63,15 +63,116 @@ pub fn to_canonical_projection_json_string(value: &SessionProjectionV0) -> Strin
 		line_str(&mut out, 6, "tool_name", &tool.tool_name, true);
 		line_str(&mut out, 6, "status", tool.status.as_str(), true);
 		line_str(&mut out, 6, "requested_event_id", tool.requested_event_id.as_str(), true);
-		line_str(&mut out, 6, "result_event_id", tool.result_event_id.as_str(), true);
-		line_str(&mut out, 6, "completed_event_id", tool.completed_event_id.as_str(), true);
-		line_str(&mut out, 6, "artifact_id", tool.artifact_id.as_str(), false);
+		match tool.status {
+			ToolCallStatus::Completed => {
+				line_str(
+					&mut out,
+					6,
+					"result_event_id",
+					tool
+						.result_event_id
+						.as_ref()
+						.expect("validate_structure guarantees a completed row carries result_event_id")
+						.as_str(),
+					true,
+				);
+				line_str(
+					&mut out,
+					6,
+					"completed_event_id",
+					tool
+						.completed_event_id
+						.as_ref()
+						.expect(
+							"validate_structure guarantees a completed row carries completed_event_id",
+						)
+						.as_str(),
+					true,
+				);
+				line_str(
+					&mut out,
+					6,
+					"artifact_id",
+					tool
+						.artifact_id
+						.as_ref()
+						.expect("validate_structure guarantees a completed row carries artifact_id")
+						.as_str(),
+					false,
+				);
+			},
+			ToolCallStatus::Failed => {
+				line_str(
+					&mut out,
+					6,
+					"started_event_id",
+					tool
+						.started_event_id
+						.as_ref()
+						.expect("validate_structure guarantees a failed row carries started_event_id")
+						.as_str(),
+					true,
+				);
+				line_str(
+					&mut out,
+					6,
+					"error_event_id",
+					tool
+						.error_event_id
+						.as_ref()
+						.expect("validate_structure guarantees a failed row carries error_event_id")
+						.as_str(),
+					true,
+				);
+				line_str(
+					&mut out,
+					6,
+					"failed_event_id",
+					tool
+						.failed_event_id
+						.as_ref()
+						.expect("validate_structure guarantees a failed row carries failed_event_id")
+						.as_str(),
+					true,
+				);
+				line_str(
+					&mut out,
+					6,
+					"error_id",
+					tool
+						.error_id
+						.as_ref()
+						.expect("validate_structure guarantees a failed row carries error_id")
+						.as_str(),
+					false,
+				);
+			},
+		}
 		out.push_str("    }");
 		comma_newline(&mut out, index + 1 != value.tools.len());
 	}
 	out.push_str("  ],\n");
 
-	out.push_str("  \"errors\": []");
+	if value.errors.is_empty() {
+		out.push_str("  \"errors\": []");
+	} else {
+		out.push_str("  \"errors\": [\n");
+		for (index, error) in value.errors.iter().enumerate() {
+			out.push_str("    {\n");
+			line_str(&mut out, 6, "error_id", error.error_id.as_str(), true);
+			line_str(&mut out, 6, "tool_call_id", error.tool_call_id.as_str(), true);
+			line_str(&mut out, 6, "error_event_id", error.error_event_id.as_str(), true);
+			line_str(&mut out, 6, "code", &error.code, true);
+			line_str(&mut out, 6, "message", &error.message, true);
+			line_bool(&mut out, 6, "recoverable", error.recoverable, true);
+			line_bool(&mut out, 6, "retryable", error.retryable, true);
+			line_str(&mut out, 6, "correlation_id", error.correlation_id.as_str(), true);
+			line_json(&mut out, 6, "details", &error.details, false);
+			out.push_str("    }");
+			comma_newline(&mut out, index + 1 != value.errors.len());
+		}
+		out.push_str("  ]");
+	}
 	comma_newline(&mut out, true);
 
 	out.push_str("  \"artifacts\": [\n");
@@ -132,6 +233,22 @@ fn line_u64(out: &mut String, indent: usize, key: &str, value: u64, comma: bool)
 	out.push_str(&json_string(key));
 	out.push_str(": ");
 	out.push_str(&value.to_string());
+	comma_newline(out, comma);
+}
+
+fn line_bool(out: &mut String, indent: usize, key: &str, value: bool, comma: bool) {
+	out.push_str(&" ".repeat(indent));
+	out.push_str(&json_string(key));
+	out.push_str(": ");
+	out.push_str(if value { "true" } else { "false" });
+	comma_newline(out, comma);
+}
+
+fn line_json(out: &mut String, indent: usize, key: &str, value: &serde_json::Value, comma: bool) {
+	out.push_str(&" ".repeat(indent));
+	out.push_str(&json_string(key));
+	out.push_str(": ");
+	out.push_str(&serde_json::to_string(value).expect("serializing a JSON value cannot fail"));
 	comma_newline(out, comma);
 }
 

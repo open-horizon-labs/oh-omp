@@ -111,8 +111,8 @@ use successor_kernel::{
 	platform_client::{EntitlementToken, KernelPlatformClient},
 	provider::auth::{ProviderAuthOutcome, ProviderSlot},
 	runner::{
-		ScriptedProviderExecutor, ScriptedRound, TurnContext, TurnInput, TurnRunner,
-		require_provider_credential,
+		ScriptedProviderExecutor, ScriptedRound, ToolDispatchOutcome, TurnContext, TurnInput,
+		TurnRunner, require_provider_credential,
 	},
 	state_machine::{TurnFailure, TurnPhase, TurnState},
 	stream::KernelFrameStream,
@@ -204,6 +204,16 @@ fn seed_workspace(label: &str) -> PathBuf {
 
 fn cleanup_workspace(root: &PathBuf) {
 	let _ = std::fs::remove_dir_all(root);
+}
+
+/// RAII guard for a seeded workspace directory: cleans up on success and
+/// on unwind (a panicking assertion mid-test must not leak the temp dir).
+struct WorkspaceGuard(PathBuf);
+
+impl Drop for WorkspaceGuard {
+	fn drop(&mut self) {
+		cleanup_workspace(&self.0);
+	}
 }
 
 // ---------------------------------------------------------------------
@@ -521,15 +531,17 @@ fn provider_auth_unavailable_is_a_typed_degradation_with_no_raw_event_shape() {
 	assert_eq!(failure, TurnFailure::ProviderAuthUnavailable { slot: ProviderSlot::Anthropic });
 }
 
-// ---------------------------------------------------------------------
-// Tool-dispatch failure path: typed rejection, not a panic or a hang.
-// ---------------------------------------------------------------------
+// Tool-dispatch failure path: a recoverable typed rejection, not a panic
+// and not a fatal turn failure. Only the invocation's arguments are
+// invalid; the tool itself is executable, so the registry must reach it
+// and report the failure as a durable, bounded Failed outcome.
 
 #[tokio::test]
-async fn out_of_root_read_arguments_produce_a_typed_failure_not_a_panic() {
+async fn out_of_root_read_arguments_produce_a_recoverable_typed_failure_not_a_panic() {
 	let server = TestServer::start("tool-dispatch-failure").await;
 	let client = server.client();
 	let workspace_root = seed_workspace("tool-dispatch-failure");
+	let _workspace_guard = WorkspaceGuard(workspace_root.clone());
 	let session = client
 		.create_session(&successor_protocol::platform_api::CreateSessionRequestV0 {
 			workspace:  successor_protocol::platform_api::WorkspaceV0 {
@@ -566,8 +578,7 @@ async fn out_of_root_read_arguments_produce_a_typed_failure_not_a_panic() {
 		&workspace_root,
 	);
 
-	let _causation_event_id = successor_kernel::id_factory::RealIdFactory::new().event_id();
-	let result = runner
+	let outcome = runner
 		.dispatch_tool_call(
 			&mut trace,
 			&ctx,
@@ -577,19 +588,73 @@ async fn out_of_root_read_arguments_produce_a_typed_failure_not_a_panic() {
 			None,
 			None,
 		)
-		.await;
+		.await
+		.expect(
+			"an out-of-root read is a recoverable tool-execution failure, not an infrastructure error",
+		);
 
-	// Must be a typed error, not a panic (the test reaching this line at
-	// all proves no panic occurred) and not a `ToolRejected` (the tool
-	// itself is executable in Slice 0; only this invocation's arguments
-	// are invalid).
-	let failure = result.expect_err("an out-of-root read must fail, not succeed");
+	let ToolDispatchOutcome::Failed(failure) = outcome else {
+		panic!(
+			"an out-of-root read argument must produce ToolDispatchOutcome::Failed, got {outcome:?}"
+		);
+	};
+
 	assert!(
-		matches!(failure, TurnFailure::Protocol(_)),
-		"an out-of-root read argument must surface as a typed execution failure, got {failure:?}"
+		!failure.provider_result_text.contains("etc/passwd")
+			&& !failure.provider_result_text.contains(".."),
+		"the bounded provider-visible failure text must never echo the raw out-of-root path, got \
+		 {:?}",
+		failure.provider_result_text
+	);
+	assert!(
+		serde_json::from_str::<serde_json::Value>(&failure.provider_result_text).is_ok(),
+		"the bounded provider-visible failure text must be valid JSON, got {:?}",
+		failure.provider_result_text
 	);
 
-	cleanup_workspace(&workspace_root);
+	let produced = trace.events();
+	let event_types: Vec<_> = produced
+		.iter()
+		.map(|event| event.event_type.clone())
+		.collect();
+	assert_eq!(
+		event_types,
+		vec![
+			raw_event::RawEventType::ToolCallRequested,
+			raw_event::RawEventType::ToolCallStarted,
+			raw_event::RawEventType::ErrorRecorded,
+			raw_event::RawEventType::ToolCallFailed,
+		],
+		"a recoverable out-of-root failure must persist exactly the requested -> started -> error \
+		 -> failed chain, with no tool_result.recorded and no tool_call.completed"
+	);
+	assert!(
+		!produced
+			.iter()
+			.any(|event| event.entity_ids.artifact_id.is_some()
+				|| event.entity_ids.source_envelope_id.is_some()),
+		"a failed dispatch must never carry an artifact_id or source_envelope_id on any persisted \
+		 event"
+	);
+	let error = produced
+		.iter()
+		.find(|event| event.event_type == raw_event::RawEventType::ErrorRecorded)
+		.expect("recoverable failure persists error.recorded");
+	let error_id = error
+		.entity_ids
+		.error_id
+		.as_ref()
+		.expect("error event has error id");
+	let failed_frame = trace
+		.frames()
+		.iter()
+		.find(|frame| {
+			frame.kind == successor_protocol::kernel_frame::KernelFrameKindV0::ToolCallCompleted
+				&& frame.payload["status"] == "failed"
+		})
+		.expect("failed execution emits a completion frame");
+	assert_eq!(failed_frame.entity_ids.tool_call_id.as_ref(), Some(&tool_call_id));
+	assert_eq!(failed_frame.entity_ids.error_id.as_ref(), Some(error_id));
 }
 
 #[test]

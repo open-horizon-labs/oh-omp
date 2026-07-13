@@ -4,11 +4,15 @@ use successor_protocol::{
 	canonical_json::{to_canonical_json_bytes, to_canonical_projection_json_bytes},
 	error::ProtocolViolationCode,
 	fixtures,
-	ids::EventId,
+	ids::{
+		ArtifactId, ErrorId, EventId, MessageId, RequestId, SessionId, SourceEnvelopeId, ToolCallId,
+		TurnId,
+	},
 	kernel_frame::KernelFrameKindV0,
 	platform_api::{AssemblePhaseV0, AssemblyResponseV0},
+	projection::{SessionProjectionV0, ToolCallStatus},
 	provider::ProviderApiShapeV0,
-	raw_event::{RawEventType, RawEventV0},
+	raw_event::{EntityIdsV0, RawEventType, RawEventV0},
 	replay::project_session,
 	tool_catalog::ToolStatusV0,
 	validation,
@@ -652,4 +656,576 @@ fn credential_like_field_on_assembly_response_root_is_rejected() {
 		serde_json::from_value::<AssemblyResponseV0>(value).is_err(),
 		"unknown credential-like root field must be rejected"
 	);
+}
+
+fn recoverable_failure_session_id() -> SessionId {
+	SessionId::try_from("ses_recoverable-failure-test".to_owned()).expect("valid session id")
+}
+
+fn recoverable_failure_request_id() -> RequestId {
+	RequestId::try_from("req_recoverable-failure-test".to_owned()).expect("valid request id")
+}
+
+fn recoverable_failure_turn_id() -> TurnId {
+	TurnId::try_from("turn_recoverable-failure-test".to_owned()).expect("valid turn id")
+}
+
+fn recoverable_failure_event_id(n: u32) -> EventId {
+	EventId::try_from(format!("evt_recoverable-failure-test-{n:02}")).expect("valid event id")
+}
+
+fn recoverable_failure_tool_call_id(suffix: &str) -> ToolCallId {
+	ToolCallId::try_from(format!("tool_recoverable-failure-test-{suffix}"))
+		.expect("valid tool call id")
+}
+
+fn recoverable_failure_error_id(suffix: &str) -> ErrorId {
+	ErrorId::try_from(format!("err_recoverable-failure-test-{suffix}")).expect("valid error id")
+}
+
+fn recoverable_failure_message_id(n: u32) -> MessageId {
+	MessageId::try_from(format!("msg_recoverable-failure-test-{n:02}")).expect("valid message id")
+}
+
+fn recoverable_failure_source_envelope_id(n: u32) -> successor_protocol::ids::SourceEnvelopeId {
+	SourceEnvelopeId::try_from(format!("src_recoverable-failure-test-{n:02}"))
+		.expect("valid source envelope id")
+}
+
+fn recoverable_failure_artifact_id() -> ArtifactId {
+	ArtifactId::try_from("art_recoverable-failure-test".to_owned()).expect("valid artifact id")
+}
+
+/// Builds one raw event for the recoverable-failure test streams below.
+/// `occurred_at` and `idempotency_key` are fixed since the projection under
+/// test never inspects them.
+fn recoverable_failure_event(
+	seq: u64,
+	event_type: RawEventType,
+	causation: Option<EventId>,
+	entity_ids: EntityIdsV0,
+	payload: serde_json::Value,
+) -> RawEventV0 {
+	let mut event = RawEventV0::new(
+		recoverable_failure_session_id(),
+		recoverable_failure_event_id(seq as u32),
+		event_type,
+		seq,
+		format!("idem-{seq:02}"),
+		recoverable_failure_request_id(),
+		recoverable_failure_turn_id(),
+		payload,
+		"2026-01-01T00:00:00Z",
+	);
+	event.causation_event_id = causation;
+	event.entity_ids = entity_ids;
+	event
+}
+
+/// A minimal, complete recoverable-executor-failure raw-event stream:
+/// `tool_call.requested` -> `tool_call.started` -> `error.recorded` ->
+/// `tool_call.failed`, bracketed by a user turn and an assistant turn so
+/// the projection also has a transcript and a `last_assistant_summary`.
+fn recoverable_failure_events() -> Vec<RawEventV0> {
+	let tool_call = recoverable_failure_tool_call_id("a");
+	let error = recoverable_failure_error_id("a");
+
+	let user_turn = recoverable_failure_event(
+		1,
+		RawEventType::UserTurnRecorded,
+		None,
+		EntityIdsV0 {
+			message_id: Some(recoverable_failure_message_id(1)),
+			source_envelope_id: Some(recoverable_failure_source_envelope_id(1)),
+			..EntityIdsV0::default()
+		},
+		serde_json::json!({ "text": "run the flaky tool" }),
+	);
+	let requested = recoverable_failure_event(
+		2,
+		RawEventType::ToolCallRequested,
+		Some(user_turn.event_id.clone()),
+		EntityIdsV0 { tool_call_id: Some(tool_call.clone()), ..EntityIdsV0::default() },
+		serde_json::json!({ "tool_name": "flaky_tool" }),
+	);
+	let started = recoverable_failure_event(
+		3,
+		RawEventType::ToolCallStarted,
+		Some(requested.event_id.clone()),
+		EntityIdsV0 { tool_call_id: Some(tool_call.clone()), ..EntityIdsV0::default() },
+		serde_json::json!({}),
+	);
+	let error_recorded = recoverable_failure_event(
+		4,
+		RawEventType::ErrorRecorded,
+		Some(started.event_id.clone()),
+		EntityIdsV0 {
+			tool_call_id: Some(tool_call.clone()),
+			error_id: Some(error.clone()),
+			..EntityIdsV0::default()
+		},
+		serde_json::json!({
+			"schema_version": "platform.error.v0",
+			"error_id": error.as_str(),
+			"code": "executor_timeout",
+			"message": "executor timed out after 30s",
+			"recoverable": true,
+			"retryable": false,
+			"correlation_id": recoverable_failure_request_id().as_str(),
+			"details": { "failure_class": "executor_timeout", "tool_name": "flaky_tool" },
+		}),
+	);
+	let failed = recoverable_failure_event(
+		5,
+		RawEventType::ToolCallFailed,
+		Some(error_recorded.event_id.clone()),
+		EntityIdsV0 {
+			tool_call_id: Some(tool_call),
+			error_id: Some(error.clone()),
+			..EntityIdsV0::default()
+		},
+		serde_json::json!({
+			"status": "failed",
+			"tool_name": "flaky_tool",
+			"error_id": error.as_str(),
+			"code": "executor_timeout",
+			"message": "executor timed out after 30s",
+		}),
+	);
+	let assistant_turn = recoverable_failure_event(
+		6,
+		RawEventType::AssistantTurnRecorded,
+		Some(failed.event_id.clone()),
+		EntityIdsV0 {
+			message_id: Some(recoverable_failure_message_id(2)),
+			source_envelope_id: Some(recoverable_failure_source_envelope_id(2)),
+			..EntityIdsV0::default()
+		},
+		serde_json::json!({
+			"text": "the flaky tool failed and could not be retried in this turn",
+			"summary": "flaky_tool failed",
+		}),
+	);
+
+	vec![user_turn, requested, started, error_recorded, failed, assistant_turn]
+}
+
+#[test]
+fn recoverable_tool_failure_projects_one_failed_tool_and_one_typed_error() {
+	let events = recoverable_failure_events();
+	let projection =
+		project_session(&events).expect("a valid recoverable-failure chain must project cleanly");
+
+	assert_eq!(projection.tools.len(), 1, "exactly one tool call row expected");
+	let tool = &projection.tools[0];
+	assert_eq!(tool.status, ToolCallStatus::Failed);
+	assert!(tool.result_event_id.is_none());
+	assert!(tool.completed_event_id.is_none());
+	assert!(tool.artifact_id.is_none());
+	assert!(tool.started_event_id.is_some());
+	assert!(tool.error_event_id.is_some());
+	assert!(tool.failed_event_id.is_some());
+	assert!(tool.error_id.is_some());
+
+	assert_eq!(projection.errors.len(), 1, "exactly one typed error row expected");
+	let error = &projection.errors[0];
+	assert_eq!(error.tool_call_id, tool.tool_call_id);
+	assert_eq!(error.error_id, tool.error_id.clone().expect("failed row carries error_id"));
+	assert_eq!(error.code, "executor_timeout");
+	assert!(error.recoverable);
+	assert!(!error.retryable);
+
+	assert!(projection.artifacts.is_empty(), "a failed dispatch must never create an artifact");
+
+	let bytes =
+		to_canonical_projection_json_bytes(&projection).expect("canonical projection must serialize");
+	let text = String::from_utf8(bytes).expect("canonical projection bytes must be utf8");
+	assert!(text.contains("\"status\": \"failed\""));
+	assert!(text.contains("\"recoverable\": true"));
+	assert!(text.contains("\"retryable\": false"));
+	let reparsed: SessionProjectionV0 =
+		serde_json::from_str(&text).expect("canonical projection bytes must parse back");
+	assert_eq!(reparsed, projection);
+}
+
+#[test]
+fn error_recorded_without_failed_at_end_of_stream_is_rejected() {
+	let tool_call = recoverable_failure_tool_call_id("error-only");
+	let user_turn = recoverable_failure_event(
+		1,
+		RawEventType::UserTurnRecorded,
+		None,
+		EntityIdsV0 {
+			message_id: Some(recoverable_failure_message_id(1)),
+			source_envelope_id: Some(recoverable_failure_source_envelope_id(1)),
+			..EntityIdsV0::default()
+		},
+		serde_json::json!({ "text": "run the flaky tool" }),
+	);
+	let requested = recoverable_failure_event(
+		2,
+		RawEventType::ToolCallRequested,
+		Some(user_turn.event_id.clone()),
+		EntityIdsV0 { tool_call_id: Some(tool_call.clone()), ..EntityIdsV0::default() },
+		serde_json::json!({ "tool_name": "flaky_tool" }),
+	);
+	let started = recoverable_failure_event(
+		3,
+		RawEventType::ToolCallStarted,
+		Some(requested.event_id.clone()),
+		EntityIdsV0 { tool_call_id: Some(tool_call.clone()), ..EntityIdsV0::default() },
+		serde_json::json!({}),
+	);
+	let error_recorded = recoverable_failure_event(
+		4,
+		RawEventType::ErrorRecorded,
+		Some(started.event_id.clone()),
+		EntityIdsV0 {
+			tool_call_id: Some(tool_call),
+			error_id: Some(recoverable_failure_error_id("error-only")),
+			..EntityIdsV0::default()
+		},
+		serde_json::json!({
+			"schema_version": "platform.error.v0",
+			"error_id": recoverable_failure_error_id("error-only").as_str(),
+			"code": "executor_timeout",
+			"message": "executor timed out after 30s",
+			"recoverable": true,
+			"retryable": false,
+			"correlation_id": recoverable_failure_request_id().as_str(),
+			"details": {},
+		}),
+	);
+	// No tool_call.failed: the chain never reaches a terminal state. The
+	// trailing assistant turn keeps every *other* invariant satisfied so
+	// this test isolates the end-of-stream terminal-state check.
+	let assistant_turn = recoverable_failure_event(
+		5,
+		RawEventType::AssistantTurnRecorded,
+		Some(error_recorded.event_id.clone()),
+		EntityIdsV0 {
+			message_id: Some(recoverable_failure_message_id(2)),
+			source_envelope_id: Some(recoverable_failure_source_envelope_id(2)),
+			..EntityIdsV0::default()
+		},
+		serde_json::json!({ "text": "still waiting on the flaky tool", "summary": "pending" }),
+	);
+
+	let events = vec![user_turn, requested, started, error_recorded, assistant_turn];
+	let err = project_session(&events)
+		.expect_err("an error.recorded chain without a terminal tool_call.failed must be rejected");
+	assert_eq!(err.code, ProtocolViolationCode::ReplayMismatch);
+}
+
+#[test]
+fn tool_call_requested_only_is_rejected_by_project_session() {
+	let tool_call = recoverable_failure_tool_call_id("requested-only");
+	let user_turn = recoverable_failure_event(
+		1,
+		RawEventType::UserTurnRecorded,
+		None,
+		EntityIdsV0 {
+			message_id: Some(recoverable_failure_message_id(1)),
+			source_envelope_id: Some(recoverable_failure_source_envelope_id(1)),
+			..EntityIdsV0::default()
+		},
+		serde_json::json!({ "text": "queue a tool" }),
+	);
+	let requested = recoverable_failure_event(
+		2,
+		RawEventType::ToolCallRequested,
+		Some(user_turn.event_id.clone()),
+		EntityIdsV0 { tool_call_id: Some(tool_call), ..EntityIdsV0::default() },
+		serde_json::json!({ "tool_name": "queued_tool" }),
+	);
+	let assistant_turn = recoverable_failure_event(
+		3,
+		RawEventType::AssistantTurnRecorded,
+		Some(requested.event_id.clone()),
+		EntityIdsV0 {
+			message_id: Some(recoverable_failure_message_id(2)),
+			source_envelope_id: Some(recoverable_failure_source_envelope_id(2)),
+			..EntityIdsV0::default()
+		},
+		serde_json::json!({ "text": "still queued", "summary": "pending" }),
+	);
+
+	let events = vec![user_turn, requested, assistant_turn];
+	let err = project_session(&events)
+		.expect_err("a requested-only tool call must never reach a terminal state");
+	assert_eq!(err.code, ProtocolViolationCode::ReplayMismatch);
+}
+
+#[test]
+fn tool_call_started_only_is_rejected_by_project_session() {
+	let tool_call = recoverable_failure_tool_call_id("started-only");
+	let user_turn = recoverable_failure_event(
+		1,
+		RawEventType::UserTurnRecorded,
+		None,
+		EntityIdsV0 {
+			message_id: Some(recoverable_failure_message_id(1)),
+			source_envelope_id: Some(recoverable_failure_source_envelope_id(1)),
+			..EntityIdsV0::default()
+		},
+		serde_json::json!({ "text": "start a tool" }),
+	);
+	let requested = recoverable_failure_event(
+		2,
+		RawEventType::ToolCallRequested,
+		Some(user_turn.event_id.clone()),
+		EntityIdsV0 { tool_call_id: Some(tool_call.clone()), ..EntityIdsV0::default() },
+		serde_json::json!({ "tool_name": "stalled_tool" }),
+	);
+	let started = recoverable_failure_event(
+		3,
+		RawEventType::ToolCallStarted,
+		Some(requested.event_id.clone()),
+		EntityIdsV0 { tool_call_id: Some(tool_call), ..EntityIdsV0::default() },
+		serde_json::json!({}),
+	);
+	let assistant_turn = recoverable_failure_event(
+		4,
+		RawEventType::AssistantTurnRecorded,
+		Some(started.event_id.clone()),
+		EntityIdsV0 {
+			message_id: Some(recoverable_failure_message_id(2)),
+			source_envelope_id: Some(recoverable_failure_source_envelope_id(2)),
+			..EntityIdsV0::default()
+		},
+		serde_json::json!({ "text": "still running", "summary": "pending" }),
+	);
+
+	let events = vec![user_turn, requested, started, assistant_turn];
+	let err = project_session(&events)
+		.expect_err("a started-only tool call must never reach a terminal state");
+	assert_eq!(err.code, ProtocolViolationCode::ReplayMismatch);
+}
+
+#[test]
+fn tool_result_without_completed_is_rejected_by_project_session() {
+	let tool_call = recoverable_failure_tool_call_id("result-only");
+	let user_turn = recoverable_failure_event(
+		1,
+		RawEventType::UserTurnRecorded,
+		None,
+		EntityIdsV0 {
+			message_id: Some(recoverable_failure_message_id(1)),
+			source_envelope_id: Some(recoverable_failure_source_envelope_id(1)),
+			..EntityIdsV0::default()
+		},
+		serde_json::json!({ "text": "run a tool" }),
+	);
+	let requested = recoverable_failure_event(
+		2,
+		RawEventType::ToolCallRequested,
+		Some(user_turn.event_id.clone()),
+		EntityIdsV0 { tool_call_id: Some(tool_call.clone()), ..EntityIdsV0::default() },
+		serde_json::json!({ "tool_name": "stable_tool" }),
+	);
+	let started = recoverable_failure_event(
+		3,
+		RawEventType::ToolCallStarted,
+		Some(requested.event_id.clone()),
+		EntityIdsV0 { tool_call_id: Some(tool_call.clone()), ..EntityIdsV0::default() },
+		serde_json::json!({}),
+	);
+	let result = recoverable_failure_event(
+		4,
+		RawEventType::ToolResultRecorded,
+		Some(started.event_id.clone()),
+		EntityIdsV0 {
+			tool_call_id: Some(tool_call),
+			artifact_id: Some(recoverable_failure_artifact_id()),
+			..EntityIdsV0::default()
+		},
+		serde_json::json!({}),
+	);
+	let assistant_turn = recoverable_failure_event(
+		5,
+		RawEventType::AssistantTurnRecorded,
+		Some(result.event_id.clone()),
+		EntityIdsV0 {
+			message_id: Some(recoverable_failure_message_id(2)),
+			source_envelope_id: Some(recoverable_failure_source_envelope_id(2)),
+			..EntityIdsV0::default()
+		},
+		serde_json::json!({ "text": "result received, not yet completed", "summary": "pending" }),
+	);
+
+	let events = vec![user_turn, requested, started, result, assistant_turn];
+	let err = project_session(&events)
+		.expect_err("a result-without-completed tool call must never reach a terminal state");
+	assert_eq!(err.code, ProtocolViolationCode::ReplayMismatch);
+}
+
+#[test]
+fn tool_result_followed_by_error_and_failed_is_rejected_by_project_session() {
+	let mut events = recoverable_failure_events();
+	let tool_call_id = events[1]
+		.entity_ids
+		.tool_call_id
+		.clone()
+		.expect("requested event has tool call id");
+	let started_event_id = events[2].event_id.clone();
+	for event in &mut events[3..] {
+		event.session_seq += 1;
+	}
+	let mut result = recoverable_failure_event(
+		99,
+		RawEventType::ToolResultRecorded,
+		Some(started_event_id),
+		EntityIdsV0 {
+			tool_call_id: Some(tool_call_id),
+			artifact_id: Some(recoverable_failure_artifact_id()),
+			..EntityIdsV0::default()
+		},
+		serde_json::json!({}),
+	);
+	result.session_seq = 4;
+	events.insert(3, result);
+
+	let err = project_session(&events)
+		.expect_err("a tool call cannot transition to failed after recording a successful result");
+	assert_eq!(err.code, ProtocolViolationCode::ReplayMismatch);
+}
+
+#[test]
+fn error_followed_by_result_and_completed_is_rejected_by_project_session() {
+	let mut events = recoverable_failure_events();
+	let tool_call_id = events[1]
+		.entity_ids
+		.tool_call_id
+		.clone()
+		.expect("requested event has tool call id");
+	let started_event_id = events[2].event_id.clone();
+	events.remove(4);
+	let artifact_id = recoverable_failure_artifact_id();
+	let mut result = recoverable_failure_event(
+		99,
+		RawEventType::ToolResultRecorded,
+		Some(started_event_id),
+		EntityIdsV0 {
+			tool_call_id: Some(tool_call_id.clone()),
+			artifact_id: Some(artifact_id.clone()),
+			..EntityIdsV0::default()
+		},
+		serde_json::json!({}),
+	);
+	result.session_seq = 5;
+	let mut completed = recoverable_failure_event(
+		100,
+		RawEventType::ToolCallCompleted,
+		Some(result.event_id.clone()),
+		EntityIdsV0 {
+			tool_call_id: Some(tool_call_id),
+			artifact_id: Some(artifact_id),
+			..EntityIdsV0::default()
+		},
+		serde_json::json!({}),
+	);
+	completed.session_seq = 6;
+	events[4].session_seq = 7;
+	events[4].causation_event_id = Some(completed.event_id.clone());
+	events.insert(4, result);
+	events.insert(5, completed);
+
+	let err = project_session(&events)
+		.expect_err("a tool call cannot transition to successful after recording an error");
+	assert_eq!(err.code, ProtocolViolationCode::ReplayMismatch);
+}
+
+#[test]
+fn tool_call_failed_with_wrong_causation_is_rejected() {
+	let mut events = recoverable_failure_events();
+	// events[4] is tool_call.failed; rewrite its causation to point at
+	// tool_call.started (events[2]) instead of error.recorded (events[3]).
+	events[4].causation_event_id = Some(events[2].event_id.clone());
+	let err =
+		project_session(&events).expect_err("tool_call.failed with wrong causation must be rejected");
+	assert_eq!(err.code, ProtocolViolationCode::ReplayMismatch);
+}
+
+#[test]
+fn tool_call_failed_with_mismatched_error_id_is_rejected() {
+	let mut events = recoverable_failure_events();
+	events[4].entity_ids.error_id = Some(recoverable_failure_error_id("mismatched"));
+	let err = project_session(&events).expect_err(
+		"tool_call.failed with an error_id that does not match error.recorded must be rejected",
+	);
+	assert_eq!(err.code, ProtocolViolationCode::ReplayMismatch);
+}
+
+#[test]
+fn error_recorded_with_causation_from_a_different_tool_call_is_rejected() {
+	let tool_a = recoverable_failure_tool_call_id("cross-a");
+	let tool_b = recoverable_failure_tool_call_id("cross-b");
+
+	let user_turn = recoverable_failure_event(
+		1,
+		RawEventType::UserTurnRecorded,
+		None,
+		EntityIdsV0 {
+			message_id: Some(recoverable_failure_message_id(1)),
+			source_envelope_id: Some(recoverable_failure_source_envelope_id(1)),
+			..EntityIdsV0::default()
+		},
+		serde_json::json!({ "text": "run two tools" }),
+	);
+	let requested_a = recoverable_failure_event(
+		2,
+		RawEventType::ToolCallRequested,
+		Some(user_turn.event_id.clone()),
+		EntityIdsV0 { tool_call_id: Some(tool_a.clone()), ..EntityIdsV0::default() },
+		serde_json::json!({ "tool_name": "tool_a" }),
+	);
+	let started_a = recoverable_failure_event(
+		3,
+		RawEventType::ToolCallStarted,
+		Some(requested_a.event_id.clone()),
+		EntityIdsV0 { tool_call_id: Some(tool_a.clone()), ..EntityIdsV0::default() },
+		serde_json::json!({}),
+	);
+	let requested_b = recoverable_failure_event(
+		4,
+		RawEventType::ToolCallRequested,
+		Some(started_a.event_id.clone()),
+		EntityIdsV0 { tool_call_id: Some(tool_b.clone()), ..EntityIdsV0::default() },
+		serde_json::json!({ "tool_name": "tool_b" }),
+	);
+	let started_b = recoverable_failure_event(
+		5,
+		RawEventType::ToolCallStarted,
+		Some(requested_b.event_id.clone()),
+		EntityIdsV0 { tool_call_id: Some(tool_b), ..EntityIdsV0::default() },
+		serde_json::json!({}),
+	);
+	// error.recorded for tool_a but causally chained to tool_b's
+	// tool_call.started instead of tool_a's own.
+	let error_recorded = recoverable_failure_event(
+		6,
+		RawEventType::ErrorRecorded,
+		Some(started_b.event_id.clone()),
+		EntityIdsV0 {
+			tool_call_id: Some(tool_a),
+			error_id: Some(recoverable_failure_error_id("cross")),
+			..EntityIdsV0::default()
+		},
+		serde_json::json!({
+			"schema_version": "platform.error.v0",
+			"error_id": recoverable_failure_error_id("cross").as_str(),
+			"code": "executor_timeout",
+			"message": "executor timed out after 30s",
+			"recoverable": true,
+			"retryable": false,
+			"correlation_id": recoverable_failure_request_id().as_str(),
+			"details": {},
+		}),
+	);
+
+	let events = vec![user_turn, requested_a, started_a, requested_b, started_b, error_recorded];
+	let err = project_session(&events).expect_err(
+		"error.recorded causally chained to a different tool call's started event must be rejected",
+	);
+	assert_eq!(err.code, ProtocolViolationCode::ReplayMismatch);
 }

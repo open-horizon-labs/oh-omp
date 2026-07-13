@@ -498,6 +498,172 @@ pub struct ToolDispatchSuccess {
 	pub provider_result_text: String,
 }
 
+/// A recoverable executor error from an otherwise catalog-executable tool.
+///
+/// What [`TurnRunner::dispatch_tool_call`] returns when a catalog-executable
+/// tool call reaches the registry but the underlying adapter reports an
+/// ordinary execution error (bad path, stale expected hash, malformed
+/// arguments, ...). Unlike a [`TurnFailure`], this is a *recoverable*
+/// outcome: the turn keeps running and the next provider round sees a
+/// bounded, redacted failure result. No source envelope, artifact, or
+/// `tool_result.recorded` event exists for a failed dispatch. The
+/// persisted `error.recorded`/`tool_call.failed` events (not this struct)
+/// are the durable record of `error_id`; this runtime value never needs
+/// it, so the field is not carried here.
+#[derive(Debug)]
+pub struct ToolDispatchFailure {
+	pub last_event_id:        EventId,
+	pub last_frame_id:        FrameId,
+	pub provider_result_text: String,
+}
+
+/// The two terminal outcomes of [`TurnRunner::dispatch_tool_call`].
+///
+/// The ordinary success path, and a recoverable executor-failure path.
+/// Infrastructure failures (append/transport/protocol) never reach this
+/// type; they propagate as `Err(TurnFailure)` and remain fatal.
+#[derive(Debug)]
+pub enum ToolDispatchOutcome {
+	Completed(ToolDispatchSuccess),
+	Failed(ToolDispatchFailure),
+}
+
+impl ToolDispatchOutcome {
+	pub const fn is_error(&self) -> bool {
+		matches!(self, Self::Failed(_))
+	}
+
+	fn last_event_id(&self) -> EventId {
+		match self {
+			Self::Completed(success) => success.last_event_id.clone(),
+			Self::Failed(failure) => failure.last_event_id.clone(),
+		}
+	}
+
+	fn last_frame_id(&self) -> FrameId {
+		match self {
+			Self::Completed(success) => success.last_frame_id.clone(),
+			Self::Failed(failure) => failure.last_frame_id.clone(),
+		}
+	}
+
+	fn source_envelope_id(&self) -> Option<SourceEnvelopeId> {
+		match self {
+			Self::Completed(success) => Some(success.source_envelope_id.clone()),
+			Self::Failed(_) => None,
+		}
+	}
+
+	fn into_provider_result_text(self) -> String {
+		match self {
+			Self::Completed(success) => success.provider_result_text,
+			Self::Failed(failure) => failure.provider_result_text,
+		}
+	}
+}
+
+/// Stable, deterministic classification of a raw tool-adapter execution
+/// error string. `raw_error` is
+/// classifier input ONLY: it is inspected to choose a branch, and every
+/// value this type can produce (`code`, `message`) is a fixed `'static`
+/// string from a closed set, so no substring of `raw_error` — including
+/// secrets, paths, or control characters an adapter might echo back — can
+/// ever reach an event, frame, provider payload, or replay projection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ToolExecutionFailureClass {
+	StaleInput,
+	InvalidArguments,
+	Generic,
+}
+
+impl ToolExecutionFailureClass {
+	const fn code(self) -> &'static str {
+		match self {
+			Self::StaleInput => "tool_execution.stale_input",
+			Self::InvalidArguments => "tool_execution.invalid_arguments",
+			Self::Generic => "tool_execution.failed",
+		}
+	}
+
+	const fn message(self) -> &'static str {
+		match self {
+			Self::StaleInput => {
+				"the tool's expected content no longer matches the current file; re-read the file and \
+				 retry with a freshly computed expected hash"
+			},
+			Self::InvalidArguments => {
+				"the tool arguments were rejected; check the arguments against the tool's schema and \
+				 retry with corrected values"
+			},
+			Self::Generic => {
+				"tool execution failed; retry with corrected arguments or a different approach"
+			},
+		}
+	}
+}
+
+/// Classifies a raw tool-adapter error string into a stable, actionable
+/// failure class. `raw_error` is inspected only to choose a branch; no part
+/// of its content is ever copied into the returned value.
+fn classify_tool_execution_failure(raw_error: &str) -> ToolExecutionFailureClass {
+	let normalized = raw_error.to_ascii_lowercase();
+	if normalized.contains("does not match the current file") {
+		ToolExecutionFailureClass::StaleInput
+	} else if normalized.contains("malformed")
+		|| normalized.contains("missing field")
+		|| normalized.contains("invalid type")
+		|| normalized.contains("unknown field")
+	{
+		ToolExecutionFailureClass::InvalidArguments
+	} else {
+		ToolExecutionFailureClass::Generic
+	}
+}
+
+/// Provider-visible byte budget for a failed tool round's bounded JSON
+/// result text.
+const TOOL_EXECUTION_FAILURE_TEXT_BYTE_BUDGET: usize = 2048;
+
+/// Builds the deterministic, bounded JSON text the *next* provider round
+/// sees for a failed tool round. Contains only safe, classifier-derived
+/// fields — never the raw adapter error, arguments, or path — and is capped
+/// at [`TOOL_EXECUTION_FAILURE_TEXT_BYTE_BUDGET`] UTF-8 bytes, marking
+/// `"truncated": true` if the cap is reached.
+fn tool_execution_failure_provider_text(
+	tool_name: &str,
+	class: ToolExecutionFailureClass,
+) -> String {
+	let mut body = json!({
+		"status": "failed",
+		"tool_name": tool_name,
+		"code": class.code(),
+		"message": class.message(),
+	});
+	let text = body.to_string();
+	if text.len() <= TOOL_EXECUTION_FAILURE_TEXT_BYTE_BUDGET {
+		return text;
+	}
+	body["truncated"] = json!(true);
+	loop {
+		let candidate = body.to_string();
+		if candidate.len() <= TOOL_EXECUTION_FAILURE_TEXT_BYTE_BUDGET {
+			return candidate;
+		}
+		let Some(current_tool_name) = body.get("tool_name").and_then(WireJson::as_str) else {
+			return candidate;
+		};
+		if current_tool_name.is_empty() {
+			return candidate;
+		}
+		let mut boundary = current_tool_name.len().saturating_sub(1);
+		while boundary > 0 && !current_tool_name.is_char_boundary(boundary) {
+			boundary -= 1;
+		}
+		let shortened = current_tool_name[..boundary].to_owned();
+		body["tool_name"] = json!(shortened);
+	}
+}
+
 impl<P: ProviderExecutor> TurnRunner<P> {
 	pub fn new(
 		platform: KernelPlatformClient,
@@ -694,7 +860,7 @@ impl<P: ProviderExecutor> TurnRunner<P> {
 		arguments: &WireJson,
 		causation_event_id: Option<EventId>,
 		causation_frame_id: Option<FrameId>,
-	) -> Result<ToolDispatchSuccess, TurnFailure> {
+	) -> Result<ToolDispatchOutcome, TurnFailure> {
 		let registry = registry::slice0_registry();
 		let effective_catalog =
 			registry.effective_catalog(&self.effective_authority, &self.trusted_executable_allowlist);
@@ -813,9 +979,89 @@ impl<P: ProviderExecutor> TurnRunner<P> {
 			)
 			.await?;
 
-		let (payload, artifact, provider_result_text) = self
-			.execute_tool(tool_name, arguments)
-			.map_err(TurnFailure::Protocol)?;
+		let (payload, artifact, provider_result_text) = match self.execute_tool(tool_name, arguments)
+		{
+			Ok(success) => success,
+			Err(raw_error) => {
+				let class = classify_tool_execution_failure(&raw_error);
+				drop(raw_error);
+
+				let error_id = self.ids.error_id();
+				let error_event_id = self.ids.event_id();
+				self
+					.append(
+						trace,
+						ctx,
+						error_event_id.clone(),
+						RawEventType::ErrorRecorded,
+						self.clock.now(),
+						kernel_producer(),
+						Some(started_event_id.clone()),
+						EntityIdsV0 { error_id: Some(error_id.clone()), ..tool_entity_ids.clone() },
+						visibility_for(&RawEventType::ErrorRecorded),
+						RedactionLevelV0::Sensitive,
+						json!({
+							"schema_version": successor_protocol::error::ERROR_SCHEMA_VERSION,
+							"error_id": error_id.as_str(),
+							"code": class.code(),
+							"message": class.message(),
+							"recoverable": true,
+							"retryable": false,
+							"correlation_id": ctx.request_id.as_str(),
+							"details": { "tool_name": tool_name, "failure_class": class.code() },
+						}),
+						None,
+					)
+					.await?;
+
+				let failed_event_id = self.ids.event_id();
+				let failed_payload = json!({
+					"status": "failed",
+					"tool_name": tool_name,
+					"error_id": error_id.as_str(),
+					"code": class.code(),
+					"message": class.message(),
+				});
+				let failed_response = self
+					.append(
+						trace,
+						ctx,
+						failed_event_id.clone(),
+						RawEventType::ToolCallFailed,
+						self.clock.now(),
+						kernel_producer(),
+						Some(error_event_id),
+						EntityIdsV0 { error_id: Some(error_id.clone()), ..tool_entity_ids.clone() },
+						visibility_for(&RawEventType::ToolCallFailed),
+						RedactionLevelV0::Sensitive,
+						failed_payload.clone(),
+						None,
+					)
+					.await?;
+
+				let failed_fields = self.frame_fields(
+					ctx,
+					KernelFrameKindV0::ToolCallCompleted,
+					Some(RawEventRef::new(failed_event_id.clone(), failed_response.session_seq)),
+					EntityIdsV0 {
+						tool_call_id: Some(tool_call_id.clone()),
+						error_id: Some(error_id),
+						..EntityIdsV0::default()
+					},
+					failed_payload,
+				);
+				let failed_frame = self.emit(trace, FrameFields {
+					causation_frame_id: Some(requested_frame.frame_id.clone()),
+					..failed_fields
+				});
+
+				return Ok(ToolDispatchOutcome::Failed(ToolDispatchFailure {
+					last_event_id:        failed_event_id,
+					last_frame_id:        failed_frame.frame_id,
+					provider_result_text: tool_execution_failure_provider_text(tool_name, class),
+				}));
+			},
+		};
 		let artifact_preview = artifact.preview.clone();
 
 		let result_event_id = self.ids.event_id();
@@ -894,12 +1140,12 @@ impl<P: ProviderExecutor> TurnRunner<P> {
 			..completed_fields
 		});
 
-		Ok(ToolDispatchSuccess {
+		Ok(ToolDispatchOutcome::Completed(ToolDispatchSuccess {
 			source_envelope_id,
 			last_event_id: completed_event_id,
 			last_frame_id: completed_frame.frame_id,
 			provider_result_text,
-		})
+		}))
 	}
 
 	/// Runs the underlying Slice 0 tool executor through the registry, producing
@@ -1488,14 +1734,17 @@ impl<P: ProviderExecutor> TurnRunner<P> {
 						.await?;
 					state = state.validate_next(TurnState::ToolCompleted(phase))?;
 
-					required_source_envelope_ids = vec![dispatch.source_envelope_id];
-					causation = dispatch.last_event_id;
-					last_frame_id = dispatch.last_frame_id;
+					let dispatch_is_error = dispatch.is_error();
+					required_source_envelope_ids = dispatch.source_envelope_id().into_iter().collect();
+					causation = dispatch.last_event_id();
+					last_frame_id = dispatch.last_frame_id();
+					let dispatch_provider_result_text = dispatch.into_provider_result_text();
 					completed_rounds.push(projection::CompletedToolRoundV0 {
 						provider_tool_call_id: metadata.provider_tool_call_id,
 						tool_name: tool_call.tool_name,
 						arguments: tool_call.arguments,
-						result_text: dispatch.provider_result_text,
+						result_text: dispatch_provider_result_text,
+						is_error: dispatch_is_error,
 					});
 					phase = phase.next().unwrap_or(phase);
 				} else {
@@ -1663,5 +1912,93 @@ mod tests {
 			"openai_chat_completions"
 		);
 		assert_eq!(api_shape_label(&ProviderApiShapeV0::OpenAiResponses), "openai_responses");
+	}
+
+	#[test]
+	fn classify_tool_execution_failure_recognizes_the_stale_mutation_hash_mismatch_string() {
+		assert_eq!(
+			classify_tool_execution_failure("expected SHA-256 does not match the current file"),
+			ToolExecutionFailureClass::StaleInput
+		);
+	}
+
+	#[test]
+	fn classify_tool_execution_failure_recognizes_malformed_argument_shapes() {
+		for raw in [
+			"missing field `path` at line 1 column 2",
+			"invalid type: null, expected a string",
+			"unknown field `foo`, expected one of `path`, `offset`, `limit`",
+			"arguments are malformed",
+		] {
+			assert_eq!(
+				classify_tool_execution_failure(raw),
+				ToolExecutionFailureClass::InvalidArguments,
+				"expected InvalidArguments for {raw:?}"
+			);
+		}
+	}
+
+	#[test]
+	fn classify_tool_execution_failure_falls_back_to_generic_for_path_and_policy_errors() {
+		for raw in
+			["path does not exist", "permission denied", "path resolves outside the workspace root"]
+		{
+			assert_eq!(
+				classify_tool_execution_failure(raw),
+				ToolExecutionFailureClass::Generic,
+				"expected Generic for {raw:?}"
+			);
+		}
+	}
+
+	#[test]
+	fn tool_execution_failure_output_never_contains_a_secret_or_control_character_from_the_raw_adapter_error()
+	 {
+		const SENTINEL: &str = "sk-ant-sentinel-do-not-leak-d2e2e9f3c1a2b\u{0007}\u{001b}[31mnul:\0";
+		let raw_error = format!("read failed: {SENTINEL}");
+
+		for class in [
+			ToolExecutionFailureClass::StaleInput,
+			ToolExecutionFailureClass::InvalidArguments,
+			ToolExecutionFailureClass::Generic,
+		] {
+			assert_eq!(
+				classify_tool_execution_failure(&raw_error),
+				classify_tool_execution_failure(&raw_error)
+			);
+			assert!(!class.code().contains(SENTINEL));
+			assert!(!class.message().contains(SENTINEL));
+			let provider_text = tool_execution_failure_provider_text("read", class);
+			assert!(!provider_text.contains(SENTINEL), "provider text leaked the raw adapter error");
+			assert!(
+				!provider_text.contains("sk-ant-sentinel"),
+				"provider text leaked a secret fragment"
+			);
+		}
+
+		// The classifier itself must never echo any part of its input.
+		let classified = classify_tool_execution_failure(&raw_error);
+		assert!(!format!("{classified:?}").contains(SENTINEL));
+	}
+
+	#[test]
+	fn tool_execution_failure_provider_text_is_bounded_and_marks_truncation() {
+		let huge_tool_name = "x".repeat(TOOL_EXECUTION_FAILURE_TEXT_BYTE_BUDGET * 2);
+		let text =
+			tool_execution_failure_provider_text(&huge_tool_name, ToolExecutionFailureClass::Generic);
+		assert!(text.len() <= TOOL_EXECUTION_FAILURE_TEXT_BYTE_BUDGET);
+		let value: WireJson =
+			serde_json::from_str(&text).expect("bounded text must still be valid JSON");
+		assert_eq!(value["truncated"], WireJson::Bool(true));
+		assert_eq!(value["status"], WireJson::String("failed".to_owned()));
+	}
+
+	#[test]
+	fn tool_execution_failure_provider_text_fits_comfortably_under_budget_for_a_normal_tool_name() {
+		let text = tool_execution_failure_provider_text("read", ToolExecutionFailureClass::Generic);
+		assert!(text.len() <= TOOL_EXECUTION_FAILURE_TEXT_BYTE_BUDGET);
+		let value: WireJson = serde_json::from_str(&text).expect("provider text must be valid JSON");
+		assert!(value.get("truncated").is_none());
+		assert_eq!(value["code"], WireJson::String("tool_execution.failed".to_owned()));
 	}
 }

@@ -56,20 +56,35 @@ export function formatAssemblySummary(snapshot: EffectivePromptSnapshot): string
 		}
 		if (meta.compressedCount > 0) {
 			const conversationCompressed = meta.decisions.filter(d => d.reason === "conversation-compressed").length;
-			const codecCompressed = meta.compressedCount - conversationCompressed;
+			const recoveryTruncated = meta.decisions.filter(d => d.reason === "recovery-anchor-truncated").length;
+			const codecCompressed = meta.compressedCount - conversationCompressed - recoveryTruncated;
 			const compParts: string[] = [];
 			if (codecCompressed > 0) compParts.push(`${codecCompressed} codec-compressed`);
 			if (conversationCompressed > 0)
 				compParts.push(`${conversationCompressed} conversation-compressed (recoverable via recall)`);
+			if (recoveryTruncated > 0) compParts.push(`${recoveryTruncated} recovery-anchor-truncated`);
 			turnParts.push(compParts.length > 0 ? compParts.join(", ") : `${meta.compressedCount} compressed`);
 		}
 		if (meta.droppedCount > 0) {
 			const devDropped = meta.decisions.filter(d => d.reason === "developer-dropped").length;
-			const budgetDropped = meta.droppedCount - devDropped;
+			const recoveryExcluded = meta.decisions.filter(d => d.reason === "recovery-excluded").length;
+			const budgetDropped = meta.droppedCount - devDropped - recoveryExcluded;
 			const dropParts: string[] = [];
 			if (budgetDropped > 0) dropParts.push(`${budgetDropped} budget-dropped`);
 			if (devDropped > 0) dropParts.push(`${devDropped} dev-dropped`);
+			if (recoveryExcluded > 0) dropParts.push(`${recoveryExcluded} recovery-excluded`);
 			turnParts.push(dropParts.length > 0 ? dropParts.join(", ") : `${meta.droppedCount} dropped`);
+		}
+		if (meta.recovery) {
+			if (meta.recovery.outcome === "unrecoverable") {
+				turnParts.push(`recovery: unrecoverable (${meta.recovery.unrecoverableAnchorReason ?? "unknown"})`);
+			} else if (meta.recovery.anchorTruncated) {
+				turnParts.push("recovery: recovered with truncated anchor and truncation nudge");
+			} else if (meta.recovery.controlPrompt === "omitted") {
+				turnParts.push("recovery: recovered full anchor, nudge omitted");
+			} else {
+				turnParts.push("recovery: recovered with reground nudge");
+			}
 		}
 		parts.push(turnParts.join(", "));
 	}

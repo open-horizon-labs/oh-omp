@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.12.1] - 2026-07-14
+
+### Fixed
+
+- Prevented bounded context assembly from returning no conversation after long autonomous runs by compressing before eviction, then falling back to a budget-safe user-led retry with explicit reground guidance.
+
 ## [0.12.0] - 2026-07-14
 
 ### Added

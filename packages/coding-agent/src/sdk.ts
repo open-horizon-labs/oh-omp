@@ -45,6 +45,7 @@ import {
 	segmentIntoTurns,
 	type TransformMetadata,
 	transformMessages,
+	transformMessagesWithRecovery,
 } from "./context/assembler";
 import { dedupCodec, readCodec, warmCodec } from "./context/assembler/codecs";
 import { formatAssemblySummary } from "./context/assembly-summary";
@@ -126,6 +127,8 @@ import {
 import { getMemoryRoot } from "./memories";
 import { compileSystemPrompt } from "./prompts/composer/compile";
 import composerInvariants from "./prompts/composer/invariants.md" with { type: "text" };
+import contextRecoveryPrompt from "./prompts/system/context-recovery.md" with { type: "text" };
+import contextRecoveryTruncatedPrompt from "./prompts/system/context-recovery-truncated.md" with { type: "text" };
 import asyncResultTemplate from "./prompts/tools/async-result.md" with { type: "text" };
 import { collectEnvSecrets, loadSecrets, obfuscateMessages, SecretObfuscator } from "./secrets";
 import { AgentSession } from "./session/agent-session";
@@ -1722,6 +1725,12 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		const hotWindowTurns = assemblerSettings.hotWindowTurns;
 		const contextWindowCap = assemblerSettings.contextWindowCap;
 		const recentWindowMs = daysToRecallWindowMs(assemblerSettings.recentWindowDays);
+		const standardRecoveryPromptTokens = estimateMessageTokens([
+			{ role: "developer", content: contextRecoveryPrompt },
+		]);
+		const truncatedRecoveryPromptTokens = estimateMessageTokens([
+			{ role: "developer", content: contextRecoveryTruncatedPrompt },
+		]);
 
 		const resolveToolResultStub = (message: { toolName?: string; toolCallId?: string }) =>
 			assemblerBridge.getToolResultStubPointer(message.toolName, message.toolCallId);
@@ -1993,16 +2002,26 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			let boundedMessages: AgentMessage[];
 			let finalTransformMetadata: TransformMetadata;
 			if (maxMessageTokens !== undefined) {
-				const boundedPass = transformMessages(messages, {
-					maxTokens: maxMessageTokens,
-					hotWindowTurns,
-					resolveToolResultStub,
-					codecs,
-					workingSet,
-					relevanceScores,
-				});
+				const boundedPass = transformMessagesWithRecovery(
+					messages,
+					{
+						maxTokens: maxMessageTokens,
+						hotWindowTurns,
+						resolveToolResultStub,
+						codecs,
+						workingSet,
+						relevanceScores,
+					},
+					{
+						standardControlPromptTokens: standardRecoveryPromptTokens,
+						truncatedControlPromptTokens: truncatedRecoveryPromptTokens,
+					},
+				);
 				boundedMessages = boundedPass.messages;
 				finalTransformMetadata = boundedPass.metadata;
+				if (boundedPass.metadata.recovery) {
+					logger.warn("assembler:context-recovery", { ...boundedPass.metadata.recovery });
+				}
 			} else {
 				boundedMessages = transformedMessages;
 				finalTransformMetadata = firstPass.metadata;
@@ -2010,6 +2029,12 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 
 			// Step 5: Budget debug logging — per-category allocation and actual usage.
 			if (budget) {
+				const recoveryControlPromptTokens =
+					finalTransformMetadata.recovery?.controlPrompt === "standard"
+						? standardRecoveryPromptTokens
+						: finalTransformMetadata.recovery?.controlPrompt === "truncated"
+							? truncatedRecoveryPromptTokens
+							: 0;
 				logger.debug("assembler:budget-derivation", {
 					contextWindow: assembledContextWindow,
 					allocatable: budget.maxTokens,
@@ -2018,6 +2043,8 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 					actualHydratedTokens: hydratedTokens,
 					effectiveMessageBudget: maxMessageTokens,
 					messageTokensAfterTransform: finalTransformMetadata.tokensAfter,
+					contextRecovery: finalTransformMetadata.recovery?.outcome,
+					recoveryControlPromptTokens,
 					hydratedEntries: cappedResults.length,
 					conceptGraphTokens,
 					conceptGraphFacts: conceptGraphFactCount,
@@ -2046,6 +2073,15 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				contextMessages.push({
 					role: "developer" as const,
 					content: hydratedText,
+					attribution: "agent" as const,
+					timestamp: Date.now(),
+				});
+			}
+			const recovery = finalTransformMetadata.recovery;
+			if (recovery?.outcome === "recovered" && recovery.controlPrompt !== "omitted") {
+				contextMessages.push({
+					role: "developer" as const,
+					content: recovery.controlPrompt === "truncated" ? contextRecoveryTruncatedPrompt : contextRecoveryPrompt,
 					attribution: "agent" as const,
 					timestamp: Date.now(),
 				});
@@ -2087,20 +2123,18 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			// Step 8: Append assembly summary as the final developer message.
 			// Tail placement for the same cache reason as Step 6: the summary's
 			// counts and budget numbers change every request.
+			const outputMessages = [...finalMessages];
 			const summary = formatAssemblySummary(lastPromptSnapshot);
 			if (summary) {
-				return [
-					...finalMessages,
-					{
-						role: "developer" as const,
-						content: summary,
-						attribution: "agent" as const,
-						timestamp: Date.now(),
-					} satisfies AgentMessage,
-				];
+				outputMessages.push({
+					role: "developer" as const,
+					content: summary,
+					attribution: "agent" as const,
+					timestamp: Date.now(),
+				} satisfies AgentMessage);
 			}
 
-			return finalMessages;
+			return outputMessages;
 		};
 
 		// Compose: extensions first, then assembler.

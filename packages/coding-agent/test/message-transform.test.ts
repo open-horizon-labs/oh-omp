@@ -10,6 +10,7 @@ import {
 	segmentIntoTurns,
 	TOOL_RESULT_STUB_TEXT,
 	transformMessages,
+	transformMessagesWithRecovery,
 	warmCodec,
 } from "@oh-my-pi/pi-coding-agent/context/assembler";
 
@@ -69,6 +70,12 @@ function makeAssistant(toolCalls?: Array<{ id: string; name: string }>): Assista
 		stopReason: toolCalls ? "toolUse" : "stop",
 		timestamp: nextTimestamp(),
 	};
+}
+
+function makeAssistantText(text: string, toolCalls?: Array<{ id: string; name: string }>): AssistantMessage {
+	const message = makeAssistant(toolCalls);
+	message.content[0] = { type: "text", text };
+	return message;
 }
 
 function makeToolResult(toolCallId: string, text: string, toolName = "read"): ToolResultMessage {
@@ -964,6 +971,217 @@ describe("transformMessages — front-drop API ordering", () => {
 		const { messages: result } = transformMessages(messages);
 		expect(result).toHaveLength(3);
 		expect(result[0].role).toBe("user");
+	});
+});
+
+describe("transformMessages — pre-budget conversation compression", () => {
+	test("conversation compression reduces token pressure before budget eviction", () => {
+		const longAssistantText = Array.from({ length: 40 }, (_, index) => `line ${index}: ${"x".repeat(30)}`).join("\n");
+		const messages: AgentMessage[] = [
+			makeUser("preserve the original task"),
+			makeAssistantText(longAssistantText),
+			makeUser("recent follow-up"),
+		];
+
+		const result = transformMessages(messages, {
+			maxTokens: 120,
+			hotWindowTurns: 1,
+			relevanceScores: new Map([[1, 0]]),
+		});
+
+		expect(result.messages[0]).toBe(messages[0]);
+		expect(result.metadata.decisions[0].action).toBe("kept");
+		expect(result.metadata.decisions[1].action).toBe("compressed");
+		expect(result.metadata.decisions[1].reason).toBe("conversation-compressed");
+		expect(result.metadata.droppedCount).toBe(0);
+		expect(result.metadata.tokensAfter).toBeLessThanOrEqual(120);
+	});
+
+	test("a compression candidate is kept when the codec does not reduce tokens", () => {
+		const assistant = makeAssistantText("x".repeat(400));
+		const messages: AgentMessage[] = [makeUser("task"), assistant, makeUser("recent")];
+
+		const result = transformMessages(messages, {
+			maxTokens: 1_000,
+			hotWindowTurns: 1,
+			relevanceScores: new Map([[1, 0]]),
+		});
+
+		expect(result.messages[1]).toBe(assistant);
+		expect(result.metadata.decisions[1].action).toBe("kept");
+		expect(result.metadata.compressedCount).toBe(0);
+	});
+});
+
+describe("transformMessagesWithRecovery", () => {
+	test("uses ordinary conversation compression before considering recovery", () => {
+		const longAssistantText = Array.from({ length: 40 }, (_, index) => `line ${index}: ${"x".repeat(30)}`).join("\n");
+		const messages: AgentMessage[] = [
+			makeUser("preserve the original task"),
+			makeAssistantText(longAssistantText),
+			makeUser("recent follow-up"),
+		];
+
+		const result = transformMessagesWithRecovery(
+			messages,
+			{
+				maxTokens: 120,
+				hotWindowTurns: 1,
+				relevanceScores: new Map([[1, 0]]),
+			},
+			{ standardControlPromptTokens: 20 },
+		);
+
+		expect(result.metadata.decisions[1]).toMatchObject({
+			action: "compressed",
+			reason: "conversation-compressed",
+		});
+		expect(result.metadata.recovery).toBeUndefined();
+	});
+
+	test("recovers a user-led suffix when normal front-drop exhausts the conversation", () => {
+		const user = makeUser("reground and continue the original task");
+		const messages: AgentMessage[] = [user];
+		for (let index = 0; index < 8; index++) {
+			const toolCallId = `tc-recovery-${index}`;
+			messages.push(
+				makeAssistantText("x".repeat(80), [{ id: toolCallId, name: "read" }]),
+				makeToolResult(toolCallId, `result-${index}`),
+			);
+		}
+
+		const options = { maxTokens: 180, hotWindowTurns: 2 };
+		expect(transformMessages(messages, options).messages).toEqual([]);
+
+		const result = transformMessagesWithRecovery(messages, options, { standardControlPromptTokens: 20 });
+
+		expect(result.messages[0]).toBe(user);
+		expect(result.messages.map(message => message.role)).toEqual([
+			"user",
+			"assistant",
+			"toolResult",
+			"assistant",
+			"toolResult",
+		]);
+		expect(result.metadata.tokensAfter + 20).toBeLessThanOrEqual(180);
+		expect(result.metadata.totalTurns).toBe(9);
+		expect(result.metadata.decisions.map(decision => decision.turnIndex)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8]);
+		expect(result.metadata.recovery?.outcome).toBe("recovered");
+		expect(result.metadata.recovery?.selectedOriginalTurnIndexes).toEqual([0, 7, 8]);
+		expect(result.metadata.recovery?.outputTokens).toBe(result.metadata.tokensAfter);
+		expect(result.metadata.recovery?.controlPrompt).toBe("standard");
+		expect(result.metadata.recovery?.initial.tokensAfter).toBe(0);
+	});
+
+	test("shrinks a hot suffix until the complete recovery output fits", () => {
+		const user = makeUser("continue the task");
+		const messages: AgentMessage[] = [
+			user,
+			makeAssistantText("small suffix turn"),
+			makeAssistantText("x".repeat(200)),
+		];
+
+		const result = transformMessagesWithRecovery(messages, { maxTokens: 30, hotWindowTurns: 2 });
+
+		expect(result.messages).toEqual([user]);
+		expect(result.metadata.tokensAfter).toBeLessThanOrEqual(30);
+		expect(result.metadata.recovery?.attempts).toBe(3);
+		expect(result.metadata.recovery?.selectedOriginalTurnIndexes).toEqual([0]);
+	});
+
+	test("bounds an oversized text anchor and reserves a truncation nudge", () => {
+		const user = makeUser(`task:${"x".repeat(1_000)}`);
+		const messages: AgentMessage[] = [user, makeAssistantText("y".repeat(200))];
+
+		const result = transformMessagesWithRecovery(
+			messages,
+			{ maxTokens: 100, hotWindowTurns: 1 },
+			{ standardControlPromptTokens: 20, truncatedControlPromptTokens: 30 },
+		);
+
+		expect(result.messages).toHaveLength(1);
+		expect(result.messages[0]?.role).toBe("user");
+		expect(result.metadata.tokensAfter + 30).toBeLessThanOrEqual(100);
+		expect(result.metadata.decisions[0]).toMatchObject({
+			turnIndex: 0,
+			action: "compressed",
+			reason: "recovery-anchor-truncated",
+		});
+		expect(result.metadata.recovery?.anchorTruncated).toBe(true);
+		expect(result.metadata.recovery?.controlPrompt).toBe("truncated");
+
+		const recovered = result.messages[0];
+		if (recovered?.role !== "user" || !Array.isArray(recovered.content)) {
+			throw new Error("Expected a bounded user message with head and tail fragments");
+		}
+		expect(recovered.content).toHaveLength(2);
+		expect(recovered.content[0]).toMatchObject({ type: "text", text: expect.stringContaining("task:") });
+		expect(recovered.content[1]).toMatchObject({ type: "text", text: expect.stringMatching(/^x+$/) });
+	});
+
+	test("does not silently truncate a text anchor when no guidance budget was reserved", () => {
+		const user = makeUser(`task:${"x".repeat(1_000)}`);
+		const messages: AgentMessage[] = [user, makeAssistantText("y".repeat(200))];
+
+		const result = transformMessagesWithRecovery(messages, { maxTokens: 10, hotWindowTurns: 1 });
+
+		expect(result.messages).toEqual([]);
+		expect(result.metadata.recovery).toMatchObject({
+			outcome: "unrecoverable",
+			anchorTruncated: false,
+			controlPrompt: "omitted",
+			unrecoverableAnchorReason: "text-anchor-exceeds-recoverable-budget",
+		});
+	});
+
+	test("preserves the full user anchor before spending budget on the optional nudge", () => {
+		const user = makeUser("keep this full user request intact");
+		const messages: AgentMessage[] = [user, makeAssistantText("y".repeat(400))];
+
+		const result = transformMessagesWithRecovery(
+			messages,
+			{ maxTokens: 12, hotWindowTurns: 1 },
+			{ standardControlPromptTokens: 8, truncatedControlPromptTokens: 8 },
+		);
+
+		expect(result.messages).toEqual([user]);
+		expect(result.metadata.recovery?.anchorTruncated).toBe(false);
+		expect(result.metadata.recovery?.controlPrompt).toBe("omitted");
+		expect(result.metadata.tokensAfter).toBeLessThanOrEqual(12);
+	});
+
+	test("preserves non-text anchor blocks when the complete user message fits", () => {
+		const user: AgentMessage = {
+			role: "user",
+			content: [{ type: "image", data: "aGVsbG8=", mimeType: "image/png" }],
+			timestamp: Date.now(),
+		};
+		const messages: AgentMessage[] = [user, makeAssistantText("y".repeat(400))];
+
+		const result = transformMessagesWithRecovery(messages, { maxTokens: 40, hotWindowTurns: 1 });
+
+		expect(result.messages).toEqual([user]);
+		expect(result.metadata.recovery?.outcome).toBe("recovered");
+		expect(result.metadata.recovery?.anchorTruncated).toBe(false);
+	});
+
+	test("reports an oversized non-text anchor as explicitly unrecoverable", () => {
+		const user: AgentMessage = {
+			role: "user",
+			content: [{ type: "image", data: "x".repeat(1_000), mimeType: "image/png" }],
+			timestamp: Date.now(),
+		};
+		const messages: AgentMessage[] = [user, makeAssistantText("y".repeat(200))];
+
+		const result = transformMessagesWithRecovery(messages, { maxTokens: 10, hotWindowTurns: 1 });
+
+		expect(result.messages).toEqual([]);
+		expect(result.metadata.recovery).toMatchObject({
+			outcome: "unrecoverable",
+			unrecoverableAnchorReason: "non-text-anchor-exceeds-budget",
+			outputMessageCount: 0,
+			outputTokens: 0,
+		});
 	});
 });
 

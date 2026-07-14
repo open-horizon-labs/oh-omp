@@ -261,4 +261,84 @@ describe("formatAssemblySummary", () => {
 		const result = formatAssemblySummary(makeSnapshot({ meta }))!;
 		expect(result).toContain("2 stubbed (turns 1-3)");
 	});
+
+	test("reports recovery truncation and exclusions without misclassifying them", () => {
+		const meta: TransformMetadata = {
+			decisions: [
+				makeDecision(0, "compressed", "recovery-anchor-truncated"),
+				makeDecision(1, "dropped", "recovery-excluded"),
+			],
+			totalTurns: 2,
+			keptCount: 0,
+			stubbedCount: 0,
+			compressedCount: 1,
+			droppedCount: 1,
+			tokensBefore: 2000,
+			tokensAfter: 1000,
+			scoredCount: 0,
+			recovery: {
+				trigger: "empty-selection",
+				outcome: "recovered",
+				attempts: 2,
+				originalTurnCount: 2,
+				selectedOriginalTurnIndexes: [0],
+				outputMessageCount: 1,
+				outputTokens: 1000,
+				anchorTruncated: true,
+				controlPrompt: "truncated",
+				initial: {
+					outputMessageCount: 0,
+					keptCount: 0,
+					stubbedCount: 0,
+					compressedCount: 0,
+					droppedCount: 2,
+					tokensAfter: 0,
+				},
+			},
+		};
+
+		const result = formatAssemblySummary(makeSnapshot({ meta }))!;
+		expect(result).toContain("1 recovery-anchor-truncated");
+		expect(result).toContain("1 recovery-excluded");
+		expect(result).toContain("recovery: recovered with truncated anchor and truncation nudge");
+		expect(result).not.toContain("codec-compressed");
+		expect(result).not.toContain("budget-dropped");
+	});
+
+	test("reports an unrecoverable anchor reason", () => {
+		const meta: TransformMetadata = {
+			decisions: [makeDecision(0, "dropped", "recovery-excluded")],
+			totalTurns: 1,
+			keptCount: 0,
+			stubbedCount: 0,
+			compressedCount: 0,
+			droppedCount: 1,
+			tokensBefore: 1000,
+			tokensAfter: 0,
+			scoredCount: 0,
+			recovery: {
+				trigger: "empty-selection",
+				outcome: "unrecoverable",
+				attempts: 0,
+				originalTurnCount: 1,
+				selectedOriginalTurnIndexes: [],
+				outputMessageCount: 0,
+				outputTokens: 0,
+				anchorTruncated: false,
+				controlPrompt: "omitted",
+				unrecoverableAnchorReason: "text-anchor-exceeds-recoverable-budget",
+				initial: {
+					outputMessageCount: 0,
+					keptCount: 0,
+					stubbedCount: 0,
+					compressedCount: 0,
+					droppedCount: 1,
+					tokensAfter: 0,
+				},
+			},
+		};
+
+		const result = formatAssemblySummary(makeSnapshot({ meta }))!;
+		expect(result).toContain("recovery: unrecoverable (text-anchor-exceeds-recoverable-budget)");
+	});
 });

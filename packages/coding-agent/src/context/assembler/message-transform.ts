@@ -16,7 +16,7 @@
  */
 
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
-import type { TextContent, ToolResultMessage } from "@oh-my-pi/pi-ai";
+import type { TextContent, ToolResultMessage, UserMessage } from "@oh-my-pi/pi-ai";
 import { logger } from "@oh-my-pi/pi-utils";
 import { parseMCPToolName } from "../../mcp/tool-bridge";
 import type { MemoryAssemblyBudget } from "../memory-contract";
@@ -252,6 +252,8 @@ export interface TurnDecision {
 	 *   - `"budget-exceeded"`   — dropped to fit the token budget.
 	 *   - `"conversation-compressed"` — non-tool turn compressed via head+tail based on semantic relevance.
 	 *   - `"developer-dropped"` — developer message beyond hot window dropped (regenerated each turn).
+	 *   - `"recovery-excluded"` — omitted by the terminal user-led recovery fallback.
+	 *   - `"recovery-anchor-truncated"` — user anchor text bounded by terminal recovery.
 	 */
 	reason:
 		| "hot-window"
@@ -261,7 +263,9 @@ export interface TurnDecision {
 		| "working-set"
 		| "budget-exceeded"
 		| "conversation-compressed"
-		| "developer-dropped";
+		| "developer-dropped"
+		| "recovery-excluded"
+		| "recovery-anchor-truncated";
 
 	/** Number of messages in this turn. */
 	messageCount: number;
@@ -315,6 +319,40 @@ export interface TransformMetadata {
 
 	/** Min/max similarity scores observed (undefined if no scoring). */
 	similarityRange?: { min: number; max: number };
+
+	/** Emergency recovery applied after the normal bounded transform produced no valid user-led context. */
+	recovery?: TransformRecoveryMetadata;
+}
+
+/** Metadata describing a bounded retry after normal context selection failed. */
+export interface TransformRecoveryMetadata {
+	trigger: "empty-selection";
+	outcome: "recovered" | "unrecoverable";
+	attempts: number;
+	originalTurnCount: number;
+	selectedOriginalTurnIndexes: number[];
+	outputMessageCount: number;
+	outputTokens: number;
+	anchorTruncated: boolean;
+	controlPrompt: "standard" | "truncated" | "omitted";
+	unrecoverableAnchorReason?:
+		| "non-text-anchor-exceeds-budget"
+		| "text-anchor-exceeds-recoverable-budget"
+		| "zero-token-budget";
+	initial: {
+		outputMessageCount: number;
+		keptCount: number;
+		stubbedCount: number;
+		compressedCount: number;
+		droppedCount: number;
+		tokensAfter: number;
+	};
+}
+
+/** Token reservations for optional developer guidance appended after recovery. */
+export interface TransformRecoveryOptions {
+	standardControlPromptTokens?: number;
+	truncatedControlPromptTokens?: number;
 }
 
 /**
@@ -986,8 +1024,24 @@ export function transformMessages(messages: AgentMessage[], options: MessageTran
 	}
 
 	const transformedTurns = replacementResults.map(r => r.turn);
+	const conversationCompressedTurns = new Set<number>();
 
-	// Pre-compute transformed token costs (only differs from original for stubbed turns)
+	// Apply semantic conversation compression before budget selection so token
+	// savings can prevent unnecessary front-drop eviction. Missing relevance
+	// data remains a safe keep-verbatim fallback.
+	for (let i = 0; i < hotWindowStart; i++) {
+		const turn = originalTurns[i];
+		if (turn.hasToolResults || turn.messages[0]?.role === "developer") continue;
+		if (!shouldCompressConversationTurn(i, totalTurns, originalTokens[i], turn, options.relevanceScores)) continue;
+
+		const result = compressConversationTurn(transformedTurns[i]);
+		if (result.tokensAfter >= originalTokens[i]) continue;
+
+		transformedTurns[i] = result.turn;
+		conversationCompressedTurns.add(i);
+	}
+
+	// Pre-compute transformed token costs after tool codecs and conversation compression.
 	const transformedTokens = transformedTurns.map(estimateTurnTokens);
 
 	// 3. Apply budget bounding if configured
@@ -1125,14 +1179,7 @@ export function transformMessages(messages: AgentMessage[], options: MessageTran
 					droppedCount++;
 				}
 			} else {
-				// User/assistant conversation turn: check semantic relevance for compression
-				const compress = shouldCompressConversationTurn(
-					i,
-					totalTurns,
-					tokensBefore,
-					originalTurns[i],
-					options.relevanceScores,
-				);
+				// User/assistant conversation compression was applied before budget selection.
 				// Track relevance scoring stats
 				const sim = options.relevanceScores?.get(i);
 				if (sim !== undefined) {
@@ -1140,10 +1187,7 @@ export function transformMessages(messages: AgentMessage[], options: MessageTran
 					if (sim < simMin) simMin = sim;
 					if (sim > simMax) simMax = sim;
 				}
-				if (compress) {
-					const result = compressConversationTurn(transformedTurns[i]);
-					transformedTurns[i] = result.turn;
-					transformedTokens[i] = result.tokensAfter;
+				if (conversationCompressedTurns.has(i)) {
 					decisions.push({
 						turnIndex: i,
 						action: "compressed",
@@ -1151,10 +1195,10 @@ export function transformMessages(messages: AgentMessage[], options: MessageTran
 						messageCount: originalTurns[i].messages.length,
 						hasToolResults: false,
 						tokensBefore,
-						tokensAfter: result.tokensAfter,
+						tokensAfter: transformedTokens[i],
 						sourceTags,
 					});
-					totalTokensAfter += result.tokensAfter;
+					totalTokensAfter += transformedTokens[i];
 					compressedCount++;
 				} else {
 					decisions.push({
@@ -1199,4 +1243,280 @@ export function transformMessages(messages: AgentMessage[], options: MessageTran
 			similarityRange: scoredCount > 0 ? { min: simMin, max: simMax } : undefined,
 		},
 	};
+}
+
+type RecoveryControlPrompt = TransformRecoveryMetadata["controlPrompt"];
+
+function recoveryInitialSummary(metadata: TransformMetadata, outputMessageCount: number) {
+	return {
+		outputMessageCount,
+		keptCount: metadata.keptCount,
+		stubbedCount: metadata.stubbedCount,
+		compressedCount: metadata.compressedCount,
+		droppedCount: metadata.droppedCount,
+		tokensAfter: metadata.tokensAfter,
+	};
+}
+
+function normalizeReservedTokens(value: number | undefined): number | undefined {
+	if (value === undefined || !Number.isFinite(value)) return undefined;
+	return Math.max(0, Math.floor(value));
+}
+
+function userAnchorText(message: UserMessage): { text: string; hasNonText: boolean } {
+	if (typeof message.content === "string") {
+		return { text: message.content, hasNonText: false };
+	}
+
+	const text: string[] = [];
+	let hasNonText = false;
+	for (const block of message.content) {
+		if (block.type === "text") {
+			text.push(block.text);
+		} else {
+			hasNonText = true;
+		}
+	}
+	return { text: text.join(""), hasNonText };
+}
+
+function boundUserAnchor(message: UserMessage, maxTokens: number): UserMessage | null {
+	const tokenBudget = Math.max(0, Math.floor(maxTokens));
+	const charBudget = Math.floor(tokenBudget * 3.2);
+	if (charBudget <= 0) return null;
+
+	const { text, hasNonText } = userAnchorText(message);
+	if (hasNonText || text.length === 0) return null;
+
+	const headLength = Math.ceil(charBudget / 2);
+	const tailLength = charBudget - headLength;
+	const content: TextContent[] = [{ type: "text", text: text.slice(0, headLength) }];
+	if (tailLength > 0) {
+		content.push({ type: "text", text: text.slice(-tailLength) });
+	}
+
+	return {
+		...message,
+		content,
+		providerPayload: undefined,
+	};
+}
+
+function buildRecoveredMetadata(
+	turns: Turn[],
+	initial: TransformResult,
+	retry: TransformResult,
+	selectedOriginalTurnIndexes: number[],
+	attempts: number,
+	anchorTruncated: boolean,
+	controlPrompt: RecoveryControlPrompt,
+): TransformMetadata {
+	const selectedDecisions = new Map<number, TurnDecision>();
+	for (const decision of retry.metadata.decisions) {
+		const originalTurnIndex = selectedOriginalTurnIndexes[decision.turnIndex];
+		if (originalTurnIndex === undefined) continue;
+		const originalTurn = turns[originalTurnIndex];
+		selectedDecisions.set(originalTurnIndex, {
+			...decision,
+			turnIndex: originalTurnIndex,
+			messageCount: originalTurn.messages.length,
+			tokensBefore: estimateTurnTokens(originalTurn),
+			...(anchorTruncated && originalTurnIndex === selectedOriginalTurnIndexes[0]
+				? { action: "compressed" as const, reason: "recovery-anchor-truncated" as const }
+				: {}),
+		});
+	}
+
+	const decisions = turns.map((turn, turnIndex): TurnDecision => {
+		const selected = selectedDecisions.get(turnIndex);
+		if (selected) return selected;
+		return {
+			turnIndex,
+			action: "dropped",
+			reason: "recovery-excluded",
+			messageCount: turn.messages.length,
+			hasToolResults: turn.hasToolResults,
+			tokensBefore: estimateTurnTokens(turn),
+			tokensAfter: 0,
+			sourceTags: extractSourceTags(turn.messages),
+		};
+	});
+	const outputOriginalTurnIndexes = decisions
+		.filter(decision => decision.action !== "dropped")
+		.map(decision => decision.turnIndex);
+
+	return {
+		decisions,
+		totalTurns: turns.length,
+		keptCount: decisions.filter(decision => decision.action === "kept").length,
+		stubbedCount: decisions.filter(decision => decision.action === "stubbed").length,
+		compressedCount: decisions.filter(decision => decision.action === "compressed").length,
+		droppedCount: decisions.filter(decision => decision.action === "dropped").length,
+		tokensBefore: initial.metadata.tokensBefore,
+		tokensAfter: retry.metadata.tokensAfter,
+		scoredCount: 0,
+		recovery: {
+			trigger: "empty-selection",
+			outcome: "recovered",
+			attempts,
+			originalTurnCount: initial.metadata.totalTurns,
+			selectedOriginalTurnIndexes: outputOriginalTurnIndexes,
+			outputMessageCount: retry.messages.length,
+			outputTokens: retry.metadata.tokensAfter,
+			anchorTruncated,
+			controlPrompt,
+			initial: recoveryInitialSummary(initial.metadata, initial.messages.length),
+		},
+	};
+}
+
+function buildUnrecoverableResult(
+	initial: TransformResult,
+	attempts: number,
+	reason: NonNullable<TransformRecoveryMetadata["unrecoverableAnchorReason"]>,
+): TransformResult {
+	return {
+		...initial,
+		metadata: {
+			...initial.metadata,
+			recovery: {
+				trigger: "empty-selection",
+				outcome: "unrecoverable",
+				attempts,
+				originalTurnCount: initial.metadata.totalTurns,
+				selectedOriginalTurnIndexes: [],
+				outputMessageCount: initial.messages.length,
+				outputTokens: initial.metadata.tokensAfter,
+				anchorTruncated: false,
+				controlPrompt: "omitted",
+				unrecoverableAnchorReason: reason,
+				initial: recoveryInitialSummary(initial.metadata, initial.messages.length),
+			},
+		},
+	};
+}
+
+/**
+ * Run the normal transform first, then retry with a bounded user-led suffix if
+ * the result has no valid user start. Recovery is the terminal fallback after
+ * ordinary compression and eviction. Retries are synchronous and reuse the
+ * caller's already-resolved context state; no hydration or storage I/O occurs.
+ */
+export function transformMessagesWithRecovery(
+	messages: AgentMessage[],
+	options: MessageTransformOptions = {},
+	recovery: TransformRecoveryOptions = {},
+): TransformResult {
+	const initial = transformMessages(messages, options);
+	if (initial.messages[0]?.role === "user") return initial;
+
+	const configuredMaxTokens = options.maxTokens;
+	if (configuredMaxTokens === undefined || !Number.isFinite(configuredMaxTokens) || configuredMaxTokens < 0) {
+		return initial;
+	}
+	const maxTokens = Math.floor(configuredMaxTokens);
+
+	const turns = segmentIntoTurns(messages);
+	let latestUserTurn = -1;
+	for (let i = turns.length - 1; i >= 0; i--) {
+		if (turns[i].messages[0]?.role === "user") {
+			latestUserTurn = i;
+			break;
+		}
+	}
+	if (latestUserTurn < 0) return initial;
+
+	if (maxTokens === 0) return buildUnrecoverableResult(initial, 0, "zero-token-budget");
+
+	const userMessage = turns[latestUserTurn].messages[0] as UserMessage;
+	const originalAnchorTokens = estimateTurnTokens(turns[latestUserTurn]);
+	const configuredHotWindow = Math.max(0, Math.floor(options.hotWindowTurns ?? DEFAULT_HOT_WINDOW_TURNS));
+	const firstSuffixTurn = Math.max(latestUserTurn + 1, turns.length - configuredHotWindow);
+	const standardControlPromptTokens = normalizeReservedTokens(recovery.standardControlPromptTokens);
+	const truncatedControlPromptTokens = normalizeReservedTokens(recovery.truncatedControlPromptTokens);
+	let attempts = 0;
+
+	const runSuffixRetries = (
+		anchorTurn: Turn,
+		messageBudget: number,
+		controlPrompt: RecoveryControlPrompt,
+		anchorTruncated: boolean,
+	): TransformResult | null => {
+		if (messageBudget <= 0 || estimateTurnTokens(anchorTurn) > messageBudget) return null;
+		const retryOptions: MessageTransformOptions = {
+			...options,
+			maxTokens: messageBudget,
+			hotWindowTurns: Math.max(1, configuredHotWindow),
+			relevanceScores: undefined,
+		};
+
+		for (let suffixStart = firstSuffixTurn; suffixStart <= turns.length; suffixStart++) {
+			const selectedOriginalTurnIndexes = [
+				latestUserTurn,
+				...turns.slice(suffixStart).map((_, index) => suffixStart + index),
+			];
+			const candidateTurns = [anchorTurn, ...turns.slice(suffixStart)];
+			const retry = transformMessages(
+				candidateTurns.flatMap(turn => turn.messages),
+				retryOptions,
+			);
+			attempts++;
+			if (retry.messages[0]?.role !== "user") continue;
+			if (retry.metadata.tokensAfter > messageBudget) continue;
+
+			return {
+				messages: retry.messages,
+				metadata: buildRecoveredMetadata(
+					turns,
+					initial,
+					retry,
+					selectedOriginalTurnIndexes,
+					attempts,
+					anchorTruncated,
+					controlPrompt,
+				),
+			};
+		}
+		return null;
+	};
+
+	// First recovery attempt preserves the full user anchor and reserves the
+	// standard control nudge. If that reserve is the only thing preventing a
+	// valid anchor, user context wins and the nudge is omitted.
+	if (standardControlPromptTokens !== undefined) {
+		const result = runSuffixRetries(
+			turns[latestUserTurn],
+			maxTokens - standardControlPromptTokens,
+			"standard",
+			false,
+		);
+		if (result) return result;
+	}
+
+	const withoutControlPrompt = runSuffixRetries(turns[latestUserTurn], maxTokens, "omitted", false);
+	if (withoutControlPrompt) return withoutControlPrompt;
+
+	// Only a genuinely oversized user anchor reaches truncation. Non-text blocks
+	// are never sliced or rewritten; if the full mixed-media anchor cannot fit,
+	// surface an explicit unrecoverable outcome instead.
+	const { hasNonText } = userAnchorText(userMessage);
+	if (hasNonText && originalAnchorTokens > maxTokens) {
+		return buildUnrecoverableResult(initial, attempts, "non-text-anchor-exceeds-budget");
+	}
+
+	if (truncatedControlPromptTokens !== undefined) {
+		const truncatedBudget = maxTokens - truncatedControlPromptTokens;
+		const boundedUser = boundUserAnchor(userMessage, truncatedBudget);
+		if (boundedUser) {
+			const result = runSuffixRetries(
+				{ messages: [boundedUser], hasToolResults: false },
+				truncatedBudget,
+				"truncated",
+				true,
+			);
+			if (result) return result;
+		}
+	}
+
+	return buildUnrecoverableResult(initial, attempts, "text-anchor-exceeds-recoverable-budget");
 }

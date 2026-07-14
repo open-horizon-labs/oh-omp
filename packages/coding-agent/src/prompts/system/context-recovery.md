@@ -1,0 +1,1 @@
+Context recovery was required because normal budget assembly removed all valid conversational context. Reground from the preserved user request, the repository's current state, and available recall or session artifacts, then continue. Do not guess at omitted details; recover them with tools.

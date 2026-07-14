@@ -5,6 +5,7 @@ import {
 	CosineCache,
 	EMBEDDING_DIM,
 	formatHydratedContext,
+	qwen3EmbeddingProfile,
 	type RecallSearchResult,
 } from "@oh-my-pi/pi-coding-agent/context/recall";
 
@@ -103,6 +104,17 @@ describe("buildPassiveRecallQuery", () => {
 		expect(result.text).toContain("I will inspect hydration");
 		expect(result.metadata.originalCharCount).toBe(result.metadata.effectiveCharCount);
 		expect(result.metadata.toolResults.encoded).toBe(0);
+	});
+
+	test("bounds the projected hot window with exact Qwen tokens", () => {
+		const messages = [userMsg("old context ".repeat(2_000)), assistantMsg("RECENT_PASSIVE_DECISION")];
+		const result = buildPassiveRecallQuery(messages, { windowTurns: 3 });
+
+		expect(result.metadata.queryTruncated).toBe(true);
+		expect(result.metadata.projectedTokenCount).toBeGreaterThan(qwen3EmbeddingProfile.queryTokens);
+		expect(result.metadata.effectiveTokenCount).toBeLessThanOrEqual(qwen3EmbeddingProfile.queryTokens);
+		expect(result.metadata.effectiveCharCount).toBeLessThan(result.metadata.originalCharCount);
+		expect(result.text).toContain("RECENT_PASSIVE_DECISION");
 	});
 
 	test("projects read tool results through read codec instead of raw output", () => {

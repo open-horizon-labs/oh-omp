@@ -300,7 +300,7 @@ export class PassiveHydrator {
 			return { text: null, results: [], cacheHit: false, durationMs: Date.now() - start, trace: null };
 		}
 
-		// 2. Embed the hot window
+		// 2. Embed the Qwen-token-bounded hot window
 		const vectors = await this.#embedWithTimeout(hotWindowText, start);
 		if (!vectors) {
 			const durationMs = Date.now() - start;
@@ -459,11 +459,14 @@ export class PassiveHydrator {
 			query: {
 				text: options.hotWindowText,
 				charCount: options.hotWindowText.length,
-				estimatedTokens: Math.ceil(options.hotWindowText.length / 4),
+				estimatedTokens: options.queryMetadata.effectiveTokenCount,
 				hotWindowTurns: this.#hotWindowTurns,
 				embeddingGenerated: options.embeddingGenerated,
 				originalCharCount: options.queryMetadata.originalCharCount,
 				effectiveCharCount: options.queryMetadata.effectiveCharCount,
+				projectedTokenCount: options.queryMetadata.projectedTokenCount,
+				effectiveTokenCount: options.queryMetadata.effectiveTokenCount,
+				queryTruncated: options.queryMetadata.queryTruncated,
 				toolResultRawCharCount: options.queryMetadata.toolResultRawCharCount,
 				toolResultEffectiveCharCount: options.queryMetadata.toolResultEffectiveCharCount,
 				toolResults: options.queryMetadata.toolResults,

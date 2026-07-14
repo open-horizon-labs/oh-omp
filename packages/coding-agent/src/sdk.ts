@@ -980,13 +980,14 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	// Both the recall tool and ingest pipeline share the same store instance.
 	let recallStore: RecallStore | undefined;
 	let memexLicense: string | undefined;
+	let unregisterRecallStoreClose: (() => void) | undefined;
 	try {
 		memexLicense = await resolveMemexLicense();
 		recallStore = await RecallStore.open({
 			agentDir,
 			sessionId: sessionManager.getSessionId(),
 		});
-		postmortem.register("recall-store-close", () => recallStore!.close());
+		unregisterRecallStoreClose = postmortem.register("recall-store-close", () => recallStore!.close());
 		logger.debug("RecallStore initialized for recall tool + ingest pipeline");
 	} catch (err) {
 		// No memex license or LanceDB init failure — recall is optional.
@@ -1012,10 +1013,11 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 
 	// Initialize FTS5 tool result store for keyword search.
 	let toolResultStore: ToolResultStore | undefined;
+	let unregisterToolResultStoreClose: (() => void) | undefined;
 	try {
 		toolResultStore = ToolResultStore.open(path.join(agentDir, "tool-results.db"));
 		toolResultStore.cleanup(30 * 24 * 60 * 60 * 1000); // 30 days
-		postmortem.register("tool-result-store-close", () => toolResultStore!.close());
+		unregisterToolResultStoreClose = postmortem.register("tool-result-store-close", () => toolResultStore!.close());
 		logger.debug("ToolResultStore initialized");
 	} catch (err) {
 		logger.debug("ToolResultStore not available", {
@@ -1677,6 +1679,8 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			sessionId: sessionManager.getSessionId(),
 			projectCwd: cwd,
 			embedToolResults: settings.get("assembler.embedToolResults"),
+			batchTokenBudget: settings.get("assembler.embeddingBatchTokens"),
+			maxConcurrentBatches: settings.get("assembler.embeddingBatchConcurrency"),
 		});
 		passiveHydrator = new PassiveHydrator({
 			store: recallStore,
@@ -1686,6 +1690,16 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			sessionId,
 			recentWindowMs: daysToRecallWindowMs(settings.get("assembler.recentWindowDays")),
 			hydrationTimeoutMs: settings.get("assembler.passiveHydrationTimeoutMs"),
+		});
+		// The queue must drain before its LanceDB and FTS stores close. Replace the
+		// independently registered store callbacks because postmortem cleanups run
+		// concurrently rather than sequentially.
+		unregisterRecallStoreClose?.();
+		unregisterToolResultStoreClose?.();
+		postmortem.register("recall-pipeline-close", async () => {
+			await ingestPipeline!.drain();
+			toolResultStore?.close();
+			recallStore!.close();
 		});
 		logger.debug("Recall pipeline initialized (ingest + passive hydration)");
 	}

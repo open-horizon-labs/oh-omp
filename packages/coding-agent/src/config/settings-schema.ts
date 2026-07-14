@@ -391,6 +391,28 @@ export const SETTINGS_SCHEMA = {
 			condition: "isAssemblerMode",
 		},
 	},
+	"assembler.embeddingBatchTokens": {
+		type: "number",
+		default: 8_192,
+		ui: {
+			tab: "agent",
+			label: "Embedding batch tokens",
+			description: "Maximum aggregate Qwen tokens per background embedding request",
+			submenu: true,
+			condition: "isAssemblerMode",
+		},
+	},
+	"assembler.embeddingBatchConcurrency": {
+		type: "number",
+		default: 1,
+		ui: {
+			tab: "agent",
+			label: "Embedding batch concurrency",
+			description: "Maximum background embedding requests in flight per agent session",
+			submenu: true,
+			condition: "isAssemblerMode",
+		},
+	},
 	"assembler.workingSetEnabled": {
 		type: "boolean",
 		default: true,
@@ -2219,6 +2241,8 @@ export interface AssemblerSettings {
 	hydrationBudgetPercent: number;
 	passiveHydrationTimeoutMs: number;
 	embedToolResults: boolean;
+	embeddingBatchTokens: number;
+	embeddingBatchConcurrency: number;
 	hotWindowTurns: number;
 	recentWindowDays: number;
 	turnBufferPercent: number;

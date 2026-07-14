@@ -3,7 +3,13 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { getDefault } from "@oh-my-pi/pi-coding-agent/config/settings-schema";
-import { EMBEDDING_DIM, type IngestItem, IngestPipeline, RecallStore } from "@oh-my-pi/pi-coding-agent/context/recall";
+import {
+	DEFAULT_EMBEDDING_BATCH_TOKEN_BUDGET,
+	EMBEDDING_DIM,
+	type IngestItem,
+	IngestPipeline,
+	RecallStore,
+} from "@oh-my-pi/pi-coding-agent/context/recall";
 import * as embedModule from "@oh-my-pi/pi-coding-agent/context/recall/embed";
 import {
 	extractAssistantText,
@@ -11,6 +17,7 @@ import {
 	extractToolResultText,
 	extractUserText,
 } from "@oh-my-pi/pi-coding-agent/context/recall/message-text";
+import { qwen3EmbeddingProfile } from "@oh-my-pi/pi-coding-agent/context/recall/model-profile";
 import { ToolResultStore } from "@oh-my-pi/pi-coding-agent/context/recall/tool-result-store";
 import { logger } from "@oh-my-pi/pi-utils";
 
@@ -201,10 +208,9 @@ describe("IngestPipeline", () => {
 	});
 
 	async function waitForIngest(pipeline: IngestPipeline): Promise<void> {
-		for (let attempt = 0; attempt < 100 && pipeline.inFlight > 0; attempt++) {
-			await Bun.sleep(10);
-		}
+		await pipeline.drain();
 		expect(pipeline.inFlight).toBe(0);
+		expect(pipeline.queued).toBe(0);
 	}
 
 	async function waitForCondition(condition: () => boolean): Promise<void> {
@@ -234,10 +240,10 @@ describe("IngestPipeline", () => {
 		store.close();
 	});
 
-	test("ingest respects in-flight guard", async () => {
-		const sessionDir = path.join(tmpDir, "inflight-guard");
+	test("ingest queues pressure without dropping and batches by token budget", async () => {
+		const sessionDir = path.join(tmpDir, "queued-batching");
 		const store = await RecallStore.open({ agentDir: sessionDir, sessionId: "test-inflight" });
-		const { promise, reject } = Promise.withResolvers<Float32Array[]>();
+		const { promise, resolve } = Promise.withResolvers<Float32Array[]>();
 		const embedSpy = vi.spyOn(embedModule, "embed").mockReturnValue(promise);
 		const pipeline = new IngestPipeline({
 			store,
@@ -246,19 +252,55 @@ describe("IngestPipeline", () => {
 			projectCwd: "/tmp/test-project",
 		});
 
-		// Submit more items than MAX_IN_FLIGHT (4)
 		for (let i = 0; i < 10; i++) {
 			pipeline.ingest({ text: `message ${i}`, role: "user", turn: i });
 		}
+		await waitForCondition(() => embedSpy.mock.calls.length === 1);
 
-		// Some should have been dropped
-		expect(pipeline.dropped).toBeGreaterThan(0);
-		// But at most MAX_IN_FLIGHT should be in flight
-		expect(pipeline.inFlight).toBeLessThanOrEqual(4);
-		expect(embedSpy).toHaveBeenCalledTimes(4);
+		expect(pipeline.dropped).toBe(0);
+		expect(pipeline.inFlight).toBe(10);
+		const batch = embedSpy.mock.calls[0][0];
+		expect(batch).toHaveLength(10);
+		expect(batch.reduce((sum, text) => sum + qwen3EmbeddingProfile.countTokens(text), 0)).toBeLessThanOrEqual(
+			DEFAULT_EMBEDDING_BATCH_TOKEN_BUDGET,
+		);
 
-		reject(new Error("simulated embed failure"));
+		resolve(batch.map(() => new Float32Array(EMBEDDING_DIM).fill(0.1)));
 		await waitForIngest(pipeline);
+		expect(await store.search(randomVector(EMBEDDING_DIM), 20)).toHaveLength(10);
+		store.close();
+	});
+
+	test("oversized messages use bounded chunks and retain one original recall row", async () => {
+		const sessionDir = path.join(tmpDir, "chunked-message");
+		const store = await RecallStore.open({ agentDir: sessionDir, sessionId: "test-chunked" });
+		const batches: string[][] = [];
+		vi.spyOn(embedModule, "embed").mockImplementation(async texts => {
+			batches.push(texts);
+			return texts.map(() => new Float32Array(EMBEDDING_DIM).fill(0.25));
+		});
+		const pipeline = new IngestPipeline({
+			store,
+			license: "fake-license",
+			sessionId: "test-chunked",
+			projectCwd: "/tmp/test-project",
+			batchTokenBudget: 512,
+		});
+		const text = Array.from({ length: 1_500 }, (_, index) => `Semantic sentence ${index}.`).join(" ");
+
+		pipeline.ingest({ text, role: "assistant", turn: 4 });
+		await waitForIngest(pipeline);
+
+		const embeddedTexts = batches.flat();
+		expect(embeddedTexts.length).toBeGreaterThan(1);
+		expect(embeddedTexts.every(chunk => qwen3EmbeddingProfile.countTokens(chunk) <= 512)).toBe(true);
+		expect(
+			batches.every(batch => batch.reduce((sum, chunk) => sum + qwen3EmbeddingProfile.countTokens(chunk), 0) <= 512),
+		).toBe(true);
+		const rows = await store.filterByTurn(4, "test-chunked");
+		expect(rows).toHaveLength(1);
+		expect(rows[0].text).toBe(text);
+
 		store.close();
 	});
 
@@ -271,6 +313,7 @@ describe("IngestPipeline", () => {
 			license: "invalid-license-that-will-fail",
 			sessionId: "test-fail",
 			projectCwd: "/tmp/test-project",
+			retryBaseDelayMs: 0,
 		});
 
 		// This should not throw
@@ -282,6 +325,8 @@ describe("IngestPipeline", () => {
 		});
 
 		await waitForIngest(pipeline);
+		expect(pipeline.failedItems).toBe(1);
+		expect(pipeline.queueStatus.failedSequences).toBe(1);
 		// No row should have been stored (embed failed)
 		const results = await store.search(randomVector(EMBEDDING_DIM), 10);
 		expect(results.length).toBe(0);
@@ -353,8 +398,10 @@ describe("IngestPipeline", () => {
 		store.close();
 	});
 
-	test("settings schema defaults tool-result embeddings off", () => {
+	test("settings schema exposes the selected semantic ingestion defaults", () => {
 		expect(getDefault("assembler.embedToolResults")).toBe(false);
+		expect(getDefault("assembler.embeddingBatchTokens")).toBe(8_192);
+		expect(getDefault("assembler.embeddingBatchConcurrency")).toBe(1);
 	});
 
 	test("disabling tool-result embeddings does not change user semantic ingestion", async () => {

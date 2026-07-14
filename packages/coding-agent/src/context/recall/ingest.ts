@@ -3,18 +3,22 @@
  * rows in SQLite. Tool-result semantic ingestion can be disabled independently
  * while retaining exact keyword recall.
  *
- * Embedding is async and non-blocking. Failed embeddings log a warning but do not
- * crash the agent. An in-flight guard prevents unbounded background task spawning.
+ * Embedding is async and non-blocking. Oversized messages are tokenized with the
+ * active model profile, scheduled as token-budgeted batches, and pooled back to
+ * one vector per original message. Queue pressure defers work; it never sheds it.
  */
 
 import { logger } from "@oh-my-pi/pi-utils";
 import { embed } from "./embed";
+import {
+	DEFAULT_EMBEDDING_BATCH_TOKEN_BUDGET,
+	type EmbeddingQueueStatus,
+	EmbeddingScheduler,
+} from "./embedding-scheduler";
+import { type EmbeddingDocumentChunk, type EmbeddingModelProfile, qwen3EmbeddingProfile } from "./model-profile";
 import type { RecallStore } from "./store";
 import type { ToolResultStore } from "./tool-result-store";
 import { buildRecallRowKey, type RecallRow } from "./types";
-
-/** Maximum concurrent embedding requests allowed in flight. */
-const MAX_IN_FLIGHT = 4;
 
 export interface IngestPipelineOptions {
 	store: RecallStore;
@@ -23,6 +27,11 @@ export interface IngestPipelineOptions {
 	sessionId: string;
 	projectCwd: string;
 	embedToolResults?: boolean;
+	modelProfile?: EmbeddingModelProfile;
+	batchTokenBudget?: number;
+	maxConcurrentBatches?: number;
+	maxAttempts?: number;
+	retryBaseDelayMs?: number;
 }
 
 export interface IngestItem {
@@ -37,35 +46,40 @@ export interface IngestItem {
 export class IngestPipeline {
 	#store: RecallStore;
 	#toolResultStore?: ToolResultStore;
-	#license: string;
 	#sessionId: string;
 	#projectCwd: string;
 	#embedToolResults: boolean;
-	#inFlight = 0;
-	#dropped = 0;
+	#modelProfile: EmbeddingModelProfile;
+	#documentChunkTokens: number;
+	#scheduler: EmbeddingScheduler;
+	#pendingTasks = new Set<Promise<void>>();
+	#storeTail: Promise<void> = Promise.resolve();
+	#failedItems = 0;
 
 	constructor(options: IngestPipelineOptions) {
 		this.#store = options.store;
 		this.#toolResultStore = options.toolResultStore;
-		this.#license = options.license;
 		this.#sessionId = options.sessionId;
 		this.#projectCwd = options.projectCwd;
 		this.#embedToolResults = options.embedToolResults ?? false;
+		this.#modelProfile = options.modelProfile ?? qwen3EmbeddingProfile;
+		const batchTokenBudget = normalizeBatchTokenBudget(options.batchTokenBudget);
+		this.#documentChunkTokens = Math.min(this.#modelProfile.documentChunkTokens, batchTokenBudget);
+		this.#scheduler = new EmbeddingScheduler({
+			embed: texts => embed(texts, options.license),
+			batchTokenBudget,
+			maxConcurrentBatches: options.maxConcurrentBatches,
+			maxAttempts: options.maxAttempts,
+			retryBaseDelayMs: options.retryBaseDelayMs,
+		});
 	}
 
-	/**
-	 * Ingest a message: embed it async, then store in LanceDB.
-	 * Non-blocking — fires and forgets the background task.
-	 * Returns immediately.
-	 */
+	/** Queue a message for semantic and/or exact recall without blocking the caller. */
 	ingest(item: IngestItem): void {
-		// Skip empty text
 		if (!item.text || item.text.trim().length === 0) return;
 
-		// Tool results remain available to exact keyword recall regardless of
-		// semantic-ingest policy or embedding backpressure.
 		if (item.role === "tool_result") {
-			this.#scheduleToolResultIndex(item);
+			this.#track(Promise.resolve().then(() => this.#indexToolResult(item)));
 			if (!this.#embedToolResults) {
 				logger.debug("IngestPipeline: tool result semantic embedding disabled", {
 					sessionId: this.#sessionId,
@@ -76,35 +90,50 @@ export class IngestPipeline {
 			}
 		}
 
-		// In-flight guard: drop if too many concurrent embeds
-		if (this.#inFlight >= MAX_IN_FLIGHT) {
-			this.#dropped++;
-			logger.debug("IngestPipeline: dropping item (in-flight limit)", {
-				role: item.role,
-				turn: item.turn,
-				dropped: this.#dropped,
-			});
-			return;
+		const chunks = this.#modelProfile.chunkDocument(item.text, this.#documentChunkTokens);
+		if (chunks.length === 0) return;
+		this.#track(this.#embedAndStore(item, chunks));
+	}
+
+	/** Wait until all queued embeddings, stores, and exact-index writes settle. */
+	async drain(): Promise<void> {
+		while (this.#pendingTasks.size > 0) {
+			await Promise.allSettled(Array.from(this.#pendingTasks));
 		}
-
-		this.#inFlight++;
-		this.#embedAndStore(item).finally(() => {
-			this.#inFlight--;
-		});
+		await this.#scheduler.drain();
 	}
 
-	/** Number of items dropped due to in-flight limit. */
+	/** Compatibility metric: queue pressure no longer drops ingestion items. */
 	get dropped(): number {
-		return this.#dropped;
+		return 0;
 	}
 
-	/** Number of items currently being embedded. */
 	get inFlight(): number {
-		return this.#inFlight;
+		return this.#scheduler.status.inFlightSequences;
 	}
 
-	#scheduleToolResultIndex(item: IngestItem): void {
-		setImmediate(() => this.#indexToolResult(item));
+	get queued(): number {
+		return this.#scheduler.status.queuedSequences;
+	}
+
+	get pendingItems(): number {
+		return this.#pendingTasks.size;
+	}
+
+	get failedItems(): number {
+		return this.#failedItems;
+	}
+
+	get queueStatus(): EmbeddingQueueStatus {
+		return this.#scheduler.status;
+	}
+
+	#track(task: Promise<void>): void {
+		this.#pendingTasks.add(task);
+		void task.then(
+			() => this.#pendingTasks.delete(task),
+			() => this.#pendingTasks.delete(task),
+		);
 	}
 
 	#indexToolResult(item: IngestItem): void {
@@ -137,9 +166,9 @@ export class IngestPipeline {
 					session_id: this.#sessionId,
 				}),
 			});
-		} catch (err) {
+		} catch (error) {
 			logger.warn("IngestPipeline: tool result FTS indexing failed", {
-				error: err instanceof Error ? err.message : String(err),
+				error: error instanceof Error ? error.message : String(error),
 				role: item.role,
 				sessionId: this.#sessionId,
 				toolName: item.toolName ?? null,
@@ -148,11 +177,10 @@ export class IngestPipeline {
 		}
 	}
 
-	async #embedAndStore(item: IngestItem): Promise<void> {
+	async #embedAndStore(item: IngestItem, chunks: EmbeddingDocumentChunk[]): Promise<void> {
 		try {
-			const vectors = await embed([item.text], this.#license);
-			const vector = vectors[0];
-
+			const vectors = await Promise.all(chunks.map(chunk => this.#scheduler.schedule(chunk.text, chunk.tokenCount)));
+			const vector = poolChunkEmbeddings(vectors, chunks);
 			const row: RecallRow = {
 				vector: Array.from(vector),
 				text: item.text,
@@ -166,31 +194,70 @@ export class IngestPipeline {
 				session_id: this.#sessionId,
 			};
 
-			await this.#store.insert([row]);
-			if (this.#toolResultStore && item.role !== "tool_result") {
-				this.#toolResultStore.indexSync({
-					content: item.text,
-					role: item.role,
-					toolName: item.toolName ?? null,
-					sessionId: this.#sessionId,
-					projectCwd: this.#projectCwd,
-					turnNumber: item.turn,
-					paths: item.paths ?? [],
-					rowKey: buildRecallRowKey(row),
-				});
-			}
+			await this.#serializeStore(() => this.#storeRow(row, item));
 			logger.debug("IngestPipeline: stored row", {
 				role: item.role,
 				turn: item.turn,
 				textLen: item.text.length,
+				chunks: chunks.length,
+				tokens: chunks.reduce((sum, chunk) => sum + chunk.tokenCount, 0),
 			});
-		} catch (err) {
-			// Failed embedding does not crash the agent
+		} catch (error) {
+			this.#failedItems++;
 			logger.warn("IngestPipeline: embed/store failed", {
 				role: item.role,
 				turn: item.turn,
-				error: err instanceof Error ? err.message : String(err),
+				failedItems: this.#failedItems,
+				error: error instanceof Error ? error.message : String(error),
 			});
 		}
 	}
+
+	#serializeStore(write: () => Promise<void>): Promise<void> {
+		const pending = this.#storeTail.then(write);
+		this.#storeTail = pending.catch(() => {});
+		return pending;
+	}
+
+	async #storeRow(row: RecallRow, item: IngestItem): Promise<void> {
+		await this.#store.insert([row]);
+		if (this.#toolResultStore && item.role !== "tool_result") {
+			this.#toolResultStore.indexSync({
+				content: item.text,
+				role: item.role,
+				toolName: item.toolName ?? null,
+				sessionId: this.#sessionId,
+				projectCwd: this.#projectCwd,
+				turnNumber: item.turn,
+				paths: item.paths ?? [],
+				rowKey: buildRecallRowKey(row),
+			});
+		}
+	}
+}
+
+function poolChunkEmbeddings(vectors: Float32Array[], chunks: EmbeddingDocumentChunk[]): Float32Array {
+	if (vectors.length === 1) return vectors[0];
+	const dimension = vectors[0]?.length ?? 0;
+	const pooled = new Float32Array(dimension);
+	for (let chunkIndex = 0; chunkIndex < vectors.length; chunkIndex++) {
+		const vector = vectors[chunkIndex];
+		const weight = chunks[chunkIndex].tokenCount;
+		for (let dimensionIndex = 0; dimensionIndex < dimension; dimensionIndex++) {
+			pooled[dimensionIndex] += vector[dimensionIndex] * weight;
+		}
+	}
+
+	let squaredNorm = 0;
+	for (const value of pooled) squaredNorm += value * value;
+	const norm = Math.sqrt(squaredNorm);
+	if (norm > 0) {
+		for (let index = 0; index < pooled.length; index++) pooled[index] /= norm;
+	}
+	return pooled;
+}
+
+function normalizeBatchTokenBudget(value: number | undefined): number {
+	if (value === undefined || !Number.isFinite(value)) return DEFAULT_EMBEDDING_BATCH_TOKEN_BUDGET;
+	return Math.max(1, Math.floor(value));
 }

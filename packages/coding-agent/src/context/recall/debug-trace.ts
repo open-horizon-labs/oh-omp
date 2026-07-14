@@ -46,6 +46,9 @@ export interface RecallDebugTrace {
 		embeddingGenerated: boolean;
 		originalCharCount: number;
 		effectiveCharCount: number;
+		projectedTokenCount: number;
+		effectiveTokenCount: number;
+		queryTruncated: boolean;
 		toolResultRawCharCount: number;
 		toolResultEffectiveCharCount: number;
 		toolResults: {

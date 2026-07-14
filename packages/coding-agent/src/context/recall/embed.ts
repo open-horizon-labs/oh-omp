@@ -1,10 +1,10 @@
 import * as os from "node:os";
 import * as path from "node:path";
 import { isEnoent, logger } from "@oh-my-pi/pi-utils";
-import { EMBEDDING_DIM } from "./types";
+import { qwen3EmbeddingProfile } from "./model-profile";
 
 const MEMEX_EMBED_URL = "https://memex-embed.ohlabs.ai/v1/embeddings";
-const MEMEX_MODEL = "qwen3-embedding-4b";
+const MEMEX_MODEL = qwen3EmbeddingProfile.model;
 
 interface EmbedResponseItem {
 	embedding: number[];
@@ -60,8 +60,10 @@ export async function embed(texts: string[], license: string): Promise<Float32Ar
 	}
 
 	return json.data.map((item, i) => {
-		if (item.embedding.length !== EMBEDDING_DIM) {
-			throw new Error(`Embedding ${i} has dimension ${item.embedding.length}, expected ${EMBEDDING_DIM}`);
+		if (item.embedding.length !== qwen3EmbeddingProfile.dimension) {
+			throw new Error(
+				`Embedding ${i} has dimension ${item.embedding.length}, expected ${qwen3EmbeddingProfile.dimension}`,
+			);
 		}
 		return new Float32Array(item.embedding);
 	});

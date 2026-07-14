@@ -12,6 +12,7 @@ import { dedupCodec, readCodec, warmCodec } from "../assembler/codecs";
 import { extractText } from "../assembler/codecs/shared";
 import type { CodecContext, ContentCodec, FileReadEntry } from "../assembler/types";
 import { extractAssistantText, extractToolResultText, extractUserText } from "./message-text";
+import { qwen3EmbeddingProfile } from "./model-profile";
 
 const DEFAULT_PASSIVE_RECALL_CODECS: ContentCodec[] = [dedupCodec, readCodec, warmCodec];
 
@@ -26,6 +27,9 @@ export interface PassiveRecallQueryMetadata {
 	effectiveCharCount: number;
 	toolResultRawCharCount: number;
 	toolResultEffectiveCharCount: number;
+	projectedTokenCount: number;
+	effectiveTokenCount: number;
+	queryTruncated: boolean;
 	toolResults: PassiveRecallQueryCodecStats;
 }
 
@@ -54,6 +58,9 @@ export function buildPassiveRecallQuery(
 		effectiveCharCount: 0,
 		toolResultRawCharCount: 0,
 		toolResultEffectiveCharCount: 0,
+		projectedTokenCount: 0,
+		effectiveTokenCount: 0,
+		queryTruncated: false,
 		toolResults: { encoded: 0, stubbed: 0, counts: {} },
 	};
 
@@ -110,11 +117,15 @@ export function buildPassiveRecallQuery(
 		}
 	}
 
-	const text = parts.join("\n").trim();
+	const projectedText = parts.join("\n").trim();
 	const originalText = originalParts.join("\n").trim();
+	const prepared = qwen3EmbeddingProfile.prepareQuery(projectedText, "tail");
 	metadata.originalCharCount = originalText.length;
-	metadata.effectiveCharCount = text.length;
-	return { text: text.length > 0 ? text : null, metadata };
+	metadata.effectiveCharCount = prepared.text.length;
+	metadata.projectedTokenCount = prepared.originalTokenCount;
+	metadata.effectiveTokenCount = prepared.tokenCount;
+	metadata.queryTruncated = prepared.truncated;
+	return { text: prepared.text.length > 0 ? prepared.text : null, metadata };
 }
 
 function selectHotWindowMessages(messages: AgentMessage[], windowTurns = 5): AgentMessage[] {

@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-07-14
+
+### Added
+
+- Added an explicit Qwen3-Embedding-4B model profile with pinned offline tokenizer assets and the `assembler.embeddingBatchTokens` and `assembler.embeddingBatchConcurrency` settings.
+
+### Changed
+
+- Recall ingestion now uses 2,048-token document chunks and FIFO batching of up to 8,192 tokens per request with one background request per session, replacing pressure-based drops with an observable backlog and retry state.
+- Passive and explicit semantic recall queries are bounded to a separate 1,024-token Qwen window, with truncation visible in recall diagnostics.
+- Recall shutdown now drains queued embeddings before closing its stores, preserving accepted background work during normal session closure.
+
 ## [0.11.2] - 2026-07-13
 
 ### Fixed

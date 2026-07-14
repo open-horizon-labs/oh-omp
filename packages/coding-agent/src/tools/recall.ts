@@ -3,6 +3,7 @@ import { logger } from "@oh-my-pi/pi-utils";
 import { type Static, Type } from "@sinclair/typebox";
 import { embed } from "../context/recall/embed";
 import { HybridRetriever, type HybridSearchMode } from "../context/recall/hybrid-retriever";
+import { qwen3EmbeddingProfile } from "../context/recall/model-profile";
 import type { RecallStore } from "../context/recall/store";
 import type { SearchResult as KeywordSearchResult, ToolResultStore } from "../context/recall/tool-result-store";
 import type { RecallSearchResult } from "../context/recall/types";
@@ -104,7 +105,14 @@ export class RecallTool implements AgentTool<typeof recallSchema> {
 
 		let queryVector: number[];
 		try {
-			const vectors = await embed([params.query], this.#license);
+			const preparedQuery = qwen3EmbeddingProfile.prepareQuery(params.query, "head");
+			if (preparedQuery.truncated) {
+				logger.warn("Recall: semantic query bounded to Qwen token budget", {
+					originalTokens: preparedQuery.originalTokenCount,
+					effectiveTokens: preparedQuery.tokenCount,
+				});
+			}
+			const vectors = await embed([preparedQuery.text], this.#license);
 			queryVector = Array.from(vectors[0]);
 		} catch (err) {
 			logger.warn("Recall: embedding failed", {

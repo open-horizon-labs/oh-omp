@@ -41,6 +41,7 @@
 	},
 	"dependencies": {
 		"@agentclientprotocol/sdk": "0.16.1",
+		"@huggingface/tokenizers": "0.1.3",
 		"@lancedb/lancedb": "0.26.2",
 		"@mozilla/readability": "^0.6",
 		"@oh-my-pi/omp-stats": "workspace:*",

@@ -58,7 +58,7 @@
 //!    `duplicate: true` / stable `session_seq` behavior).
 //! 2. **The task-212 four-class exclusion, isolated-tail oracle only.** The
 //!    unsupported-tool oracle drives a full `execute_turn` (scripted provider
-//!    requesting `bash`), so the PRODUCED stream carries a real preamble and
+//!    requesting `ssh`), so the PRODUCED stream carries a real preamble and
 //!    continues its numbering/causality from real turn history — while the
 //!    FIXTURE is an isolated tail authored in Wave A with its own numbering
 //!    (`session_seq` from 1, no first-event causation, label-style keys). For
@@ -389,9 +389,9 @@ async fn unsupported_tool_dispatch_matches_the_canonical_fixture_and_passes_the_
 		successor_protocol::provider::ProviderApiShapeV0::AnthropicMessages,
 		"claude-fixture",
 		[ScriptedRound::ToolUse {
-			tool_name:             "bash".to_owned(),
-			arguments:             serde_json::json!({ "command": "echo should-not-run" }),
-			provider_tool_call_id: "toolu_01_fixture_bash".to_owned(),
+			tool_name:             "ssh".to_owned(),
+			arguments:             serde_json::json!({ "host": "fixture.invalid", "user": "fixture-user" }),
+			provider_tool_call_id: "toolu_01_fixture_ssh".to_owned(),
 		}],
 	);
 	let frame_sink = FrameSink::new(KernelFrameStream::new());
@@ -411,13 +411,16 @@ async fn unsupported_tool_dispatch_matches_the_canonical_fixture_and_passes_the_
 		})
 		.await;
 
-	assert!(!attempt.trace.succeeded(), "bash must not be executable in Slice 0");
+	assert!(
+		!attempt.trace.succeeded(),
+		"ssh must not be executable (still stub_rejected after the S6 cutover)"
+	);
 	let failure = attempt
 		.outcome
 		.expect_err("a catalog-visible, stub-rejected tool must fail the turn");
 	assert_eq!(failure, TurnFailure::ToolRejected {
-		tool_name: "bash".to_owned(),
-		reason:    catalog::stub_rejection_reason("bash"),
+		tool_name: "ssh".to_owned(),
+		reason:    catalog::stub_rejection_reason("ssh"),
 	});
 
 	let produced = attempt.trace.events();
@@ -676,7 +679,17 @@ fn effective_empty_authority_retains_catalog_but_removes_provider_executables() 
 		.filter(|tool| tool.status == ToolStatusV0::PolicyRejected)
 		.map(|tool| tool.name.as_str())
 		.collect();
-	assert_eq!(policy_rejected_names, ["search_files", "read", "find", "grep", "list_dir"]);
+	assert_eq!(policy_rejected_names, [
+		"search_files",
+		"read",
+		"find",
+		"grep",
+		"list_dir",
+		"ast_grep",
+		"edit",
+		"write",
+		"bash"
+	]);
 	assert_eq!(
 		registry
 			.effective_executable_names(&authority, &allowlist)
@@ -823,7 +836,7 @@ fn authority_decision_payload_distinguishes_absent_explicit_and_nondefault_ceili
 }
 
 #[test]
-fn resolver_canonicalizes_ceiling_and_never_promotes_nonexistent_executors() {
+fn resolver_activates_workspace_mutation_tools_but_withholds_bash_without_a_trusted_allowlist() {
 	let authority = registry::EffectiveToolAuthority::resolve(
 		Some(&ToolAuthorityRequestV0 {
 			classes: vec![ToolAuthorityClassV0::LocalProcess, ToolAuthorityClassV0::WorkspaceMutation],
@@ -846,8 +859,11 @@ fn resolver_canonicalizes_ceiling_and_never_promotes_nonexistent_executors() {
 			.tools
 			.iter()
 			.filter(|tool| tool.status == ToolStatusV0::Executable)
-			.count(),
-		0
+			.map(|tool| tool.name.as_str())
+			.collect::<Vec<_>>(),
+		["edit", "write"],
+		"workspace_mutation activates edit/write; local_process without a trusted allowlist \
+		 withholds bash"
 	);
 }
 

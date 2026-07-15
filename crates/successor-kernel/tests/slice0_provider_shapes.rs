@@ -23,8 +23,9 @@ use successor_kernel::{
 		project_request_body, project_tool_call, project_tool_result, render_context_block,
 	},
 	tools::{
-		catalog::slice0_catalog, find::FindArgs, grep::GrepArgs, list_dir::ListDirArgs,
-		read::ReadArgs, search_files::SearchFilesArgs,
+		ast_grep::AstGrepArgs, bash::BashArgs, catalog::slice0_catalog, edit::EditArgs,
+		find::FindArgs, grep::GrepArgs, list_dir::ListDirArgs, read::ReadArgs,
+		search_files::SearchFilesArgs, write::WriteArgs,
 	},
 };
 use successor_protocol::{
@@ -248,7 +249,7 @@ fn unsupported_tool_rejection_is_typed_and_shape_independent() {
 		"catalog_stub_00000000-0000-4000-8000-000000000002",
 		"2026-07-02T00:00:00Z",
 		"v0",
-		vec![ToolDefinitionV0::stub_rejected("bash", "shell_execution")],
+		vec![ToolDefinitionV0::stub_rejected("ssh", "shell_execution")],
 	);
 
 	for shape in [ProviderApiShapeV0::OpenAiChatCompletions, ProviderApiShapeV0::OpenAiResponses] {
@@ -259,14 +260,14 @@ fn unsupported_tool_rejection_is_typed_and_shape_independent() {
 			content_preview:    None,
 			source_artifact_id: None,
 			source_ref:         None,
-			tool_name:          Some("bash".to_owned()),
+			tool_name:          Some("ssh".to_owned()),
 		};
 		let err = build_provider_request(&input, &catalog)
 			.expect_err("a stub-rejected tool must never build a provider request");
 		assert_eq!(
 			err,
 			ProjectionError::UnsupportedTool {
-				tool_name: "bash".to_owned(),
+				tool_name: "ssh".to_owned(),
 				status:    ToolStatusV0::StubRejected,
 			},
 			"unsupported-tool detection must be typed for {shape:?}, not a bespoke rejection"
@@ -287,11 +288,11 @@ fn tool_absent_from_catalog_is_rejected_regardless_of_shape() {
 			content_preview:    None,
 			source_artifact_id: None,
 			source_ref:         None,
-			tool_name:          Some("bash".to_owned()),
+			tool_name:          Some("ssh".to_owned()),
 		};
 		let err = build_provider_request(&input, &catalog)
 			.expect_err("a catalog-absent tool must never build a provider request");
-		assert_eq!(err, ProjectionError::ToolNotInCatalog { tool_name: "bash".to_owned() });
+		assert_eq!(err, ProjectionError::ToolNotInCatalog { tool_name: "ssh".to_owned() });
 	}
 }
 
@@ -387,12 +388,16 @@ fn normalize_response_extracts_finish_reason_and_text_for_every_shape() {
 /// (b) an independent, hand-authored spot oracle that does not derive from
 /// the DTO types at all: the exact `properties` key set the executor
 /// actually consumes, per tool, read from the published body (not the DTO).
-/// None of the five DTOs mark any field as JSON-Schema `required` -- every
-/// field on every one of them carries a `#[serde(default = ...)]`, so
-/// `schemars` never emits a `required` key for them at all (verified
-/// directly against the generated schemas, not assumed). This oracle
-/// asserts that invariant explicitly too, so a future edit that drops a
-/// default and silently makes a field schema-required is caught here.
+/// None of the five read-only DTOs (`search_files`, `read`, `find`, `grep`,
+/// `list_dir`) mark any field as JSON-Schema `required` -- every field on
+/// each of them carries a `#[serde(default = ...)]`, so `schemars` never
+/// emits a `required` key for them at all. `ast_grep`, `edit`, `write`, and
+/// `bash` do carry required fields for the arguments their executors cannot
+/// default (e.g. `lang`/`pat`, `path`/`edits`, `path`/`mode`/`content`,
+/// `executable`); this oracle asserts the exact per-tool required-field set
+/// explicitly (verified directly against the generated schemas, not
+/// assumed), so a future edit that silently adds or drops a default is
+/// caught here.
 #[test]
 fn every_executable_tool_in_the_anthropic_projection_matches_its_dto_schema_and_the_hand_authored_spot_oracle_exactly()
  {
@@ -409,12 +414,18 @@ fn every_executable_tool_in_the_anthropic_projection_matches_its_dto_schema_and_
 
 	// (b) hand-authored, DTO-independent expectation of the property set the
 	// executor actually reads for each tool. Never derived from the type.
-	let expected_properties: [(&str, &[&str]); 5] = [
-		("search_files", &["query", "max_matches"]),
-		("read", &["path", "offset", "limit"]),
-		("find", &["glob"]),
-		("grep", &["pattern"]),
-		("list_dir", &["path"]),
+	let expected_properties: [(&str, &[&str], &[&str]); 9] = [
+		("search_files", &["query", "max_matches"], &[]),
+		("read", &["path", "offset", "limit"], &[]),
+		("find", &["glob"], &[]),
+		("grep", &["pattern"], &[]),
+		("list_dir", &["path"], &[]),
+		("ast_grep", &["lang", "pat", "path", "glob", "sel", "context", "limit", "offset"], &[
+			"lang", "pat",
+		]),
+		("edit", &["path", "expected_sha256", "edits"], &["path", "expected_sha256", "edits"]),
+		("write", &["path", "mode", "content", "expected_sha256"], &["path", "mode", "content"]),
+		("bash", &["executable", "argv", "cwd", "timeout_ms", "env"], &["executable"]),
 	];
 
 	let mut seen: Vec<&str> = Vec::new();
@@ -447,6 +458,14 @@ fn every_executable_tool_in_the_anthropic_projection_matches_its_dto_schema_and_
 				.expect("schemars output for GrepArgs must serialize"),
 			"list_dir" => serde_json::to_value(schemars::schema_for!(ListDirArgs))
 				.expect("schemars output for ListDirArgs must serialize"),
+			"ast_grep" => serde_json::to_value(schemars::schema_for!(AstGrepArgs))
+				.expect("schemars output for AstGrepArgs must serialize"),
+			"edit" => serde_json::to_value(EditArgs::schema())
+				.expect("schemars output for EditArgs must serialize"),
+			"write" => serde_json::to_value(WriteArgs::schema())
+				.expect("schemars output for WriteArgs must serialize"),
+			"bash" => serde_json::to_value(BashArgs::schema())
+				.expect("schemars output for BashArgs must serialize"),
 			other => panic!(
 				"executable tool {other} has no schemars oracle wired into this test; add its DTO"
 			),
@@ -476,16 +495,30 @@ fn every_executable_tool_in_the_anthropic_projection_matches_its_dto_schema_and_
 			"tool {name} properties must be exactly the executor-consumed field set: no extra \
 			 property, none missing, no hand-drift"
 		);
-		assert!(
-			schema.get("required").is_none(),
-			"tool {name} must not publish a `required` array; every argument field on this DTO \
-			 carries a serde default"
+		let expected_required: &[&str] = found.2;
+		let mut actual_required: Vec<&str> = schema
+			.get("required")
+			.and_then(serde_json::Value::as_array)
+			.map(|values| {
+				values
+					.iter()
+					.map(|value| value.as_str().expect("required entries must be strings"))
+					.collect()
+			})
+			.unwrap_or_default();
+		actual_required.sort_unstable();
+		let mut want_required: Vec<&str> = expected_required.to_vec();
+		want_required.sort_unstable();
+		assert_eq!(
+			actual_required, want_required,
+			"tool {name} required-field set must match its DTO exactly: fields without a serde \
+			 default are schema-required, fields with one are not"
 		);
 
 		seen.push(name);
 	}
 
-	for (tool_name, _) in expected_properties {
+	for (tool_name, ..) in expected_properties {
 		assert!(
 			seen.contains(&tool_name),
 			"spot oracle expected {tool_name} to be an executable tool but it was absent from the \

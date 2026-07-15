@@ -612,7 +612,8 @@ async fn explicit_safe_read_is_accepted_and_persists_conditional_authority_decis
 		"read",
 		"find",
 		"grep",
-		"list_dir"
+		"list_dir",
+		"ast_grep"
 	]);
 	cleanup_workspace(&workspace);
 }
@@ -710,18 +711,68 @@ async fn nondefault_ceiling_accepts_broader_request_without_creating_new_executo
 		"read",
 		"find",
 		"grep",
-		"list_dir"
+		"list_dir",
+		"ast_grep",
+		"edit",
+		"write"
 	]);
 	cleanup_workspace(&workspace);
 }
 
 #[tokio::test]
-async fn populated_trusted_executable_allowlist_never_activates_bash_in_the_published_roster() {
-	let server = TestServer::start("trusted-allowlist-does-not-activate-bash").await;
+async fn local_process_authority_with_empty_allowlist_withholds_bash_from_the_published_roster() {
+	let server = TestServer::start("empty-allowlist-withholds-bash").await;
 	let (state, factory_count, catalog_log, workspace) =
-		authority_state(&server, "trusted-allowlist-does-not-activate-bash", vec![
-			authority_final_round("ok"),
-		]);
+		authority_state(&server, "empty-allowlist-withholds-bash", vec![authority_final_round("ok")]);
+	let state = state.with_trusted_tool_authority_ceiling(vec![
+		ToolAuthorityClassV0::SafeRead,
+		ToolAuthorityClassV0::WorkspaceMutation,
+		ToolAuthorityClassV0::LocalProcess,
+	]);
+
+	let response = submit_turn_json(
+		state,
+		submit_turn_body(
+			"hello",
+			None,
+			Some(authority_request(&["safe_read", "workspace_mutation", "local_process"])),
+		),
+	)
+	.await;
+
+	assert_eq!(response.status(), StatusCode::OK);
+	assert_eq!(factory_count.load(Ordering::SeqCst), 1);
+	let body = body_bytes(response).await;
+	let session_id = session_id_from_sse_body(&body);
+	let events = read_all_session_events(&server.client(), &session_id).await;
+	let catalogs = raw_event_payloads_of_type(&events, RawEventType::ToolCatalogPublished);
+	assert_eq!(catalogs.len(), 1);
+	assert_authority_decision(
+		&catalogs[0],
+		&["safe_read", "workspace_mutation", "local_process"],
+		&["safe_read", "workspace_mutation", "local_process"],
+		&["safe_read", "workspace_mutation", "local_process"],
+	);
+	assert_eq!(recorded_catalog_names(&catalog_log, 0), vec![
+		"search_files",
+		"read",
+		"find",
+		"grep",
+		"list_dir",
+		"ast_grep",
+		"edit",
+		"write",
+	]);
+	cleanup_workspace(&workspace);
+}
+
+#[tokio::test]
+async fn populated_trusted_executable_allowlist_activates_bash_in_the_published_roster() {
+	let server = TestServer::start("trusted-allowlist-activates-bash").await;
+	let (state, factory_count, catalog_log, workspace) =
+		authority_state(&server, "trusted-allowlist-activates-bash", vec![authority_final_round(
+			"ok",
+		)]);
 	let state = state.with_trusted_tool_authority_ceiling(vec![
 		ToolAuthorityClassV0::SafeRead,
 		ToolAuthorityClassV0::WorkspaceMutation,
@@ -757,12 +808,22 @@ async fn populated_trusted_executable_allowlist_never_activates_bash_in_the_publ
 	let events = read_all_session_events(&server.client(), &session_id).await;
 	let catalogs = raw_event_payloads_of_type(&events, RawEventType::ToolCatalogPublished);
 	assert_eq!(catalogs.len(), 1);
-	// The base catalog fixture still pins `bash` to `stub_rejected`: a
-	// populated trusted-executable allowlist combined with granted
-	// `local_process` authority must not sovereign-activate it.
+	// A populated trusted-executable allowlist combined with granted
+	// `local_process` authority sovereign-activates `bash` alongside the
+	// rest of the base executable roster; an empty allowlist would leave
+	// it `policy_rejected` even with `local_process` granted.
 	let published_names = recorded_catalog_names(&catalog_log, 0);
-	assert_eq!(published_names, vec!["search_files", "read", "find", "grep", "list_dir"]);
-	assert!(!published_names.contains(&"bash".to_owned()));
+	assert_eq!(published_names, vec![
+		"search_files",
+		"read",
+		"find",
+		"grep",
+		"list_dir",
+		"ast_grep",
+		"edit",
+		"write",
+		"bash"
+	]);
 	cleanup_workspace(&workspace);
 }
 

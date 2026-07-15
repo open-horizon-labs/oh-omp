@@ -634,7 +634,7 @@ fn ask_rejects_allow_executable_combined_with_kernel_url_without_probing_the_pat
 }
 
 #[test]
-fn local_bootstrap_ceiling_persists_nondefault_effective_authority_without_promoted_mutation_or_process_tools()
+fn local_bootstrap_ceiling_persists_nondefault_effective_authority_and_activates_mutation_tools_but_withholds_bash_without_a_trusted_allowlist()
  {
 	let harness = Harness::start("f3c-local-ceiling", Vec::new());
 	let (anthropic_base_url, anthropic_body, anthropic_server) = start_fake_anthropic();
@@ -665,11 +665,19 @@ fn local_bootstrap_ceiling_persists_nondefault_effective_authority_without_promo
 		"local in-process kernel with fake Anthropic must succeed: {output:?}"
 	);
 	let provider_body = anthropic_body.recv().expect("fake Anthropic request body");
-	assert!(
-		!provider_body.contains("workspace_mutation") && !provider_body.contains("local_process"),
-		"ceiling/request must not promote mutation/process executors into provider tools: \
-		 {provider_body}"
-	);
+	let provider_body: serde_json::Value =
+		serde_json::from_str(&provider_body).expect("fake Anthropic request body is valid JSON");
+	let provider_tool_names: Vec<&str> = provider_body["tools"]
+		.as_array()
+		.expect("Anthropic request carries tools")
+		.iter()
+		.map(|tool| {
+			tool["name"]
+				.as_str()
+				.expect("Anthropic tool carries a name")
+		})
+		.collect();
+	assert_eq!(provider_tool_names, vec!["edit", "write"]);
 	anthropic_server.join().expect("fake anthropic server");
 
 	let session_id = extract_session_id(&output.stdout);
@@ -691,8 +699,10 @@ fn local_bootstrap_ceiling_persists_nondefault_effective_authority_without_promo
 		"persisted authority decision must record nondefault effective classes: {events_text}"
 	);
 	assert!(
-		events_text.contains(r#""tool_names":[]"#),
-		"provider request event must record zero promoted mutation/process tools: {events_text}"
+		events_text.contains(r#""tool_names":["edit","write"]"#),
+		"provider request event must advertise the workspace_mutation tools (edit, write) while \
+		 withholding bash, which also needs local_process plus a nonempty trusted executable \
+		 allowlist: {events_text}"
 	);
 }
 

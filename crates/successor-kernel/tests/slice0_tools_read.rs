@@ -61,14 +61,16 @@ fn catalog_has_35_tools_with_expected_ids_and_statuses() {
 	names.dedup();
 	assert_eq!(catalog.tools.len(), names.len(), "tool names must be unique");
 
-	for expected in ["search_files", "read", "find", "grep", "list_dir"] {
+	for expected in
+		["search_files", "read", "find", "grep", "list_dir", "ast_grep", "edit", "write", "bash"]
+	{
 		assert_eq!(
 			tool_status(expected),
 			Some(ToolStatusV0::Executable),
 			"{expected} must be catalog-executable"
 		);
 	}
-	for expected in ["bash", "edit", "write", "task", "submit_result"] {
+	for expected in ["ssh", "ast_edit", "lsp", "task", "submit_result"] {
 		assert_eq!(
 			tool_status(expected),
 			Some(ToolStatusV0::StubRejected),
@@ -78,11 +80,11 @@ fn catalog_has_35_tools_with_expected_ids_and_statuses() {
 }
 
 // ---------------------------------------------------------------------
-// Catalog: unsupported tool invocation (bash) rejected per fixture semantics
+// Catalog: unsupported tool invocation (ssh) rejected per fixture semantics
 // ---------------------------------------------------------------------
 
 #[test]
-fn bash_rejection_matches_the_unsupported_tool_fixture() {
+fn ssh_rejection_matches_the_unsupported_tool_fixture() {
 	let events = fixtures::raw_events_unsupported_tool();
 	let rejected = events
 		.iter()
@@ -93,11 +95,11 @@ fn bash_rejection_matches_the_unsupported_tool_fixture() {
 		.find(|event| event.event_type.as_str() == "error.recorded")
 		.expect("unsupported-tool fixture must contain error.recorded");
 
-	assert_eq!(rejected.payload["tool_name"].as_str(), Some("bash"));
+	assert_eq!(rejected.payload["tool_name"].as_str(), Some("ssh"));
 	assert_eq!(rejected.payload["policy"].as_str(), Some(REJECTION_POLICY));
-	assert_eq!(rejected.payload["reason"].as_str(), Some(stub_rejection_reason("bash").as_str()));
+	assert_eq!(rejected.payload["reason"].as_str(), Some(stub_rejection_reason("ssh").as_str()));
 	assert_eq!(error.payload["code"].as_str(), Some(REJECTION_ERROR_CODE));
-	assert_eq!(tool_status("bash"), Some(ToolStatusV0::StubRejected));
+	assert_eq!(tool_status("ssh"), Some(ToolStatusV0::StubRejected));
 }
 
 // ---------------------------------------------------------------------

@@ -5,10 +5,10 @@
 //! fully in-process and this module owns its language mapping and safety
 //! bounds.
 //!
-//! `ast_grep` remains a Slice 0 catalog stub: this module is deliberately NOT
-//! wired into [`super::catalog`] or [`super::registry`] and is not
-//! provider-dispatchable. It is exercised directly by
-//! `tests/slice0_tool_ast_grep.rs`.
+//! `ast_grep` is a catalog executable in the `safe_read` authority class. The
+//! pinned native parser stack can stall when independent parses run
+//! concurrently, so this module serializes only the `ast_grep` execution
+//! boundary. Other tools and the rest of the kernel remain concurrent.
 //!
 //! Authority class: `safe_read` only. No subprocess, environment lookup,
 //! network access, or persistent cache; every parse happens in-process against
@@ -59,8 +59,11 @@
 //!   this reason (zero when none were dropped) — a distinct fact from
 //!   `truncated`, which reflects `offset`/`limit` windowing over the full match
 //!   set.
+//! - Calls are serialized at this module's public execution boundary because
+//!   the pinned native parser stack does not complete reliably under concurrent
+//!   parses.
 
-use std::path::Path;
+use std::{path::Path, sync::Mutex};
 
 use ast_grep_core::{Language as CoreLanguage, Pattern, PatternError, tree_sitter::LanguageExt};
 use ast_grep_language::{Go, JavaScript, Json, Python, Rust, Tsx, TypeScript};
@@ -108,6 +111,9 @@ pub const MAX_TOTAL_SOURCE_BYTES: u64 = 16 * 1024 * 1024;
 pub const MAX_TRACKED_MATCHES: usize = 101_001;
 /// Maximum byte length of the serialized receipt payload.
 pub const MAX_RECEIPT_JSON_BYTES: usize = 1024 * 1024;
+/// Serializes the pinned native parser stack while keeping the rest of the
+/// kernel concurrent.
+static AST_GREP_EXECUTION_LOCK: Mutex<()> = Mutex::new(());
 
 /// The seven languages this lease supports. No aliases: a caller must spell the
 /// canonical name exactly (e.g. `"typescript"`, not `"ts"`).
@@ -850,30 +856,47 @@ fn bound_receipt(
 	mut matches: Vec<AstGrepMatch>,
 ) -> (Vec<AstGrepMatch>, usize, Vec<u8>) {
 	// Bounds the *complete* receipt JSON (source/tool/lang/stats/truncation
-	// fields plus matches), not the matches array in isolation: trimming based
-	// on the matches array alone can leave a wrapped payload that still exceeds
-	// the cap once the surrounding fields are added. Re-probing the full
-	// payload on every iteration also naturally accounts for `output_omitted`'s
-	// own digit-width growth as more records are dropped.
-	let mut output_omitted = 0usize;
-	loop {
+	// fields plus matches), not the matches array in isolation. Receipt size is
+	// monotonic in the retained prefix length: removing one serialized match
+	// saves more bytes than the at-most-one-byte digit growth of
+	// `output_omitted`. Binary search therefore finds the largest fitting prefix
+	// exactly without repeatedly serializing every intermediate tail.
+	let original_len = matches.len();
+	let serialize_prefix = |retained: usize| {
 		let payload = AstGrepArtifactPayload {
 			source_kind: "tool_result",
 			tool_name: "ast_grep",
 			lang: lang_tag,
-			matches: &matches,
+			matches: &matches[..retained],
 			stats,
 			truncated,
-			output_omitted,
+			output_omitted: original_len - retained,
 		};
-		let probe_bytes =
-			serde_json::to_vec(&payload).expect("AstGrepArtifactPayload always serializes");
-		if probe_bytes.len() <= MAX_RECEIPT_JSON_BYTES || matches.is_empty() {
-			return (matches, output_omitted, probe_bytes);
-		}
-		matches.pop();
-		output_omitted += 1;
+		serde_json::to_vec(&payload).expect("AstGrepArtifactPayload always serializes")
+	};
+
+	let full_bytes = serialize_prefix(original_len);
+	if full_bytes.len() <= MAX_RECEIPT_JSON_BYTES || original_len == 0 {
+		return (matches, 0, full_bytes);
 	}
+
+	let mut lower = 0usize;
+	let mut upper = original_len - 1;
+	let mut retained = 0usize;
+	while lower <= upper {
+		let candidate = lower + (upper - lower) / 2;
+		if serialize_prefix(candidate).len() <= MAX_RECEIPT_JSON_BYTES {
+			retained = candidate;
+			lower = candidate + 1;
+		} else if candidate == 0 {
+			break;
+		} else {
+			upper = candidate - 1;
+		}
+	}
+	let bytes = serialize_prefix(retained);
+	matches.truncate(retained);
+	(matches, original_len - retained, bytes)
 }
 
 /// Bounded ast-grep-pattern structural search over `path`.
@@ -885,6 +908,10 @@ pub fn ast_grep(
 	root_path: &Path,
 	args: &AstGrepArgs,
 ) -> Result<AstGrepArtifactContent, AstGrepRejection> {
+	let _execution_guard = match AST_GREP_EXECUTION_LOCK.lock() {
+		Ok(guard) => guard,
+		Err(poisoned) => poisoned.into_inner(),
+	};
 	match args.lang {
 		AstGrepLanguage::Rust => run(Rust, args.lang, root_path, args),
 		AstGrepLanguage::Typescript => run(TypeScript, args.lang, root_path, args),

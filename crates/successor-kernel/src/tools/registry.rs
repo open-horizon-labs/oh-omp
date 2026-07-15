@@ -332,9 +332,7 @@ impl ToolRegistry {
 	/// untouched. Factored out of [`Self::effective_catalog`] so a
 	/// synthetic base catalog can exercise sovereign-activation branches
 	/// (a tool promoted past `StubRejected`, or missing registered
-	/// metadata) without depending on the live base-catalog fixture,
-	/// where `bash` currently stays `StubRejected` regardless of
-	/// authority or allowlist.
+	/// metadata) without depending on the live base-catalog fixture.
 	fn apply_effective_catalog(
 		mut base: ToolCatalogV0,
 		authority: &EffectiveToolAuthority,
@@ -609,11 +607,10 @@ fn execute_grep(
 	})
 }
 
-/// Private registry-only adapter. `ast_grep` is registered but not yet
-/// `Executable` in the base catalog fixture, so this is reachable only via
-/// direct unit tests and [`ToolRegistry::execute`]/`execute_authorized`
-/// (which both gate on catalog status through [`ToolRegistry::executable`]
-/// before dispatch is possible from any public route).
+/// Private registry-only adapter. `ast_grep` is `Executable` in the base
+/// catalog fixture and dispatches through
+/// [`ToolRegistry::execute`]/`execute_authorized`, which gate on catalog
+/// status through [`ToolRegistry::executable`].
 fn execute_ast_grep(
 	ctx: &ToolExecutionContext<'_>,
 	arguments: &WireJson,
@@ -641,8 +638,9 @@ fn execute_ast_grep(
 	})
 }
 
-/// Private registry-only adapter; see [`execute_ast_grep`] for the
-/// base-catalog dispatch-gating rationale, which applies identically to `edit`.
+/// Private registry-only adapter. `edit` is `Executable` in the base
+/// catalog fixture; see [`execute_ast_grep`] for the catalog dispatch-gating
+/// mechanism, which applies identically here.
 fn execute_edit(
 	ctx: &ToolExecutionContext<'_>,
 	arguments: &WireJson,
@@ -651,9 +649,9 @@ fn execute_edit(
 	Ok(mutation_tool_execution(&receipt))
 }
 
-/// Private registry-only adapter; see [`execute_ast_grep`] for the
-/// base-catalog dispatch-gating rationale, which applies identically to
-/// `write`.
+/// Private registry-only adapter. `write` is `Executable` in the base
+/// catalog fixture; see [`execute_ast_grep`] for the catalog dispatch-gating
+/// mechanism, which applies identically here.
 fn execute_write(
 	ctx: &ToolExecutionContext<'_>,
 	arguments: &WireJson,
@@ -685,8 +683,9 @@ fn mutation_tool_execution(receipt: &mutation::MutationReceipt) -> ToolExecution
 	}
 }
 
-/// Private registry-only adapter; see [`execute_ast_grep`] for the
-/// base-catalog dispatch-gating rationale, which applies identically to `bash`.
+/// Private registry-only adapter. `bash` is `Executable` in the base
+/// catalog fixture; see [`execute_ast_grep`] for the catalog dispatch-gating
+/// mechanism, which applies identically here.
 /// Resolution is delegated entirely to `bash::execute`'s allowlist lookup:
 /// no PATH search, provider-host path, shell, or ambient environment is
 /// consulted here. A nonzero exit or timeout is a successful `Ok` receipt,
@@ -880,63 +879,88 @@ mod tests {
 			assert_eq!(
 				ToolRegistry::tool_authority_class(name),
 				Some(*class),
-				"registered authority class metadata for `{name}` must be consultable even though the \
-				 base catalog still pins it to a non-executable status"
+				"registered authority class metadata for `{name}` must be consultable independent of \
+				 catalog status"
 			);
 		}
 	}
 
-	// --- Public roster stays exactly the five base-executable tools ---
+	// --- Public roster is exactly the nine base-executable tools, in catalog
+	// order ---
 
 	#[test]
-	fn public_executable_names_are_exactly_the_five_base_tools_in_order() {
+	fn public_executable_names_are_exactly_the_nine_base_tools_in_catalog_order() {
 		let registry = slice0_registry();
 		assert_eq!(
 			registry.executable_names().collect::<Vec<_>>(),
-			vec!["search_files", "read", "find", "grep", "list_dir"],
-			"registering ast_grep/edit/write/bash must not change the public executable roster"
+			vec![
+				"search_files",
+				"read",
+				"find",
+				"grep",
+				"list_dir",
+				"ast_grep",
+				"edit",
+				"write",
+				"bash"
+			],
+			"the S6-promoted roster (ast_grep/edit/write/bash) must dispatch in exact catalog order"
 		);
 	}
 
 	#[test]
-	fn forged_calls_to_all_four_stubs_cannot_dispatch_through_execute() {
+	fn still_stub_tool_cannot_dispatch_through_execute_or_execute_authorized() {
 		let registry = slice0_registry();
-		let root = unique_temp_dir("forged-execute");
+		let root = unique_temp_dir("still-stub");
 		let allowlist = TrustedExecutableAllowlist::default();
 		let ctx = ToolExecutionContext { workspace_root: &root, process_allowlist: &allowlist };
-		for stub in ["ast_grep", "edit", "write", "bash"] {
-			assert!(
-				registry
-					.execute(&ctx, stub, &serde_json::json!({}))
-					.is_err(),
-				"`{stub}` must not be dispatchable through ToolRegistry::execute while the base \
-				 catalog fixture pins it to stub_rejected"
-			);
-			assert!(
-				!registry.is_dispatchable(stub),
-				"`{stub}` must not report as dispatchable while the base catalog fixture pins it to \
-				 stub_rejected"
-			);
-		}
+		let authority = full_authority();
+		assert!(
+			!registry.is_dispatchable("ssh"),
+			"`ssh` must not report as dispatchable while the base catalog fixture pins it to \
+			 stub_rejected"
+		);
+		assert!(
+			registry
+				.execute(&ctx, "ssh", &serde_json::json!({}))
+				.is_err(),
+			"`ssh` must not be dispatchable through ToolRegistry::execute while the base catalog \
+			 fixture pins it to stub_rejected"
+		);
+		assert!(
+			registry
+				.execute_authorized(&ctx, "ssh", &serde_json::json!({}), &authority)
+				.is_err(),
+			"`ssh` must not be dispatchable through execute_authorized even with full authority, \
+			 because the base catalog fixture pins it to stub_rejected"
+		);
 		std::fs::remove_dir_all(&root).ok();
 	}
 
 	#[test]
-	fn forged_calls_to_all_four_stubs_cannot_dispatch_through_execute_authorized() {
+	fn forged_calls_to_workspace_mutation_and_local_process_tools_are_rejected_without_sufficient_authority()
+	 {
 		let registry = slice0_registry();
-		let root = unique_temp_dir("forged-execute-authorized");
+		let root = unique_temp_dir("forged-insufficient-authority");
 		let allowlist = TrustedExecutableAllowlist::default();
 		let ctx = ToolExecutionContext { workspace_root: &root, process_allowlist: &allowlist };
-		let authority = full_authority();
-		for stub in ["ast_grep", "edit", "write", "bash"] {
+		let safe_read_only = EffectiveToolAuthority::default_safe_read();
+		for elevated in ["edit", "write", "bash"] {
 			assert!(
 				registry
-					.execute_authorized(&ctx, stub, &serde_json::json!({}), &authority)
+					.execute_authorized(&ctx, elevated, &serde_json::json!({}), &safe_read_only)
 					.is_err(),
-				"`{stub}` must not be dispatchable through execute_authorized even with full \
-				 authority, because the base catalog fixture pins it to stub_rejected"
+				"`{elevated}` must not dispatch through execute_authorized under safe_read-only \
+				 authority"
 			);
 		}
+		assert!(
+			registry
+				.execute_authorized(&ctx, "bash", &serde_json::json!({}), &full_authority())
+				.is_err(),
+			"bash must stay unavailable through execute_authorized when the trusted allowlist is \
+			 empty, even under full authority"
+		);
 		std::fs::remove_dir_all(&root).ok();
 	}
 
@@ -955,7 +979,7 @@ mod tests {
 			.filter(|tool| tool.status == ToolStatusV0::Executable)
 			.map(|tool| tool.name.as_str())
 			.collect();
-		assert_eq!(executable, vec!["search_files", "read", "find", "grep", "list_dir"]);
+		assert_eq!(executable, vec!["search_files", "read", "find", "grep", "list_dir", "ast_grep"]);
 	}
 
 	#[test]
@@ -975,7 +999,8 @@ mod tests {
 	}
 
 	#[test]
-	fn effective_catalog_under_workspace_mutation_authority_leaves_bash_stub_rejected() {
+	fn effective_catalog_under_workspace_mutation_authority_exposes_exact_eight_tools_excluding_bash()
+	 {
 		let registry = slice0_registry();
 		let request = ToolAuthorityRequestV0 {
 			classes: vec![ToolAuthorityClassV0::SafeRead, ToolAuthorityClassV0::WorkspaceMutation],
@@ -989,11 +1014,26 @@ mod tests {
 			.iter()
 			.find(|tool| tool.name == "bash")
 			.map(|tool| tool.status);
-		assert_eq!(bash_status, Some(ToolStatusV0::StubRejected));
+		assert_eq!(
+			bash_status,
+			Some(ToolStatusV0::PolicyRejected),
+			"bash is base-Executable but must fail closed without local_process authority"
+		);
+		let executable: Vec<&str> = catalog
+			.tools
+			.iter()
+			.filter(|tool| tool.status == ToolStatusV0::Executable)
+			.map(|tool| tool.name.as_str())
+			.collect();
+		assert_eq!(
+			executable,
+			vec!["search_files", "read", "find", "grep", "list_dir", "ast_grep", "edit", "write"],
+			"workspace_mutation authority must expose exactly the eight non-bash executable tools"
+		);
 	}
 
 	#[test]
-	fn effective_catalog_under_local_process_with_empty_allowlist_leaves_bash_stub_rejected() {
+	fn effective_catalog_under_local_process_with_empty_allowlist_leaves_bash_policy_rejected() {
 		let registry = slice0_registry();
 		let authority = full_authority();
 		let allowlist = TrustedExecutableAllowlist::default();
@@ -1005,14 +1045,13 @@ mod tests {
 			.map(|tool| tool.status);
 		assert_eq!(
 			bash_status,
-			Some(ToolStatusV0::StubRejected),
-			"an empty allowlist must never make bash executable"
+			Some(ToolStatusV0::PolicyRejected),
+			"an empty allowlist must never make bash executable, even under full authority"
 		);
 	}
 
 	#[test]
-	fn effective_catalog_under_local_process_with_populated_allowlist_still_keeps_bash_stub_rejected()
-	 {
+	fn effective_catalog_under_local_process_with_populated_allowlist_makes_bash_executable() {
 		let registry = slice0_registry();
 		let authority = full_authority();
 		let mut allowlist = TrustedExecutableAllowlist::default();
@@ -1030,14 +1069,13 @@ mod tests {
 			.map(|tool| tool.status);
 		assert_eq!(
 			bash_status,
-			Some(ToolStatusV0::StubRejected),
-			"a nonempty allowlist must not self-grant bash executable status: the base catalog \
-			 fixture, not the allowlist, gates bash's catalog status"
+			Some(ToolStatusV0::Executable),
+			"full authority plus a populated trusted-executable allowlist must make bash executable"
 		);
 	}
 
 	#[test]
-	fn effective_executable_names_under_local_process_still_excludes_bash() {
+	fn effective_executable_names_under_local_process_with_populated_allowlist_includes_bash() {
 		let registry = slice0_registry();
 		let authority = full_authority();
 		let mut allowlist = TrustedExecutableAllowlist::default();
@@ -1050,12 +1088,22 @@ mod tests {
 		let names: Vec<&str> = registry
 			.effective_executable_names(&authority, &allowlist)
 			.collect();
-		assert!(
-			!names.contains(&"bash"),
-			"effective_executable_names must not surface bash while the base catalog fixture pins it \
-			 to stub_rejected"
+		assert_eq!(
+			names,
+			vec![
+				"search_files",
+				"read",
+				"find",
+				"grep",
+				"list_dir",
+				"ast_grep",
+				"edit",
+				"write",
+				"bash"
+			],
+			"full local_process authority with a populated allowlist must expose exactly the nine \
+			 base-executable tools in catalog order"
 		);
-		assert_eq!(names, vec!["search_files", "read", "find", "grep", "list_dir"]);
 	}
 
 	// --- Private adapters: canonical payload/provider/artifact bytes ---
@@ -1303,18 +1351,18 @@ mod tests {
 	}
 
 	#[test]
-	fn catalog_tool_status_still_pins_all_four_new_registrants_to_stub_rejected() {
+	fn catalog_tool_status_now_pins_all_four_promoted_tools_to_executable() {
 		for name in ["ast_grep", "edit", "write", "bash"] {
 			assert_eq!(
 				catalog::tool_status(name),
-				Some(ToolStatusV0::StubRejected),
-				"`{name}` must remain stub_rejected in the base catalog fixture"
+				Some(ToolStatusV0::Executable),
+				"`{name}` must be executable in the base catalog fixture after the S6 cutover"
 			);
 		}
 	}
 
 	#[test]
-	fn registered_schema_is_retrievable_for_every_registered_tool_including_stubs() {
+	fn registered_schema_is_retrievable_for_every_registered_tool() {
 		let allowlist = TrustedExecutableAllowlist::default();
 		for name in
 			["search_files", "read", "find", "grep", "list_dir", "ast_grep", "edit", "write", "bash"]
@@ -1370,24 +1418,14 @@ mod tests {
 			.expect("insert trusted executable");
 		assert!(
 			ToolRegistry::tool_available("bash", &allowlist),
-			"a populated allowlist must make bash available at the registered-metadata level, even \
-			 though the base catalog fixture still gates its dispatchable status"
+			"a populated allowlist must make bash available at the registered-metadata level, \
+			 independent of catalog status"
 		);
 	}
 
-	// --- `apply_effective_catalog`: branch coverage on an injected base catalog
-	// ---
-
-	fn promoted_bash_base_catalog() -> ToolCatalogV0 {
-		let mut catalog = catalog::slice0_catalog();
-		for tool in &mut catalog.tools {
-			if tool.name == "bash" {
-				tool.status = ToolStatusV0::Executable;
-				tool.input_schema = Some(serde_json::json!({"stale": "schema"}));
-			}
-		}
-		catalog
-	}
+	// --- `apply_effective_catalog`: authority x availability x schema
+	// narrowing on the live base catalog, plus branch coverage for a
+	// synthetic entry not covered by the live fixture ---
 
 	fn bash_tool(catalog: &ToolCatalogV0) -> &ToolDefinitionV0 {
 		catalog
@@ -1403,7 +1441,7 @@ mod tests {
 	}
 
 	#[test]
-	fn apply_effective_catalog_promotes_bash_to_executable_with_the_exact_live_allowlist_enum() {
+	fn apply_effective_catalog_narrows_bashs_schema_to_the_exact_live_allowlist_enum() {
 		let mut allowlist = TrustedExecutableAllowlist::default();
 		allowlist
 			.insert(
@@ -1418,17 +1456,14 @@ mod tests {
 			)
 			.expect("insert trusted executable");
 		let authority = only_authority(ToolAuthorityClassV0::LocalProcess);
-		let catalog = ToolRegistry::apply_effective_catalog(
-			promoted_bash_base_catalog(),
-			&authority,
-			&allowlist,
-		);
+		let catalog =
+			ToolRegistry::apply_effective_catalog(catalog::slice0_catalog(), &authority, &allowlist);
 		let bash = bash_tool(&catalog);
 		assert_eq!(bash.status, ToolStatusV0::Executable);
 		let schema = bash
 			.input_schema
 			.as_ref()
-			.expect("promoted bash carries a live schema");
+			.expect("executable bash carries a live schema");
 		let enum_values: Vec<&str> = schema
 			.pointer("/properties/executable/enum")
 			.and_then(serde_json::Value::as_array)
@@ -1444,26 +1479,22 @@ mod tests {
 	}
 
 	#[test]
-	fn apply_effective_catalog_under_local_process_with_empty_allowlist_rejects_promoted_bash() {
+	fn apply_effective_catalog_under_local_process_with_empty_allowlist_rejects_bash() {
 		let allowlist = TrustedExecutableAllowlist::default();
 		let authority = only_authority(ToolAuthorityClassV0::LocalProcess);
-		let catalog = ToolRegistry::apply_effective_catalog(
-			promoted_bash_base_catalog(),
-			&authority,
-			&allowlist,
-		);
+		let base = catalog::slice0_catalog();
+		let base_schema = bash_tool(&base).input_schema.clone();
+		let catalog = ToolRegistry::apply_effective_catalog(base, &authority, &allowlist);
 		let bash = bash_tool(&catalog);
 		assert_eq!(bash.status, ToolStatusV0::PolicyRejected);
 		assert_eq!(
-			bash.input_schema,
-			Some(serde_json::json!({"stale": "schema"})),
+			bash.input_schema, base_schema,
 			"a denied tool's schema must never be dynamically narrowed or replaced"
 		);
 	}
 
 	#[test]
-	fn apply_effective_catalog_under_safe_read_rejects_promoted_bash_even_with_a_populated_allowlist()
-	 {
+	fn apply_effective_catalog_under_safe_read_rejects_bash_even_with_a_populated_allowlist() {
 		let mut allowlist = TrustedExecutableAllowlist::default();
 		allowlist
 			.insert(
@@ -1472,11 +1503,8 @@ mod tests {
 			)
 			.expect("insert trusted executable");
 		let authority = only_authority(ToolAuthorityClassV0::SafeRead);
-		let catalog = ToolRegistry::apply_effective_catalog(
-			promoted_bash_base_catalog(),
-			&authority,
-			&allowlist,
-		);
+		let catalog =
+			ToolRegistry::apply_effective_catalog(catalog::slice0_catalog(), &authority, &allowlist);
 		assert_eq!(
 			bash_tool(&catalog).status,
 			ToolStatusV0::PolicyRejected,
@@ -1485,13 +1513,21 @@ mod tests {
 	}
 
 	#[test]
-	fn apply_effective_catalog_leaves_the_five_effective_schemas_equal_to_their_canonical_registered_schemas()
+	fn apply_effective_catalog_leaves_the_nine_effective_schemas_equal_to_their_canonical_registered_schemas()
 	 {
-		let allowlist = TrustedExecutableAllowlist::default();
+		let mut allowlist = TrustedExecutableAllowlist::default();
+		allowlist
+			.insert(
+				TrustedExecutable::new("git", Path::new("/usr/bin/git"), Vec::new())
+					.expect("valid trusted executable"),
+			)
+			.expect("insert trusted executable");
 		let authority = full_authority();
 		let catalog =
 			ToolRegistry::apply_effective_catalog(catalog::slice0_catalog(), &authority, &allowlist);
-		for name in ["search_files", "read", "find", "grep", "list_dir"] {
+		for name in
+			["search_files", "read", "find", "grep", "list_dir", "ast_grep", "edit", "write", "bash"]
+		{
 			let tool = catalog
 				.tools
 				.iter()
@@ -1537,15 +1573,15 @@ mod tests {
 		let stub_before = base
 			.tools
 			.iter()
-			.find(|tool| tool.name == "bash")
+			.find(|tool| tool.name == "ssh")
 			.cloned()
-			.expect("bash present");
+			.expect("ssh present");
 		let catalog = ToolRegistry::apply_effective_catalog(base, &authority, &allowlist);
 		let stub_after = catalog
 			.tools
 			.iter()
-			.find(|tool| tool.name == "bash")
-			.expect("bash present");
+			.find(|tool| tool.name == "ssh")
+			.expect("ssh present");
 		assert_eq!(&stub_before, stub_after, "a base StubRejected entry must pass through unchanged");
 	}
 

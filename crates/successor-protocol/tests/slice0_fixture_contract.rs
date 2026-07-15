@@ -140,13 +140,13 @@ fn tool_catalog_parses_with_full_slice0_tool_roster() {
 		.iter()
 		.filter(|tool| tool.status == ToolStatusV0::Executable)
 		.count();
-	assert_eq!(executable_count, 5);
+	assert_eq!(executable_count, 9);
 	let stub_rejected_count = catalog
 		.tools
 		.iter()
 		.filter(|tool| tool.status == ToolStatusV0::StubRejected)
 		.count();
-	assert_eq!(stub_rejected_count, 30);
+	assert_eq!(stub_rejected_count, 26);
 }
 
 #[test]
@@ -543,8 +543,8 @@ fn unsupported_tool_lifecycle_with_executable_catalog_tool_is_rejected_by_lifecy
 	let tool = catalog
 		.tools
 		.iter_mut()
-		.find(|tool| tool.name == "bash")
-		.expect("unsupported-tool fixture references the 'bash' tool");
+		.find(|tool| tool.name == "ssh")
+		.expect("unsupported-tool fixture references the 'ssh' tool");
 	tool.status = ToolStatusV0::Executable;
 
 	let Err(violations) = validation::validate_unsupported_tool_lifecycle(&events, &catalog) else {

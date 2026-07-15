@@ -464,12 +464,29 @@ fn tool_catalog_matches_canonical_fixture_shape() {
 	assert_eq!(catalog.tools[0].category, "safe_read_discovery");
 	assert_eq!(catalog.tools[0].status, ToolStatusV0::Executable);
 	assert_eq!(catalog.tools[5].name, "ast_grep");
-	assert_eq!(catalog.tools[5].status, ToolStatusV0::StubRejected);
+	assert_eq!(catalog.tools[5].status, ToolStatusV0::Executable);
+	assert_eq!(catalog.tools[6].name, "ast_edit");
+	assert_eq!(catalog.tools[6].status, ToolStatusV0::StubRejected);
+	assert_eq!(catalog.tools[7].name, "lsp");
+	assert_eq!(catalog.tools[7].status, ToolStatusV0::StubRejected);
+	assert_eq!(catalog.tools[8].name, "edit");
+	assert_eq!(catalog.tools[8].status, ToolStatusV0::Executable);
+	assert_eq!(catalog.tools[9].name, "write");
+	assert_eq!(catalog.tools[9].status, ToolStatusV0::Executable);
+	assert_eq!(catalog.tools[11].name, "bash");
+	assert_eq!(catalog.tools[11].status, ToolStatusV0::Executable);
+	assert_eq!(catalog.tools[13].name, "ssh");
+	assert_eq!(catalog.tools[13].status, ToolStatusV0::StubRejected);
 	assert_eq!(serialized, fixture_value);
 	assert!(serialized.get("session_id").is_none());
 	assert!(serialized.get("tool_count").is_none());
 	assert!(serialized.get("metadata").is_none());
-	assert!(serialized["tools"][5].get("input_schema").is_none());
+	assert!(serialized["tools"][5].get("input_schema").is_some());
+	assert!(serialized["tools"][8].get("input_schema").is_some());
+	assert!(serialized["tools"][9].get("input_schema").is_some());
+	assert!(serialized["tools"][11].get("input_schema").is_some());
+	assert!(serialized["tools"][6].get("input_schema").is_none());
+	assert!(serialized["tools"][13].get("input_schema").is_none());
 }
 
 #[test]

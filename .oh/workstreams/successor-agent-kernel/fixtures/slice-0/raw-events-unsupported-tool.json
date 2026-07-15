@@ -3,7 +3,7 @@
     "schema_version": "platform.raw_event.v0",
     "event_id": "evt_10000000-0000-4000-8000-000000000001",
     "session_seq": 1,
-    "idempotency_key": "fixture:unsupported:provider-tool-call:bash",
+    "idempotency_key": "fixture:unsupported:provider-tool-call:ssh",
     "event_type": "provider_tool_call.observed",
     "session_id": "ses_10000000-0000-4000-8000-000000000001",
     "turn_id": "turn_10000000-0000-4000-8000-000000000001",
@@ -15,14 +15,14 @@
     "entity_ids": { "message_id": null, "tool_call_id": "tool_10000000-0000-4000-8000-000000000001", "source_envelope_id": null, "artifact_id": null, "assemble_id": null, "context_item_ids": [], "trace_id": null, "error_id": null, "provider_event_id": "pevt_10000000-0000-4000-8000-000000000001" },
     "visibility": { "model": false, "transcript": false, "recall": false, "assemble": false, "share": false, "debug": true },
     "redaction": "sensitive",
-    "payload": { "tool_name": "bash", "arguments": { "command": "echo should-not-run" } },
+    "payload": { "tool_name": "ssh", "arguments": { "host": "fixture.invalid", "user": "fixture-user" } },
     "artifact": null
   },
   {
     "schema_version": "platform.raw_event.v0",
     "event_id": "evt_10000000-0000-4000-8000-000000000002",
     "session_seq": 2,
-    "idempotency_key": "fixture:unsupported:tool-requested:bash",
+    "idempotency_key": "fixture:unsupported:tool-requested:ssh",
     "event_type": "tool_call.requested",
     "session_id": "ses_10000000-0000-4000-8000-000000000001",
     "turn_id": "turn_10000000-0000-4000-8000-000000000001",
@@ -34,14 +34,14 @@
     "entity_ids": { "message_id": null, "tool_call_id": "tool_10000000-0000-4000-8000-000000000001", "source_envelope_id": null, "artifact_id": null, "assemble_id": null, "context_item_ids": [], "trace_id": null, "error_id": null, "provider_event_id": null },
     "visibility": { "model": false, "transcript": true, "recall": false, "assemble": false, "share": false, "debug": true },
     "redaction": "sensitive",
-    "payload": { "tool_name": "bash", "arguments": { "command": "echo should-not-run" } },
+    "payload": { "tool_name": "ssh", "arguments": { "host": "fixture.invalid", "user": "fixture-user" } },
     "artifact": null
   },
   {
     "schema_version": "platform.raw_event.v0",
     "event_id": "evt_10000000-0000-4000-8000-000000000003",
     "session_seq": 3,
-    "idempotency_key": "fixture:unsupported:tool-rejected:bash",
+    "idempotency_key": "fixture:unsupported:tool-rejected:ssh",
     "event_type": "tool_call.rejected",
     "session_id": "ses_10000000-0000-4000-8000-000000000001",
     "turn_id": "turn_10000000-0000-4000-8000-000000000001",
@@ -53,14 +53,14 @@
     "entity_ids": { "message_id": null, "tool_call_id": "tool_10000000-0000-4000-8000-000000000001", "source_envelope_id": null, "artifact_id": null, "assemble_id": null, "context_item_ids": [], "trace_id": null, "error_id": "err_10000000-0000-4000-8000-000000000001", "provider_event_id": null },
     "visibility": { "model": true, "transcript": true, "recall": false, "assemble": false, "share": false, "debug": true },
     "redaction": "sensitive",
-    "payload": { "tool_name": "bash", "policy": "slice0_read_only", "reason": "bash is catalog-visible but not executable in Slice 0" },
+    "payload": { "tool_name": "ssh", "policy": "slice0_read_only", "reason": "ssh is catalog-visible but not executable in Slice 0" },
     "artifact": null
   },
   {
     "schema_version": "platform.raw_event.v0",
     "event_id": "evt_10000000-0000-4000-8000-000000000004",
     "session_seq": 4,
-    "idempotency_key": "fixture:unsupported:error:bash",
+    "idempotency_key": "fixture:unsupported:error:ssh",
     "event_type": "error.recorded",
     "session_id": "ses_10000000-0000-4000-8000-000000000001",
     "turn_id": "turn_10000000-0000-4000-8000-000000000001",
@@ -72,7 +72,7 @@
     "entity_ids": { "message_id": null, "tool_call_id": "tool_10000000-0000-4000-8000-000000000001", "source_envelope_id": null, "artifact_id": null, "assemble_id": null, "context_item_ids": [], "trace_id": null, "error_id": "err_10000000-0000-4000-8000-000000000001", "provider_event_id": null },
     "visibility": { "model": true, "transcript": true, "recall": false, "assemble": false, "share": false, "debug": true },
     "redaction": "sensitive",
-    "payload": { "schema_version": "platform.error.v0", "error_id": "err_10000000-0000-4000-8000-000000000001", "code": "tool_not_executable_in_slice0", "message": "Tool bash is catalog-visible but not executable in Slice 0.", "recoverable": true, "retryable": false, "correlation_id": "req_10000000-0000-4000-8000-000000000001", "details": { "tool_name": "bash", "policy": "slice0_read_only" } },
+    "payload": { "schema_version": "platform.error.v0", "error_id": "err_10000000-0000-4000-8000-000000000001", "code": "tool_not_executable_in_slice0", "message": "Tool ssh is catalog-visible but not executable in Slice 0.", "recoverable": true, "retryable": false, "correlation_id": "req_10000000-0000-4000-8000-000000000001", "details": { "tool_name": "ssh", "policy": "slice0_read_only" } },
     "artifact": null
   }
 ]

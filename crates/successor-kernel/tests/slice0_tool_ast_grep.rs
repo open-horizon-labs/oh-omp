@@ -1,7 +1,7 @@
 //! Contract tests for the bounded `ast_grep` safe-read substrate.
 //!
 //! These tests consume only the public module surface. They also prove that the
-//! tool remains a catalog stub until the later serial integration amendment.
+//! tool is a dispatchable catalog executable after the S6 activation cutover.
 
 use std::{
 	path::{Path, PathBuf},
@@ -449,12 +449,12 @@ fn ast_grep_artifact_bytes_hash_and_length_are_exact_and_stable_across_repeated_
 		.expect("artifact bytes must be valid JSON");
 }
 
-// 13. Catalog/registry stub invariant: `ast_grep` is not among the executable
-//     tools and is not dispatchable, exactly as before this lease's changes,
-//     proving this lease did not silently wire it into the catalog/registry.
+// 13. Catalog/registry activation invariant: `ast_grep` is executable and
+//     dispatchable after the S6 cutover, republished with a generated schema
+//     from its real typed request DTO (no permissive `{}` schema).
 #[test]
-fn ast_grep_remains_a_non_dispatchable_catalog_stub() {
+fn ast_grep_is_a_dispatchable_catalog_executable_after_the_s6_cutover() {
 	let registry = registry::slice0_registry();
-	assert!(!registry.is_dispatchable("ast_grep"));
-	assert_eq!(catalog::tool_status("ast_grep"), Some(ToolStatusV0::StubRejected));
+	assert!(registry.is_dispatchable("ast_grep"));
+	assert_eq!(catalog::tool_status("ast_grep"), Some(ToolStatusV0::Executable));
 }

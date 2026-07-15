@@ -392,10 +392,10 @@ fn receipt_is_bounded_content_free_and_artifact_is_stable() {
 }
 
 #[test]
-fn catalog_and_registry_keep_edit_and_write_as_non_executable_stubs() {
+fn catalog_and_registry_now_pin_edit_and_write_as_executable() {
 	let registry = registry::slice0_registry();
 	for name in ["edit", "write"] {
-		assert!(!registry.is_dispatchable(name));
-		assert_eq!(catalog::tool_status(name), Some(ToolStatusV0::StubRejected));
+		assert!(registry.is_dispatchable(name));
+		assert_eq!(catalog::tool_status(name), Some(ToolStatusV0::Executable));
 	}
 }

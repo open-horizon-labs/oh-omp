@@ -1,13 +1,14 @@
 use std::{
-	path::PathBuf,
+	path::{Path, PathBuf},
 	sync::atomic::{AtomicU64, Ordering},
 };
 
 use serde_json::json;
 use successor_kernel::tools::{
-	bash::TrustedExecutableAllowlist, catalog, find, grep, list_dir, read, registry, search_files,
+	bash::{TrustedExecutable, TrustedExecutableAllowlist},
+	catalog, find, grep, list_dir, read, registry, search_files,
 };
-use successor_protocol::{fixtures, tool_catalog::ToolStatusV0};
+use successor_protocol::{artifact::ArtifactHash, fixtures, tool_catalog::ToolStatusV0};
 
 fn unique_temp_dir(label: &str) -> PathBuf {
 	static COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -42,7 +43,7 @@ fn registry_executable_roster_matches_catalog_order_exactly() {
 	assert_eq!(catalog.tools.len(), 35, "Slice 0 catalog must remain the 35-entry fixture");
 	assert_eq!(
 		executable_from_registry,
-		vec!["search_files", "read", "find", "grep", "list_dir"],
+		vec!["search_files", "read", "find", "grep", "list_dir", "ast_grep", "edit", "write", "bash"],
 		"registry executable order is a byte-sensitive contract because provider catalog order is \
 		 fixed"
 	);
@@ -56,10 +57,17 @@ fn registry_executable_roster_matches_catalog_order_exactly() {
 fn every_executable_catalog_entry_dispatches_and_every_stub_does_not() {
 	let registry = registry::slice0_registry();
 	let root = seed_workspace("dispatchability");
-	let allowlist = TrustedExecutableAllowlist::default();
+	let mut allowlist = TrustedExecutableAllowlist::default();
+	allowlist
+		.insert(
+			TrustedExecutable::new("echo", Path::new("/bin/echo"), Vec::new())
+				.expect("valid trusted executable"),
+		)
+		.expect("insert trusted executable");
 	let ctx =
 		registry::ToolExecutionContext { workspace_root: &root, process_allowlist: &allowlist };
 	let catalog = catalog::slice0_catalog();
+	let hello_sha256 = ArtifactHash::compute(b"hello registry\nsecond line\n").to_string();
 
 	for tool in &catalog.tools {
 		if tool.status == ToolStatusV0::Executable {
@@ -69,6 +77,22 @@ fn every_executable_catalog_entry_dispatches_and_every_stub_does_not() {
 				"list_dir" => json!({ "path": "." }),
 				"find" => json!({ "glob": "**/*.txt" }),
 				"grep" => json!({ "pattern": "hello" }),
+				"ast_grep" => json!({ "lang": "rust", "pat": ["fn $NAME() {}"] }),
+				"edit" => json!({
+					"path": "hello.txt",
+					"expected_sha256": hello_sha256,
+					"edits": [{
+						"start": { "line": 1, "column": 0 },
+						"end": { "line": 1, "column": 14 },
+						"replacement": "hello updated",
+					}],
+				}),
+				"write" => json!({
+					"path": "written_by_registry_test.txt",
+					"mode": "create",
+					"content": "hello from write",
+				}),
+				"bash" => json!({ "executable": "echo" }),
 				other => panic!("unexpected executable tool in catalog: {other}"),
 			};
 			assert!(registry.is_dispatchable(&tool.name), "{} must have registry dispatch", tool.name);

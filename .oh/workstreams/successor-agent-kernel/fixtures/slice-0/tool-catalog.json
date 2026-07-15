@@ -122,13 +122,188 @@
         "additionalProperties": false
       }
     },
-    { "name": "ast_grep", "category": "code_intelligence", "status": "stub_rejected" },
+    {
+      "name": "ast_grep",
+      "category": "code_intelligence",
+      "status": "executable",
+      "description": "Bounded ast-grep structural search over a single caller-declared language, scoped to the session workspace root.",
+      "input_schema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": false,
+        "definitions": {
+          "AstGrepLanguage": {
+            "description": "The seven languages this lease supports. No aliases: a caller must spell the canonical name exactly (e.g. `\"typescript\"`, not `\"ts\"`).",
+            "enum": [
+              "rust",
+              "typescript",
+              "tsx",
+              "javascript",
+              "python",
+              "go",
+              "json"
+            ],
+            "type": "string"
+          }
+        },
+        "description": "Arguments for the `ast_grep` tool: bounded ast-grep-pattern structural search scoped to a single caller-declared language per call.",
+        "properties": {
+          "context": {
+            "default": 0,
+            "description": "Number of source lines of context to include on each side of a match (0 to 5). Defaults to 0.",
+            "format": "uint8",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "glob": {
+            "default": null,
+            "description": "Optional glob restricting a directory scan's candidate files.",
+            "type": ["string", "null"]
+          },
+          "lang": {
+            "allOf": [
+              { "$ref": "#/definitions/AstGrepLanguage" }
+            ],
+            "description": "The single language every `pat` (and `sel`, if present) is compiled and every scanned file is parsed against."
+          },
+          "limit": {
+            "default": 100,
+            "description": "Maximum number of matches to return (1 to 1000). Defaults to 100.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "offset": {
+            "default": 0,
+            "description": "Number of leading matches (in the deterministic order) to skip before `limit` is applied. At most 100000. Defaults to 0.",
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "pat": {
+            "description": "1 to 8 ast-grep pattern strings (or, with `sel` present, node-kind selectors), each at most 4096 bytes.",
+            "items": { "type": "string" },
+            "type": "array"
+          },
+          "path": {
+            "default": ".",
+            "description": "Workspace-relative file or directory to scan. Defaults to `.`.",
+            "type": "string"
+          },
+          "sel": {
+            "default": null,
+            "description": "Optional contextual-pattern parse context. When present, each `pat[i]` is a node-kind selector extracted from this context rather than an ordinary ast-grep pattern.",
+            "type": ["string", "null"]
+          }
+        },
+        "required": ["lang", "pat"],
+        "title": "AstGrepArgs",
+        "type": "object"
+      }
+    },
     { "name": "ast_edit", "category": "code_intelligence", "status": "stub_rejected" },
     { "name": "lsp", "category": "code_intelligence", "status": "stub_rejected" },
-    { "name": "edit", "category": "mutation", "status": "stub_rejected" },
-    { "name": "write", "category": "mutation", "status": "stub_rejected" },
+    {
+      "name": "edit",
+      "category": "mutation",
+      "status": "executable",
+      "description": "Apply byte-range replacements to a relative file under the session workspace root, guarded by an expected SHA-256 precondition.",
+      "input_schema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": false,
+        "definitions": {
+          "EditPosition": {
+            "additionalProperties": false,
+            "properties": {
+              "column": { "format": "uint32", "minimum": 0.0, "type": "integer" },
+              "line": { "format": "uint32", "minimum": 1.0, "type": "integer" }
+            },
+            "required": ["column", "line"],
+            "type": "object"
+          },
+          "EditRange": {
+            "additionalProperties": false,
+            "properties": {
+              "end": { "$ref": "#/definitions/EditPosition" },
+              "replacement": { "type": "string" },
+              "start": { "$ref": "#/definitions/EditPosition" }
+            },
+            "required": ["end", "replacement", "start"],
+            "type": "object"
+          }
+        },
+        "properties": {
+          "edits": {
+            "items": { "$ref": "#/definitions/EditRange" },
+            "type": "array"
+          },
+          "expected_sha256": { "type": "string" },
+          "path": { "type": "string" }
+        },
+        "required": ["edits", "expected_sha256", "path"],
+        "title": "EditArgs",
+        "type": "object"
+      }
+    },
+    {
+      "name": "write",
+      "category": "mutation",
+      "status": "executable",
+      "description": "Create or replace a relative file under the session workspace root, guarded by an expected SHA-256 precondition.",
+      "input_schema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": false,
+        "definitions": {
+          "WriteMode": {
+            "enum": ["create", "replace"],
+            "type": "string"
+          }
+        },
+        "properties": {
+          "content": { "type": "string" },
+          "expected_sha256": { "default": null, "type": ["string", "null"] },
+          "mode": { "$ref": "#/definitions/WriteMode" },
+          "path": { "type": "string" }
+        },
+        "required": ["content", "mode", "path"],
+        "title": "WriteArgs",
+        "type": "object"
+      }
+    },
     { "name": "notebook", "category": "mutation", "status": "stub_rejected" },
-    { "name": "bash", "category": "shell_runtime", "status": "stub_rejected" },
+    {
+      "name": "bash",
+      "category": "shell_runtime",
+      "status": "executable",
+      "description": "Execute a single allowlisted local process, without a shell, under the session workspace root.",
+      "input_schema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": false,
+        "description": "Provider-facing arguments. Unknown keys, including shell-source and stdin keys, are refused by serde before a process can be spawned.",
+        "properties": {
+          "argv": {
+            "default": [],
+            "items": { "type": "string" },
+            "type": "array"
+          },
+          "cwd": { "default": ".", "type": "string" },
+          "env": {
+            "additionalProperties": { "type": "string" },
+            "default": {},
+            "type": "object"
+          },
+          "executable": { "type": "string" },
+          "timeout_ms": {
+            "default": 30000,
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": ["executable"],
+        "title": "BashArgs",
+        "type": "object"
+      }
+    },
     { "name": "python", "category": "shell_runtime", "status": "stub_rejected" },
     { "name": "ssh", "category": "shell_runtime", "status": "stub_rejected" },
     { "name": "browser", "category": "shell_runtime", "status": "stub_rejected" },

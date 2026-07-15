@@ -91,7 +91,7 @@
     "entity_ids": { "message_id": null, "tool_call_id": null, "source_envelope_id": null, "artifact_id": null, "assemble_id": "asm_00000000-0000-4000-8000-000000000001", "context_item_ids": [], "trace_id": "trace_00000000-0000-4000-8000-000000000002", "error_id": null, "provider_event_id": null },
     "visibility": { "model": false, "transcript": false, "recall": false, "assemble": false, "share": false, "debug": true },
     "redaction": "sensitive",
-    "payload": { "phase": "initial", "provider_id": "anthropic", "provider_api_shape": "anthropic_messages", "model": "claude-sonnet-4-5", "tool_names": ["search_files", "read", "find", "grep", "list_dir"], "context_item_ids": [] },
+    "payload": { "phase": "initial", "provider_id": "anthropic", "provider_api_shape": "anthropic_messages", "model": "claude-sonnet-4-5", "tool_names": ["search_files", "read", "find", "grep", "list_dir", "ast_grep"], "context_item_ids": [] },
     "artifact": null
   },
   {

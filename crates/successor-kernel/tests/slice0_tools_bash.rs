@@ -16,6 +16,7 @@ use successor_kernel::tools::{
 	catalog,
 	registry::slice0_registry,
 };
+use successor_protocol::tool_catalog::ToolStatusV0;
 
 fn unique_temp_dir(label: &str) -> PathBuf {
 	let nonce = SystemTime::now()
@@ -266,9 +267,9 @@ fn child_exit_with_closed_stream_descendant_is_not_an_ordinary_success() {
 }
 
 #[test]
-fn bash_remains_catalog_stub_and_registry_undispatchable() {
-	assert!(catalog::tool_status("bash").is_some());
-	assert!(!slice0_registry().is_dispatchable("bash"));
+fn bash_is_catalog_executable_and_registry_dispatchable() {
+	assert_eq!(catalog::tool_status("bash"), Some(ToolStatusV0::Executable));
+	assert!(slice0_registry().is_dispatchable("bash"));
 }
 
 #[cfg(unix)]

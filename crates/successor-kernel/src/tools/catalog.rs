@@ -9,21 +9,23 @@
 //! thin, typed accessor over it, not a re-derivation — with one exception:
 //! `input_schema` (see [`executable_input_schema`]).
 //!
-//! Of the 35 cataloged tools, five are `executable`: `search_files`,
-//! `read`, `find`, `grep`, and `list_dir`. This lane implements `read` and
-//! `list_dir` ([`super::read`], [`super::list_dir`]); `search_files`,
-//! `find`, and `grep` dispatch is owned by Lane C6
-//! `KernelToolSearchFindGrep` and is not implemented here — their catalog
-//! entries describe intended status only.
+//! Of the 35 cataloged tools, nine are `executable`: `search_files`,
+//! `read`, `find`, `grep`, `list_dir`, `ast_grep`, `edit`, `write`, and
+//! `bash`. This lane implements `read`, `list_dir`, `ast_grep`, `edit`,
+//! `write`, and `bash` ([`super::read`], [`super::list_dir`],
+//! [`super::ast_grep`], [`super::edit`], [`super::write`],
+//! [`super::bash`]); `search_files`, `find`, and `grep` dispatch is owned
+//! by Lane C6 `KernelToolSearchFindGrep` and is not implemented here —
+//! their catalog entries describe intended status only.
 //!
 //! Every other cataloged tool is `stub_rejected`. [`stub_rejection_reason`]
 //! is a single generalized rejection-reason template applied uniformly
 //! across all `stub_rejected` tools — a deterministic policy decision
-//! (Dissent ruling 3), not a per-tool invention. Applying it to `bash`
+//! (Dissent ruling 3), not a per-tool invention. Applying it to `ssh`
 //! reproduces, verbatim, the reason pinned by
 //! `fixtures/slice-0/raw-events-unsupported-tool.json`
-//! (`"bash is catalog-visible but not executable in Slice 0"`); no
-//! bash-specific text is hand-authored separately from that template. The
+//! (`"ssh is catalog-visible but not executable in Slice 0"`); no
+//! ssh-specific text is hand-authored separately from that template. The
 //! accompanying [`REJECTION_POLICY`] and [`REJECTION_ERROR_CODE`] constants
 //! are likewise taken verbatim from that same fixture.
 //!
@@ -31,8 +33,8 @@
 //!
 //! Real Anthropic rejects a tools array whose entries carry
 //! `input_schema: null` with an HTTP 400. [`slice0_catalog`] therefore
-//! overlays a real JSON Schema onto each of the five `executable` tools,
-//! derived directly from the same kernel-local argument DTOs
+//! overlays a real JSON Schema onto each `executable` tool, derived
+//! directly from the same kernel-local argument DTOs
 //! (`tools::{search_files,read,find,grep,list_dir}::*Args`) that
 //! [`crate::runner`]'s `execute_tool` deserializes against — never a
 //! hand-authored schema literal. The canonical fixture is amended
@@ -43,6 +45,18 @@
 //! None`, exactly as the fixture pins them. `list_dir` was added, and
 //! `read`'s schema widened to `path`/`offset`/`limit`, by the
 //! <agent://269> Lane 3 dissent ruling.
+//!
+//! ## Milestone 1 S6 atomic cutover: `ast_grep`, `edit`, `write`, and `bash`
+//! promoted to executable
+//!
+//! The same overlay now also covers `ast_grep`, `edit`, `write`, and
+//! `bash`, derived directly from `tools::{ast_grep::AstGrepArgs,
+//! edit::EditArgs, write::WriteArgs, bash::BashArgs}` via
+//! `schemars::schema_for!` (or each type's own `schema()` wrapper) — never
+//! a hand-authored schema literal. `ssh` remains `stub_rejected`; the
+//! unsupported-tool rejection fixture, previously keyed on `bash`, is
+//! repointed at `ssh` so it keeps describing a real stub instead of a
+//! now-executable tool.
 
 use successor_protocol::tool_catalog::{ToolCatalogV0, ToolStatusV0};
 
@@ -90,6 +104,10 @@ fn executable_input_schema(tool_name: &str) -> Option<serde_json::Value> {
 		"find" => schemars::schema_for!(super::find::FindArgs),
 		"grep" => schemars::schema_for!(super::grep::GrepArgs),
 		"list_dir" => schemars::schema_for!(super::list_dir::ListDirArgs),
+		"ast_grep" => schemars::schema_for!(super::ast_grep::AstGrepArgs),
+		"edit" => super::edit::EditArgs::schema(),
+		"write" => super::write::WriteArgs::schema(),
+		"bash" => super::bash::BashArgs::schema(),
 		_ => return None,
 	};
 	Some(serde_json::to_value(schema).expect("tool argument schema must serialize to JSON"))
@@ -112,7 +130,7 @@ pub fn tool_status(tool_name: &str) -> Option<ToolStatusV0> {
 /// cataloged tool.
 ///
 /// One deterministic template, applied uniformly (Dissent ruling 3):
-/// substituting `bash` reproduces
+/// substituting `ssh` reproduces
 /// `fixtures/slice-0/raw-events-unsupported-tool.json` verbatim. This
 /// function does not distinguish between `stub_rejected` and
 /// `policy_rejected` tools, and does not inspect the catalog — it is a
@@ -154,7 +172,7 @@ mod tests {
 	}
 
 	#[test]
-	fn exactly_five_tools_are_executable_and_they_are_the_safe_read_discovery_set() {
+	fn exactly_nine_tools_are_executable_and_they_are_the_base_executable_roster() {
 		let catalog = slice0_catalog();
 		let mut executable: Vec<&str> = catalog
 			.tools
@@ -163,12 +181,36 @@ mod tests {
 			.map(|tool| tool.name.as_str())
 			.collect();
 		executable.sort_unstable();
-		assert_eq!(executable, vec!["find", "grep", "list_dir", "read", "search_files"]);
+		assert_eq!(executable, vec![
+			"ast_grep",
+			"bash",
+			"edit",
+			"find",
+			"grep",
+			"list_dir",
+			"read",
+			"search_files",
+			"write"
+		]);
 	}
 
 	#[test]
-	fn bash_is_stub_rejected() {
-		assert_eq!(tool_status("bash"), Some(ToolStatusV0::StubRejected));
+	fn every_executable_tool_carries_a_nonempty_generated_schema() {
+		let catalog = slice0_catalog();
+		for tool in &catalog.tools {
+			if tool.status == ToolStatusV0::Executable {
+				assert!(
+					tool.input_schema.is_some(),
+					"{} is executable but has no input_schema",
+					tool.name
+				);
+			}
+		}
+	}
+
+	#[test]
+	fn ssh_is_stub_rejected() {
+		assert_eq!(tool_status("ssh"), Some(ToolStatusV0::StubRejected));
 	}
 
 	#[test]
@@ -177,7 +219,7 @@ mod tests {
 	}
 
 	#[test]
-	fn bash_rejection_reason_and_policy_match_the_unsupported_tool_fixture_exactly() {
+	fn ssh_rejection_reason_and_policy_match_the_unsupported_tool_fixture_exactly() {
 		let events = successor_protocol::fixtures::raw_events_unsupported_tool();
 
 		let rejected = events
@@ -191,8 +233,8 @@ mod tests {
 		);
 		assert_eq!(
 			rejected.payload["reason"].as_str(),
-			Some(stub_rejection_reason("bash").as_str()),
-			"the generalized template applied to `bash` must reproduce the fixture reason verbatim"
+			Some(stub_rejection_reason("ssh").as_str()),
+			"the generalized template applied to `ssh` must reproduce the fixture reason verbatim"
 		);
 
 		let error = events

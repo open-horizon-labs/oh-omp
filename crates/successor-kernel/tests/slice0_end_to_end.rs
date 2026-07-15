@@ -8,14 +8,15 @@
 //! deterministically once reconnected to fresh store handles -- a genuine
 //! full-stack round trip, not a second copy of C8's route-level assertions.
 //!
-//! Also owns: an `#[ignore]`d live-provider smoke, opt-in via
-//! `SUCCESSOR_LIVE_PROVIDER_SMOKE=1` plus a non-empty `ANTHROPIC_API_KEY`,
-//! exercising exactly one real Anthropic Messages round trip through the
-//! real kernel. It asserts only stable, typed contracts (a valid normalized
-//! terminal frame; persisted, replayable state) and never asserts on model
-//! prose, token counts, or timing, per the ruling.
+//! Also owns two `#[ignore]`d live-provider smokes, opt-in via
+//! `SUCCESSOR_LIVE_PROVIDER_SMOKE=1` plus a non-empty `ANTHROPIC_API_KEY`:
+//! one exercises a single real Anthropic Messages round trip, while the S8
+//! smoke executes the bounded self-hosted coding workflow through the real
+//! kernel. Both assert only stable, typed contracts and never assert on model
+//! prose, token counts, or timing.
 
 use std::{
+	env,
 	path::PathBuf,
 	sync::{
 		Arc,
@@ -26,10 +27,12 @@ use std::{
 use axum::{body::Body, http::Request};
 use successor_context_platform::{
 	artifacts::SqliteArtifactStore, auth::PlatformLicense,
-	http::build_router as build_platform_router, replay::replay_session_snapshot,
-	routes::PlatformState, sqlite::SqliteAppendStore, store::RawEventAppendStore,
+	http::build_router as build_platform_router, projection::map_session_snapshot,
+	replay::replay_session_snapshot, routes::PlatformState, sqlite::SqliteAppendStore,
+	store::RawEventAppendStore,
 };
 use successor_kernel::{
+	api::ResumeResponse,
 	http::{AppState, build_router},
 	id_factory::{RealClock, RealIdFactory},
 	platform_client::KernelPlatformClient,
@@ -44,15 +47,16 @@ use successor_kernel::{
 		ScriptedRound,
 	},
 	state_machine::{MAX_EXECUTABLE_TOOL_ROUNDS, TurnFailure},
+	tools::bash::{TrustedExecutable, TrustedExecutableAllowlist},
 };
 use successor_protocol::{
 	ids::{MessageId, SessionId, ToolCallId},
 	kernel_frame::KernelFrameV0,
 	projection::ToolCallStatus,
 	provider::ProviderApiShapeV0,
-	raw_event::RawEventType,
+	raw_event::{RawEventType, RawEventV0},
 	replay::project_session,
-	tool_catalog::ToolCatalogV0,
+	tool_catalog::{ToolAuthorityClassV0, ToolAuthorityRequestV0, ToolCatalogV0},
 };
 use tower::ServiceExt;
 
@@ -469,6 +473,475 @@ async fn live_smoke_against_the_real_anthropic_messages_api_produces_a_replayabl
 	}
 
 	cleanup_workspace(&workspace);
+}
+
+const S8_TASK_PROMPT: &str = include_str!("fixtures/s8-self-hosted-coding-task.md");
+
+const S8_INITIAL_LIB_RS: &str = r#"pub fn adjusted_score(input: i32) -> i32 {
+	input + 1
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn doubles_then_offsets() {
+		assert_eq!(adjusted_score(21), 43);
+	}
+}
+"#;
+
+const S8_EXPECTED_FIXED_LIB_RS: &str = r#"pub fn adjusted_score(input: i32) -> i32 {
+	input * 2 + 1
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn doubles_then_offsets() {
+		assert_eq!(adjusted_score(21), 43);
+	}
+}
+"#;
+
+fn seed_s8_disposable_crate(label: &str) -> (PathBuf, PathBuf) {
+	let workspace = seed_workspace(label);
+	let src_dir = workspace.join("src");
+	std::fs::create_dir_all(&src_dir).expect("create disposable crate source directory");
+	std::fs::write(
+		workspace.join("Cargo.toml"),
+		r#"[package]
+name = "successor-s8-disposable"
+version = "0.0.0"
+edition = "2021"
+
+[lib]
+path = "src/lib.rs"
+"#,
+	)
+	.expect("write disposable crate manifest");
+	let lib_rs = src_dir.join("lib.rs");
+	std::fs::write(&lib_rs, S8_INITIAL_LIB_RS).expect("seed intentionally failing crate");
+
+	(workspace, lib_rs)
+}
+
+fn is_executable_file(path: &std::path::Path) -> bool {
+	let Ok(metadata) = std::fs::metadata(path) else {
+		return false;
+	};
+	if !metadata.is_file() {
+		return false;
+	}
+
+	#[cfg(unix)]
+	{
+		use std::os::unix::fs::PermissionsExt as _;
+		metadata.permissions().mode() & 0o111 != 0
+	}
+	#[cfg(not(unix))]
+	{
+		true
+	}
+}
+
+fn resolve_cargo_executable() -> PathBuf {
+	if let Some(raw_cargo) = env::var_os("CARGO") {
+		let cargo_path = PathBuf::from(&raw_cargo);
+		if cargo_path.is_absolute() && is_executable_file(&cargo_path) {
+			return cargo_path;
+		}
+		if cargo_path.components().count() > 1 {
+			let current_dir = env::current_dir().expect("resolve current directory for cargo path");
+			let joined = current_dir.join(&cargo_path);
+			if is_executable_file(&joined) {
+				return joined.canonicalize().unwrap_or(joined);
+			}
+		}
+		if let Some(found) = find_executable_on_path(&cargo_path) {
+			return found;
+		}
+	}
+
+	find_executable_on_path(std::path::Path::new("cargo"))
+		.expect("cargo executable is required for the S8 live provider smoke")
+}
+
+fn find_executable_on_path(executable_name: &std::path::Path) -> Option<PathBuf> {
+	let file_name = executable_name.file_name()?;
+	let path = env::var_os("PATH")?;
+	env::split_paths(&path).find_map(|dir| {
+		let candidate = dir.join(file_name);
+		if is_executable_file(&candidate) {
+			Some(candidate.canonicalize().unwrap_or(candidate))
+		} else {
+			None
+		}
+	})
+}
+
+fn s8_trusted_cargo_allowlist() -> TrustedExecutableAllowlist {
+	let cargo_path = resolve_cargo_executable();
+	let cargo = TrustedExecutable::new("cargo", cargo_path, Vec::new())
+		.expect("construct trusted cargo executable entry");
+	TrustedExecutableAllowlist::new([cargo]).expect("construct trusted cargo allowlist")
+}
+
+fn s8_full_tool_authority() -> ToolAuthorityRequestV0 {
+	ToolAuthorityRequestV0 {
+		classes: vec![
+			ToolAuthorityClassV0::SafeRead,
+			ToolAuthorityClassV0::WorkspaceMutation,
+			ToolAuthorityClassV0::LocalProcess,
+		],
+	}
+}
+
+fn completed_tool_names(events: &[RawEventV0]) -> Vec<String> {
+	events
+		.iter()
+		.filter(|event| event.event_type == RawEventType::ToolCallCompleted)
+		.filter_map(|event| {
+			event
+				.payload
+				.get("tool_name")
+				.and_then(|name| name.as_str())
+		})
+		.map(str::to_owned)
+		.collect()
+}
+
+fn raw_event_tool_names(events: &[RawEventV0], event_type: RawEventType) -> Vec<String> {
+	events
+		.iter()
+		.filter(|event| event.event_type == event_type)
+		.filter_map(|event| {
+			event
+				.payload
+				.get("tool_name")
+				.and_then(|name| name.as_str())
+		})
+		.map(str::to_owned)
+		.collect()
+}
+
+fn completed_bash_exit_codes(events: &[RawEventV0]) -> Vec<Option<i64>> {
+	events
+		.iter()
+		.filter(|event| event.event_type == RawEventType::ToolCallCompleted)
+		.filter(|event| {
+			event
+				.payload
+				.get("tool_name")
+				.and_then(|name| name.as_str())
+				== Some("bash")
+		})
+		.map(|event| {
+			event
+				.payload
+				.get("result")
+				.expect("completed bash event carries a result")
+				.get("exit_code")
+				.and_then(|exit_code| exit_code.as_i64())
+		})
+		.collect()
+}
+
+fn assert_s8_semantic_tool_contract(events: &[RawEventV0]) {
+	let completed = completed_tool_names(events);
+	let inspection_count = completed
+		.iter()
+		.filter(|name| {
+			matches!(
+				name.as_str(),
+				"read" | "grep" | "find" | "search_files" | "ast_grep" | "list_dir"
+			)
+		})
+		.count();
+	assert!(inspection_count >= 1, "expected at least one completed inspection tool");
+
+	let completed_mutation_count = completed
+		.iter()
+		.filter(|name| matches!(name.as_str(), "edit" | "write"))
+		.count();
+	assert!(
+		(1..=2).contains(&completed_mutation_count),
+		"expected one or two completed mutation calls, got {completed_mutation_count}"
+	);
+
+	let bash_exit_codes = completed_bash_exit_codes(events);
+	assert!(
+		(1..=3).contains(&bash_exit_codes.len()),
+		"expected one to three completed bash calls, got {}",
+		bash_exit_codes.len()
+	);
+	let final_exit_code = bash_exit_codes.last().expect("at least one bash receipt");
+	assert_eq!(*final_exit_code, Some(0), "final cargo test receipt must succeed");
+
+	let rejected = raw_event_tool_names(events, RawEventType::ToolCallRejected);
+	assert!(rejected.is_empty(), "S8 must not reject tool calls: {rejected:?}");
+	let failed = raw_event_tool_names(events, RawEventType::ToolCallFailed);
+	let failed_mutation_count = failed
+		.iter()
+		.filter(|name| matches!(name.as_str(), "edit" | "write"))
+		.count();
+	assert_eq!(
+		failed_mutation_count,
+		failed.len(),
+		"only mutation executor failures are recoverable in S8: {failed:?}"
+	);
+	assert!(
+		failed_mutation_count <= 1,
+		"expected at most one failed mutation attempt, got {failed:?}"
+	);
+	assert!(
+		completed_mutation_count + failed_mutation_count <= 2,
+		"expected at most two total mutation attempts, completed {completed_mutation_count}, failed \
+		 {failed_mutation_count}"
+	);
+}
+
+fn assert_same_raw_event_sequence(left: &[RawEventV0], right: &[RawEventV0]) {
+	assert_eq!(right, left, "fresh resume must return the same raw event sequence");
+}
+
+async fn assert_no_s8_secret_leaks(
+	surface: &str,
+	api_key: &str,
+	frames: &[KernelFrameV0],
+	events: &[RawEventV0],
+	resume_response: &ResumeResponse,
+	artifact_store: &SqliteArtifactStore,
+) {
+	let frame_bytes = serde_json::to_vec(frames).expect("serialize frames for redaction scan");
+	assert_never_leaks_either_sentinel(&format!("{surface} frames"), &frame_bytes);
+	assert_sentinel_absent(
+		&format!("{surface} frames"),
+		"Anthropic API key",
+		api_key,
+		std::str::from_utf8(&frame_bytes).expect("frame json is utf-8"),
+	);
+
+	let event_bytes = serde_json::to_vec(events).expect("serialize raw events for redaction scan");
+	assert_never_leaks_either_sentinel(&format!("{surface} events"), &event_bytes);
+	assert_sentinel_absent(
+		&format!("{surface} events"),
+		"Anthropic API key",
+		api_key,
+		std::str::from_utf8(&event_bytes).expect("event json is utf-8"),
+	);
+
+	let resume_bytes =
+		serde_json::to_vec(resume_response).expect("serialize resume response for redaction scan");
+	assert_never_leaks_either_sentinel(&format!("{surface} resume"), &resume_bytes);
+	assert_sentinel_absent(
+		&format!("{surface} resume"),
+		"Anthropic API key",
+		api_key,
+		std::str::from_utf8(&resume_bytes).expect("resume json is utf-8"),
+	);
+
+	for event in events {
+		let artifact_id = event.entity_ids.artifact_id.as_ref().or_else(|| {
+			event
+				.artifact
+				.as_ref()
+				.and_then(|artifact| artifact.artifact_id.as_ref())
+		});
+		if let Some(artifact_id) = artifact_id {
+			let artifact = artifact_store
+				.require_artifact(artifact_id)
+				.await
+				.expect("artifact referenced by a raw event is retrievable");
+			let artifact_bytes =
+				serde_json::to_vec(&artifact).expect("serialize artifact for redaction scan");
+			assert_never_leaks_either_sentinel(
+				&format!("{surface} artifact {}", artifact.artifact_id),
+				&artifact_bytes,
+			);
+			assert_sentinel_absent(
+				&format!("{surface} artifact {}", artifact.artifact_id),
+				"Anthropic API key",
+				api_key,
+				std::str::from_utf8(&artifact_bytes).expect("artifact json is utf-8"),
+			);
+		}
+	}
+}
+
+#[tokio::test]
+#[ignore = "opt-in S8 live provider smoke: requires SUCCESSOR_LIVE_PROVIDER_SMOKE=1, \
+            ANTHROPIC_API_KEY, and local cargo"]
+async fn s8_live_anthropic_provider_repairs_disposable_rust_crate_and_replays_after_resume() {
+	let live_gate = env::var("SUCCESSOR_LIVE_PROVIDER_SMOKE").unwrap_or_default();
+	let api_key = env::var("ANTHROPIC_API_KEY").unwrap_or_default();
+	if live_gate != "1" || api_key.is_empty() {
+		eprintln!(
+			"skipping S8 live smoke: SUCCESSOR_LIVE_PROVIDER_SMOKE=1 and a non-empty \
+			 ANTHROPIC_API_KEY are both required"
+		);
+		return;
+	}
+
+	let server = TestServer::start("s8-live").await;
+	let (workspace, lib_rs) = seed_s8_disposable_crate("s8-live");
+	let _workspace_guard = WorkspaceGuard(workspace.clone());
+	let provider_model =
+		env::var("SUCCESSOR_LIVE_PROVIDER_MODEL").unwrap_or_else(|_| "claude-opus-4-8".to_owned());
+	let trusted_allowlist = s8_trusted_cargo_allowlist();
+	let state = AppState::with_anthropic(
+		server.client(),
+		Arc::new(RealIdFactory::new()),
+		Arc::new(RealClock),
+		workspace.clone(),
+		provider_model.clone(),
+		8192,
+		|name| env::var(name).ok(),
+	)
+	.with_trusted_tool_authority_ceiling(vec![
+		ToolAuthorityClassV0::SafeRead,
+		ToolAuthorityClassV0::WorkspaceMutation,
+		ToolAuthorityClassV0::LocalProcess,
+	])
+	.with_trusted_executable_allowlist(trusted_allowlist);
+	let router = build_router(state);
+
+	let request = Request::builder()
+		.method("POST")
+		.uri("/v0/turns")
+		.header("content-type", "application/json")
+		.body(Body::from(
+			serde_json::to_vec(&serde_json::json!({
+				"user_text": S8_TASK_PROMPT,
+				"tool_authority": s8_full_tool_authority(),
+			}))
+			.expect("serialize S8 submit_turn request"),
+		))
+		.expect("build S8 submit_turn request");
+	let response = router
+		.clone()
+		.oneshot(request)
+		.await
+		.expect("S8 submit_turn does not panic");
+	assert!(response.status().is_success(), "S8 live turn must stream typed kernel frames");
+	let response_bytes = body_bytes(response).await;
+	assert_never_leaks_either_sentinel("S8 live response bytes", &response_bytes);
+	assert_sentinel_absent(
+		"S8 live response bytes",
+		"Anthropic API key",
+		&api_key,
+		std::str::from_utf8(&response_bytes).expect("S8 response bytes are utf-8"),
+	);
+	let frames = parse_sse_frames(&response_bytes);
+	assert!(!frames.is_empty(), "expected kernel frames from S8 live provider turn");
+	let terminal_frame = frames.last().expect("non-empty frames");
+	assert_eq!(
+		terminal_frame.kind.as_str(),
+		"turn_completed",
+		"S8 live task must complete successfully; terminal payload: {}",
+		terminal_frame.payload
+	);
+
+	let actual_source =
+		std::fs::read_to_string(&lib_rs).expect("read disposable crate source after provider turn");
+	assert_eq!(actual_source, S8_EXPECTED_FIXED_LIB_RS);
+
+	let cargo_status = std::process::Command::new(resolve_cargo_executable())
+		.arg("test")
+		.arg("--quiet")
+		.current_dir(&workspace)
+		.status()
+		.expect("run independent cargo test verification");
+	assert!(cargo_status.success(), "independent cargo test --quiet must pass after S8 turn");
+
+	let session_id = frames.first().expect("non-empty frames").session_id.clone();
+	let db_str = server.db_path.to_str().expect("utf-8 temp db path");
+	let reconnected_append_store = SqliteAppendStore::connect(db_str)
+		.await
+		.expect("reconnect to S8 sqlite append store");
+	let reconnected_artifact_store = SqliteArtifactStore::connect(db_str)
+		.await
+		.expect("reconnect to S8 sqlite artifact store");
+	let event_page = reconnected_append_store
+		.read_session_events(&session_id, 0, 10_000)
+		.await
+		.expect("read durable S8 raw events");
+	let events = event_page.events;
+	assert!(!events.is_empty(), "S8 raw events must be durable");
+	let projection = project_session(&events).expect("S8 durable events project successfully");
+	assert_s8_semantic_tool_contract(&events);
+
+	let snapshot =
+		replay_session_snapshot(&reconnected_append_store, &reconnected_artifact_store, &session_id)
+			.await
+			.expect("S8 completed turn must replay from a fresh store connection");
+	assert_eq!(snapshot.session_id, session_id);
+	let expected_snapshot = map_session_snapshot(&session_id, &events, &projection);
+	assert_eq!(
+		snapshot, expected_snapshot,
+		"fresh-store replay must be byte-identical to the direct persisted-event projection"
+	);
+	let replayed_snapshot =
+		replay_session_snapshot(&reconnected_append_store, &reconnected_artifact_store, &session_id)
+			.await
+			.expect("S8 replay must be deterministic from the same fresh stores");
+	assert_eq!(replayed_snapshot, snapshot);
+
+	let fresh_state = AppState::with_anthropic(
+		server.client(),
+		Arc::new(RealIdFactory::new()),
+		Arc::new(RealClock),
+		workspace.clone(),
+		provider_model,
+		8192,
+		|name| env::var(name).ok(),
+	)
+	.with_trusted_tool_authority_ceiling(vec![
+		ToolAuthorityClassV0::SafeRead,
+		ToolAuthorityClassV0::WorkspaceMutation,
+		ToolAuthorityClassV0::LocalProcess,
+	])
+	.with_trusted_executable_allowlist(s8_trusted_cargo_allowlist());
+	let fresh_router = build_router(fresh_state);
+	let resume_request = Request::builder()
+		.method("GET")
+		.uri(format!("/v0/resume/{session_id}?limit=10000").as_str())
+		.body(Body::empty())
+		.expect("build S8 resume request");
+	let resume_response = fresh_router
+		.oneshot(resume_request)
+		.await
+		.expect("S8 resume route does not panic");
+	assert!(
+		resume_response.status().is_success(),
+		"fresh S8 kernel router must resume persisted session"
+	);
+	let resume_bytes = body_bytes(resume_response).await;
+	let resume_payload: ResumeResponse =
+		serde_json::from_slice(&resume_bytes).expect("parse S8 resume response");
+	assert_same_raw_event_sequence(&events, &resume_payload.events.events);
+
+	assert_no_s8_secret_leaks(
+		"S8",
+		&api_key,
+		&frames,
+		&events,
+		&resume_payload,
+		&reconnected_artifact_store,
+	)
+	.await;
+
+	let provider_delta_text = frames
+		.iter()
+		.filter(|frame| frame.kind.as_str() == "provider_delta")
+		.filter_map(|frame| frame.payload.get("text"))
+		.filter_map(serde_json::Value::as_str)
+		.find(|text| !text.trim().is_empty())
+		.expect("S8 must surface non-empty visible assistant provider output");
+	assert!(!provider_delta_text.is_empty());
 }
 
 // ---------------------------------------------------------------------

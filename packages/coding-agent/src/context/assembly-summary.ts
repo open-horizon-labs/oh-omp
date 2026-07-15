@@ -57,22 +57,36 @@ export function formatAssemblySummary(snapshot: EffectivePromptSnapshot): string
 		if (meta.compressedCount > 0) {
 			const conversationCompressed = meta.decisions.filter(d => d.reason === "conversation-compressed").length;
 			const recoveryTruncated = meta.decisions.filter(d => d.reason === "recovery-anchor-truncated").length;
-			const codecCompressed = meta.compressedCount - conversationCompressed - recoveryTruncated;
+			const overflowSummarized = meta.decisions.filter(d => d.reason === "overflow-summarized").length;
+			const hotWindowOversizeCompressed = meta.decisions.filter(
+				d => d.reason === "hot-window-oversize-compressed",
+			).length;
+			const codecCompressed =
+				meta.compressedCount -
+				conversationCompressed -
+				recoveryTruncated -
+				overflowSummarized -
+				hotWindowOversizeCompressed;
 			const compParts: string[] = [];
 			if (codecCompressed > 0) compParts.push(`${codecCompressed} codec-compressed`);
 			if (conversationCompressed > 0)
 				compParts.push(`${conversationCompressed} conversation-compressed (recoverable via recall)`);
 			if (recoveryTruncated > 0) compParts.push(`${recoveryTruncated} recovery-anchor-truncated`);
+			if (overflowSummarized > 0) compParts.push(`${overflowSummarized} overflow-summarized`);
+			if (hotWindowOversizeCompressed > 0)
+				compParts.push(`${hotWindowOversizeCompressed} oversized hot-window compressed`);
 			turnParts.push(compParts.length > 0 ? compParts.join(", ") : `${meta.compressedCount} compressed`);
 		}
 		if (meta.droppedCount > 0) {
 			const devDropped = meta.decisions.filter(d => d.reason === "developer-dropped").length;
 			const recoveryExcluded = meta.decisions.filter(d => d.reason === "recovery-excluded").length;
-			const budgetDropped = meta.droppedCount - devDropped - recoveryExcluded;
+			const overflowPreAnchor = meta.decisions.filter(d => d.reason === "overflow-pre-anchor").length;
+			const budgetDropped = meta.droppedCount - devDropped - recoveryExcluded - overflowPreAnchor;
 			const dropParts: string[] = [];
 			if (budgetDropped > 0) dropParts.push(`${budgetDropped} budget-dropped`);
 			if (devDropped > 0) dropParts.push(`${devDropped} dev-dropped`);
 			if (recoveryExcluded > 0) dropParts.push(`${recoveryExcluded} recovery-excluded`);
+			if (overflowPreAnchor > 0) dropParts.push(`${overflowPreAnchor} pre-anchor-dropped`);
 			turnParts.push(dropParts.length > 0 ? dropParts.join(", ") : `${meta.droppedCount} dropped`);
 		}
 		if (meta.recovery) {
@@ -84,6 +98,16 @@ export function formatAssemblySummary(snapshot: EffectivePromptSnapshot): string
 				turnParts.push("recovery: recovered full anchor, nudge omitted");
 			} else {
 				turnParts.push("recovery: recovered with reground nudge");
+			}
+		}
+		if (meta.overflowSummary) {
+			const overflow = meta.overflowSummary;
+			if (overflow.outcome === "failed") {
+				turnParts.push(`overflow summary: failed (${overflow.failureReason ?? "unknown"})`);
+			} else {
+				turnParts.push(
+					`overflow summary: ${overflow.outcome} generation ${overflow.generation}, ${overflow.tailTurnCount} tail turns`,
+				);
 			}
 		}
 		parts.push(turnParts.join(", "));

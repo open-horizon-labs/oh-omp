@@ -39,9 +39,14 @@ import * as path from "node:path";
 import { ConceptGraphStore } from "./concept-graph";
 import { resolveConfigValue } from "./config/resolve-config-value";
 import {
+	assembleOverflowSummary,
+	buildOverflowSummaryFailureMetadata,
 	deriveBudget,
 	estimateMessageTokens,
 	estimateToolDefinitionTokens,
+	getOverflowSummaryAnchorId,
+	type OverflowSummaryCheckpoint,
+	type OverflowSummaryModelCandidate,
 	segmentIntoTurns,
 	type TransformMetadata,
 	transformMessages,
@@ -1741,6 +1746,49 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			evictAfterTurns: assemblerSettings.workingSetEvictTurns,
 			tokenCap: assemblerSettings.workingSetTokenCap,
 		};
+		let overflowSummaryCheckpoint: OverflowSummaryCheckpoint | undefined;
+		let overflowSummaryFailureState:
+			| {
+					anchorId: string;
+					sourceTurnCount: number;
+					transformedTokens: number;
+					nudgeSent: boolean;
+			  }
+			| undefined;
+
+		const resolveOverflowSummaryModels = async (activeModel: Model): Promise<OverflowSummaryModelCandidate[]> => {
+			const candidates: OverflowSummaryModelCandidate[] = [];
+			const configured = resolveModelRoleValue(
+				assemblerSettings.overflowSummaryModel,
+				modelRegistry.getAvailable(),
+				{ settings, matchPreferences: modelMatchPreferences },
+			);
+			if (configured.warning) {
+				logger.warn("assembler:overflow-summary-model-warning", { warning: configured.warning });
+			}
+			if (configured.model) {
+				const apiKey = await modelRegistry.getApiKey(configured.model, providerSessionId);
+				if (apiKey) {
+					candidates.push({
+						model: configured.model,
+						apiKey,
+						reasoning:
+							configured.thinkingLevel === undefined &&
+							formatModelString(configured.model) === formatModelString(activeModel)
+								? agent?.state.thinkingLevel
+								: toReasoningEffort(configured.thinkingLevel),
+					});
+				}
+			}
+
+			if (!candidates.some(candidate => formatModelString(candidate.model) === formatModelString(activeModel))) {
+				const apiKey = await modelRegistry.getApiKey(activeModel, providerSessionId);
+				if (apiKey) {
+					candidates.push({ model: activeModel, apiKey, reasoning: agent?.state.thinkingLevel });
+				}
+			}
+			return candidates;
+		};
 
 		const buildConceptGraphTask = (candidateMessages: AgentMessage[]): string => {
 			const turns = segmentIntoTurns(candidateMessages);
@@ -1760,7 +1808,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			return snippets.join("\n").slice(-4_000);
 		};
 
-		const assemblerTransform = async (messages: AgentMessage[]): Promise<AgentMessage[]> => {
+		const assemblerTransform = async (messages: AgentMessage[], signal?: AbortSignal): Promise<AgentMessage[]> => {
 			// Derive budget from current model context window and measured costs.
 			// agent.state is read each turn to reflect model/tool changes mid-session.
 			const currentModel = agent?.state.model;
@@ -2002,25 +2050,102 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			let boundedMessages: AgentMessage[];
 			let finalTransformMetadata: TransformMetadata;
 			if (maxMessageTokens !== undefined) {
-				const boundedPass = transformMessagesWithRecovery(
-					messages,
-					{
-						maxTokens: maxMessageTokens,
-						hotWindowTurns,
+				const boundedOptions = {
+					maxTokens: maxMessageTokens,
+					hotWindowTurns,
+					resolveToolResultStub,
+					codecs,
+					workingSet,
+					relevanceScores,
+				};
+				const boundedPass = transformMessages(messages, boundedOptions);
+				if (boundedPass.messages[0]?.role === "user") {
+					boundedMessages = boundedPass.messages;
+					finalTransformMetadata = boundedPass.metadata;
+				} else {
+					const compressedHotWindowPass = transformMessages(messages, {
+						hotWindowTurns: 0,
 						resolveToolResultStub,
 						codecs,
-						workingSet,
-						relevanceScores,
-					},
-					{
-						standardControlPromptTokens: standardRecoveryPromptTokens,
-						truncatedControlPromptTokens: truncatedRecoveryPromptTokens,
-					},
-				);
-				boundedMessages = boundedPass.messages;
-				finalTransformMetadata = boundedPass.metadata;
-				if (boundedPass.metadata.recovery) {
-					logger.warn("assembler:context-recovery", { ...boundedPass.metadata.recovery });
+						workingSet: { enabled: false },
+					});
+					const currentOverflowAnchorId = getOverflowSummaryAnchorId(transformedMessages);
+					if (overflowSummaryCheckpoint?.anchorId !== currentOverflowAnchorId) {
+						overflowSummaryCheckpoint = undefined;
+					}
+					if (overflowSummaryFailureState?.anchorId !== currentOverflowAnchorId) {
+						overflowSummaryFailureState = undefined;
+					}
+					const sourceTurnCount = segmentIntoTurns(messages).length;
+					const transformedTokens = estimateMessageTokens(transformedMessages);
+					const retryTurnProgress = Math.max(1, Math.floor(hotWindowTurns));
+					const retryTokenProgress = Math.max(1, Math.floor(maxMessageTokens * 0.5));
+					const retryDeferred =
+						overflowSummaryFailureState !== undefined &&
+						sourceTurnCount - overflowSummaryFailureState.sourceTurnCount < retryTurnProgress &&
+						transformedTokens - overflowSummaryFailureState.transformedTokens < retryTokenProgress;
+					const overflow = await assembleOverflowSummary({
+						sourceMessages: messages,
+						transformedMessages,
+						compressedHotWindowMessages: compressedHotWindowPass.messages,
+						unboundedMetadata: firstPass.metadata,
+						maxTokens: maxMessageTokens,
+						hotWindowTurns,
+						checkpoint: overflowSummaryCheckpoint,
+						resolveModelCandidates: () =>
+							retryDeferred || !currentModel ? Promise.resolve([]) : resolveOverflowSummaryModels(currentModel),
+						signal,
+					});
+
+					if (overflow.outcome === "assembled") {
+						boundedMessages = overflow.assembly.messages;
+						finalTransformMetadata = overflow.assembly.metadata;
+						overflowSummaryCheckpoint = overflow.assembly.checkpoint;
+						overflowSummaryFailureState = undefined;
+						logger.warn("assembler:context-overflow-summary", {
+							...overflow.assembly.metadata.overflowSummary,
+						});
+					} else {
+						const failure = retryDeferred
+							? { ...overflow.failure, reason: "retry-deferred-no-progress" as const }
+							: overflow.failure;
+						if (!retryDeferred && overflow.failure.anchorId) {
+							overflowSummaryFailureState = {
+								anchorId: overflow.failure.anchorId,
+								sourceTurnCount,
+								transformedTokens,
+								nudgeSent: overflowSummaryFailureState?.nudgeSent ?? false,
+							};
+						}
+						const recoveredPass = transformMessagesWithRecovery(
+							overflow.fallbackMessages ?? messages,
+							{
+								...boundedOptions,
+								relevanceScores: undefined,
+								workingSet: overflow.fallbackMessages ? { enabled: false } : workingSet,
+							},
+							overflowSummaryFailureState?.nudgeSent
+								? {}
+								: {
+										standardControlPromptTokens: standardRecoveryPromptTokens,
+										truncatedControlPromptTokens: truncatedRecoveryPromptTokens,
+									},
+						);
+						recoveredPass.metadata.overflowSummary = buildOverflowSummaryFailureMetadata(failure);
+						boundedMessages = recoveredPass.messages;
+						finalTransformMetadata = recoveredPass.metadata;
+						if (
+							overflowSummaryFailureState &&
+							recoveredPass.metadata.recovery?.controlPrompt !== undefined &&
+							recoveredPass.metadata.recovery.controlPrompt !== "omitted"
+						) {
+							overflowSummaryFailureState.nudgeSent = true;
+						}
+						logger.warn("assembler:context-overflow-summary-failed", { ...failure });
+						if (recoveredPass.metadata.recovery) {
+							logger.warn("assembler:context-recovery", { ...recoveredPass.metadata.recovery });
+						}
+					}
 				}
 			} else {
 				boundedMessages = transformedMessages;
@@ -2044,6 +2169,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 					effectiveMessageBudget: maxMessageTokens,
 					messageTokensAfterTransform: finalTransformMetadata.tokensAfter,
 					contextRecovery: finalTransformMetadata.recovery?.outcome,
+					contextOverflowSummary: finalTransformMetadata.overflowSummary?.outcome,
 					recoveryControlPromptTokens,
 					hydratedEntries: cappedResults.length,
 					conceptGraphTokens,
@@ -2139,11 +2265,12 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 
 		// Compose: extensions first, then assembler.
 		const innerTransform = extensionTransform
-			? async (msgs: AgentMessage[]) => assemblerTransform(await extensionTransform(msgs))
+			? async (msgs: AgentMessage[], signal?: AbortSignal) =>
+					assemblerTransform(await extensionTransform(msgs), signal)
 			: assemblerTransform;
 
-		return async (messages: AgentMessage[]): Promise<AgentMessage[]> => {
-			return innerTransform(messages);
+		return async (messages: AgentMessage[], signal?: AbortSignal): Promise<AgentMessage[]> => {
+			return innerTransform(messages, signal);
 		};
 	})();
 	const initialServiceTier = hasServiceTierEntry

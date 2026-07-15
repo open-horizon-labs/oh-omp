@@ -254,6 +254,9 @@ export interface TurnDecision {
 	 *   - `"developer-dropped"` — developer message beyond hot window dropped (regenerated each turn).
 	 *   - `"recovery-excluded"` — omitted by the terminal user-led recovery fallback.
 	 *   - `"recovery-anchor-truncated"` — user anchor text bounded by terminal recovery.
+	 *   - `"overflow-summarized"` — older post-user execution replaced by an overflow checkpoint.
+	 *   - `"overflow-pre-anchor"` — history before the latest user anchor omitted by overflow assembly.
+	 *   - `"hot-window-oversize-compressed"` — an oversized hot tool result codec-compressed in place.
 	 */
 	reason:
 		| "hot-window"
@@ -265,7 +268,10 @@ export interface TurnDecision {
 		| "conversation-compressed"
 		| "developer-dropped"
 		| "recovery-excluded"
-		| "recovery-anchor-truncated";
+		| "recovery-anchor-truncated"
+		| "overflow-summarized"
+		| "overflow-pre-anchor"
+		| "hot-window-oversize-compressed";
 
 	/** Number of messages in this turn. */
 	messageCount: number;
@@ -322,6 +328,36 @@ export interface TransformMetadata {
 
 	/** Emergency recovery applied after the normal bounded transform produced no valid user-led context. */
 	recovery?: TransformRecoveryMetadata;
+
+	/** Historical overflow summarization applied before terminal recovery. */
+	overflowSummary?: TransformOverflowSummaryMetadata;
+}
+
+export interface TransformOverflowSummaryMetadata {
+	trigger: "latest-user-boundary";
+	outcome: "generated" | "reused" | "failed";
+	generation: number;
+	model?: string;
+	sourceTurnCount: number;
+	newlySummarizedTurnCount: number;
+	tailTurnCount: number;
+	outputMessageCount: number;
+	outputTokens: number;
+	summaryTokens: number;
+	inputTokens: number;
+	durationMs: number;
+	attempts: number;
+	lowWatermarkTokens: number;
+	hotWindowCompressedCount: number;
+	failureReason?:
+		| "no-summarizable-history"
+		| "protected-hot-window-exceeds-budget"
+		| "no-authenticated-model"
+		| "model-context-too-small"
+		| "generation-failed"
+		| "empty-summary"
+		| "summary-exceeds-budget"
+		| "retry-deferred-no-progress";
 }
 
 /** Metadata describing a bounded retry after normal context selection failed. */

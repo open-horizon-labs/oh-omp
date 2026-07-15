@@ -491,6 +491,17 @@ export const SETTINGS_SCHEMA = {
 			condition: "isAssemblerMode",
 		},
 	},
+	"assembler.overflowSummaryModel": {
+		type: "string",
+		default: "pi/slow",
+		ui: {
+			tab: "agent",
+			label: "Overflow summary model",
+			description: "Model or configured role used for rare long-loop overflow summaries",
+			submenu: true,
+			condition: "isAssemblerMode",
+		},
+	},
 
 	// ─────────────────────────────────────────────────────────────────────────
 	// Secrets settings
@@ -2247,6 +2258,7 @@ export interface AssemblerSettings {
 	recentWindowDays: number;
 	turnBufferPercent: number;
 	contextWindowCap: number;
+	overflowSummaryModel: string;
 	workingSetEnabled: boolean;
 	workingSetEvictTurns: number;
 	workingSetTokenCap: number;

@@ -341,4 +341,27 @@ describe("formatAssemblySummary", () => {
 		const result = formatAssemblySummary(makeSnapshot({ meta }))!;
 		expect(result).toContain("recovery: unrecoverable (text-anchor-exceeds-recoverable-budget)");
 	});
+
+	test("reports oversized hot-window compression separately from ordinary codecs", () => {
+		const meta: TransformMetadata = {
+			decisions: [
+				makeDecision(0, "compressed", "codec-compressed"),
+				makeDecision(1, "compressed", "overflow-summarized"),
+				makeDecision(2, "compressed", "hot-window-oversize-compressed"),
+			],
+			totalTurns: 3,
+			keptCount: 0,
+			stubbedCount: 0,
+			compressedCount: 3,
+			droppedCount: 0,
+			tokensBefore: 3000,
+			tokensAfter: 1200,
+			scoredCount: 0,
+		};
+
+		const result = formatAssemblySummary(makeSnapshot({ meta }));
+		expect(result).toContain("1 codec-compressed");
+		expect(result).toContain("1 overflow-summarized");
+		expect(result).toContain("1 oversized hot-window compressed");
+	});
 });

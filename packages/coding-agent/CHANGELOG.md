@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.12.2] - 2026-07-15
+
+### Fixed
+
+- Added cached, model-configurable overflow summaries for long autonomous loops, preserving the latest user turn and complete configured hot-tail structure when a summary can be assembled, minimally codec-compressing hot tool results when needed, and suppressing repeated recall nudges before terminal recovery.
+
 ## [0.12.1] - 2026-07-14
 
 ### Fixed

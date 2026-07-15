@@ -115,6 +115,38 @@ fn allowlist_revalidates_executable_identity_before_spawn() {
 	assert_eq!(execute(&root, &allowlist, arguments()), Err(ProcessRejection::ExecutableChanged));
 }
 
+#[cfg(unix)]
+#[test]
+fn allowlist_preserves_proxy_argv_zero_and_rejects_retargeting() {
+	use std::os::unix::fs::symlink;
+
+	let root = unique_temp_dir("proxy-path");
+	let binary = std::env::current_exe().expect("current executable");
+	let proxy = root.join("cargo-proxy");
+	let replacement = root.join("replacement-helper");
+	symlink(&binary, &proxy).expect("create trusted executable proxy");
+	fs::copy(&binary, &replacement).expect("copy replacement executable");
+	let fixed_argv = vec![
+		"--ignored".to_owned(),
+		"--exact".to_owned(),
+		"helper_proxy_argv_zero".to_owned(),
+		"--nocapture".to_owned(),
+	];
+	let allowlist =
+		TrustedExecutableAllowlist::new([
+			TrustedExecutable::new("helper", &proxy, fixed_argv).expect("trusted proxy")
+		])
+		.expect("proxy allowlist");
+
+	let receipt = execute(&root, &allowlist, arguments()).expect("proxy helper receipt");
+	assert_eq!(receipt.status, ProcessStatus::Exited);
+	assert_eq!(receipt.exit_code, Some(0));
+
+	fs::remove_file(&proxy).expect("remove original proxy");
+	symlink(&replacement, &proxy).expect("retarget executable proxy");
+	assert_eq!(execute(&root, &allowlist, arguments()), Err(ProcessRejection::ExecutableChanged));
+}
+
 #[test]
 fn cwd_and_environment_policy_are_typed_and_case_exact() {
 	let root = unique_temp_dir("policy");
@@ -297,6 +329,13 @@ fn helper_streams() {
 	assert!(std::env::var("PATH").is_err(), "env_clear must remove inherited PATH");
 	println!("stdout-hermetic");
 	eprintln!("stderr-hermetic");
+}
+
+#[test]
+#[ignore = "hermetic local-process helper; selected only through a proxy-path allowlist"]
+fn helper_proxy_argv_zero() {
+	let argv_zero = PathBuf::from(std::env::args_os().next().expect("helper argv zero"));
+	assert_eq!(argv_zero.file_name().and_then(|name| name.to_str()), Some("cargo-proxy"));
 }
 
 #[test]

@@ -558,7 +558,7 @@ fn resolve_cargo_executable() -> PathBuf {
 			let current_dir = env::current_dir().expect("resolve current directory for cargo path");
 			let joined = current_dir.join(&cargo_path);
 			if is_executable_file(&joined) {
-				return joined.canonicalize().unwrap_or(joined);
+				return joined;
 			}
 		}
 		if let Some(found) = find_executable_on_path(&cargo_path) {
@@ -573,12 +573,16 @@ fn resolve_cargo_executable() -> PathBuf {
 fn find_executable_on_path(executable_name: &std::path::Path) -> Option<PathBuf> {
 	let file_name = executable_name.file_name()?;
 	let path = env::var_os("PATH")?;
+	let current_dir = env::current_dir().ok()?;
 	env::split_paths(&path).find_map(|dir| {
 		let candidate = dir.join(file_name);
-		if is_executable_file(&candidate) {
-			Some(candidate.canonicalize().unwrap_or(candidate))
+		if !is_executable_file(&candidate) {
+			return None;
+		}
+		if candidate.is_absolute() {
+			Some(candidate)
 		} else {
-			None
+			Some(current_dir.join(candidate))
 		}
 	})
 }

@@ -75,12 +75,16 @@ const fn default_timeout_ms() -> u32 {
 	30_000
 }
 
-/// One host-configured executable entry. `fixed_argv` is host-owned and is
-/// useful for wrappers or hermetic test binaries; provider argv is appended
-/// after it.
+/// One host-configured executable entry.
+///
+/// `launch_path` preserves the configured absolute path and therefore proxy
+/// `argv[0]` semantics. `canonical_path` and `identity` pin its resolved
+/// target. `fixed_argv` is host-owned and is useful for wrappers or hermetic
+/// test binaries; provider argv is appended after it.
 #[derive(Debug, Clone)]
 pub struct TrustedExecutable {
 	logical_name:   String,
+	launch_path:    PathBuf,
 	canonical_path: PathBuf,
 	fixed_argv:     Vec<String>,
 	identity:       ExecutableIdentity,
@@ -102,11 +106,12 @@ impl TrustedExecutable {
 		{
 			return Err(ProcessRejection::InvalidTrustedExecutable);
 		}
+		let launch_path = path.as_ref().to_owned();
 		let canonical_path =
-			fs::canonicalize(path).map_err(|_| ProcessRejection::InvalidTrustedExecutable)?;
+			fs::canonicalize(&launch_path).map_err(|_| ProcessRejection::InvalidTrustedExecutable)?;
 		let identity =
 			executable_identity(&canonical_path).ok_or(ProcessRejection::InvalidTrustedExecutable)?;
-		Ok(Self { logical_name, canonical_path, fixed_argv, identity })
+		Ok(Self { logical_name, launch_path, canonical_path, fixed_argv, identity })
 	}
 }
 
@@ -154,7 +159,11 @@ impl TrustedExecutableAllowlist {
 			.entries
 			.get(logical_name)
 			.ok_or(ProcessRejection::ExecutableNotAllowed)?;
-		if executable_identity(&executable.canonical_path).as_ref() != Some(&executable.identity) {
+		let current_canonical_path = fs::canonicalize(&executable.launch_path)
+			.map_err(|_| ProcessRejection::ExecutableChanged)?;
+		if current_canonical_path != executable.canonical_path
+			|| executable_identity(&current_canonical_path).as_ref() != Some(&executable.identity)
+		{
 			return Err(ProcessRejection::ExecutableChanged);
 		}
 		Ok(executable)
@@ -343,7 +352,7 @@ pub fn execute(
 		let cwd_path = resolve_cwd(workspace_root, &args.cwd)?;
 		let started = Instant::now();
 
-		let mut command = Command::new(&executable.canonical_path);
+		let mut command = Command::new(&executable.launch_path);
 		command
 			.args(&executable.fixed_argv)
 			.args(&args.argv)

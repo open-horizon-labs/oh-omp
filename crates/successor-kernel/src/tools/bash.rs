@@ -9,7 +9,7 @@
 
 use std::{
 	collections::BTreeMap,
-	fs,
+	fmt, fs,
 	io::{self, Read},
 	path::{Path, PathBuf},
 	process::{Child, Command, ExitStatus, Stdio},
@@ -78,16 +78,40 @@ const fn default_timeout_ms() -> u32 {
 /// One host-configured executable entry.
 ///
 /// `launch_path` preserves the configured absolute path and therefore proxy
-/// `argv[0]` semantics. `canonical_path` and `identity` pin its resolved
-/// target. `fixed_argv` is host-owned and is useful for wrappers or hermetic
-/// test binaries; provider argv is appended after it.
-#[derive(Debug, Clone)]
+/// `argv[0]` semantics. `canonical_path` and `identity` record the resolved
+/// target captured when this entry was constructed.
+/// `TrustedExecutableAllowlist::select` recanonicalizes the path and
+/// rechecks file identity during pre-spawn selection, rejecting an
+/// observed retargeting or replacement of the executable, though this
+/// pre-spawn recheck does not eliminate the recheck-to-exec race between
+/// that check and the subsequent `exec`. `fixed_argv` is host-owned and is
+/// useful for wrappers or hermetic
+/// test binaries; provider argv is appended after it. `fixed_env` is
+/// host-owned, defaults empty, and is always visible to the child process in
+/// addition to (never overriding) allowlisted provider-supplied environment;
+/// see `TrustedExecutable::with_fixed_env` for its safety contract.
+#[derive(Clone)]
 pub struct TrustedExecutable {
 	logical_name:   String,
 	launch_path:    PathBuf,
 	canonical_path: PathBuf,
 	fixed_argv:     Vec<String>,
+	fixed_env:      BTreeMap<String, String>,
 	identity:       ExecutableIdentity,
+}
+
+impl fmt::Debug for TrustedExecutable {
+	fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+		formatter
+			.debug_struct("TrustedExecutable")
+			.field("logical_name", &self.logical_name)
+			.field("launch_path", &self.launch_path)
+			.field("canonical_path", &self.canonical_path)
+			.field("fixed_argv", &self.fixed_argv)
+			.field("fixed_env_keys", &self.fixed_env.keys().collect::<Vec<_>>())
+			.field("identity", &self.identity)
+			.finish()
+	}
 }
 
 impl TrustedExecutable {
@@ -111,7 +135,74 @@ impl TrustedExecutable {
 			fs::canonicalize(&launch_path).map_err(|_| ProcessRejection::InvalidTrustedExecutable)?;
 		let identity =
 			executable_identity(&canonical_path).ok_or(ProcessRejection::InvalidTrustedExecutable)?;
-		Ok(Self { logical_name, launch_path, canonical_path, fixed_argv, identity })
+		Ok(Self {
+			logical_name,
+			launch_path,
+			canonical_path,
+			fixed_argv,
+			fixed_env: BTreeMap::new(),
+			identity,
+		})
+	}
+
+	/// Adds host-owned fixed environment variables that are always visible to
+	/// the spawned child, in addition to (and never overridden by) any
+	/// allowlisted provider-supplied `BashArgs.env` entries.
+	///
+	/// Fixed values are copied directly into the child's environment: if the
+	/// child process or any code it runs prints or otherwise exposes its
+	/// environment, or a caller captures process output, a fixed value
+	/// becomes visible in that output. The executor's only guarantee is that
+	/// it never directly serializes a fixed value into rejection text, log
+	/// output, receipt metadata, or artifact metadata. Fixed values MUST
+	/// therefore never be secrets or credentials.
+	///
+	/// The only accepted key is `PATH`, so `fixed_env` holds at most one
+	/// entry; every other syntactically valid key, including well-known
+	/// names such as `LANG` or `CI`, single-letter names, or arbitrary
+	/// token-like strings, is rejected as invalid trusted configuration.
+	/// `PATH`'s value is bounded by `MAX_ENV_VALUE_BYTES`. Neither the key
+	/// nor the value may contain a NUL byte, and the total key+value byte
+	/// length of `fixed_env` is bounded by `MAX_ENV_BYTES` using checked
+	/// addition.
+	///
+	/// `PATH` is host-trusted passthrough, not provider-controlled: the host
+	/// caller must supply a trusted, non-secret value. The executor bounds
+	/// and validates that value's *shape* -- it rejects a NUL byte in the
+	/// key or value, rejects any fixed key other than `PATH`, rejects a
+	/// provider-supplied `env` key that collides with a fixed key, and
+	/// clears the ambient process environment via `env_clear` before the
+	/// child ever sees it. It does not sanitize, validate, deduplicate, or
+	/// canonicalize individual `PATH` segments; a malformed or
+	/// attacker-influenced value supplied by the trusted caller is passed
+	/// through to the child unchanged.
+	/// Violating any of these invariants is a builder-time
+	/// `ProcessRejection::InvalidTrustedExecutable` error; it never reaches
+	/// process-spawn time. A provider-supplied `env` key that collides with a
+	/// fixed key is instead rejected at process-spawn time as
+	/// `ProcessRejection::InvalidEnvironment`, even when the values match.
+	pub fn with_fixed_env(
+		mut self,
+		fixed_env: BTreeMap<String, String>,
+	) -> Result<Self, ProcessRejection> {
+		let mut total_bytes = 0_usize;
+		for (key, value) in &fixed_env {
+			if key.len() > MAX_STRING_BYTES
+				|| !valid_fixed_env_key(key)
+				|| !valid_string(value, MAX_ENV_VALUE_BYTES)
+			{
+				return Err(ProcessRejection::InvalidTrustedExecutable);
+			}
+			total_bytes = total_bytes
+				.checked_add(key.len())
+				.and_then(|total| total.checked_add(value.len()))
+				.ok_or(ProcessRejection::InvalidTrustedExecutable)?;
+		}
+		if total_bytes > MAX_ENV_BYTES {
+			return Err(ProcessRejection::InvalidTrustedExecutable);
+		}
+		self.fixed_env = fixed_env;
+		Ok(self)
 	}
 }
 
@@ -350,6 +441,8 @@ pub fn execute(
 		validate_args(&args)?;
 		let executable = allowlist.select(&args.executable)?;
 		let cwd_path = resolve_cwd(workspace_root, &args.cwd)?;
+		let merged_env = merge_environment(executable, &args.env)?;
+		let env_keys: Vec<String> = merged_env.keys().cloned().collect();
 		let started = Instant::now();
 
 		let mut command = Command::new(&executable.launch_path);
@@ -361,7 +454,7 @@ pub fn execute(
 			.stdout(Stdio::piped())
 			.stderr(Stdio::piped())
 			.env_clear()
-			.envs(&args.env);
+			.envs(&merged_env);
 		configure_process_group(&mut command);
 		let child = command.spawn().map_err(|_| ProcessRejection::SpawnFailed)?;
 		let mut guard = ProcessGuard::new(child);
@@ -405,7 +498,14 @@ pub fn execute(
 				if guard.disarm_after_clean_group().is_err() {
 					return Err(ProcessRejection::TerminationFailed);
 				}
-				return Ok(finish_receipt(args, started, status_after_timeout(&guard), true, captures));
+				return Ok(finish_receipt(
+					args,
+					started,
+					status_after_timeout(&guard),
+					true,
+					captures,
+					env_keys,
+				));
 			},
 			Err(()) => {
 				return fail_with_readers(&mut guard, &mut readers, ProcessRejection::CaptureFailed);
@@ -428,7 +528,7 @@ pub fn execute(
 		if guard.disarm_after_clean_group().is_err() {
 			return fail_with_readers(&mut guard, &mut readers, ProcessRejection::TerminationFailed);
 		}
-		Ok(finish_receipt(args, started, status, timed_out, captures))
+		Ok(finish_receipt(args, started, status, timed_out, captures, env_keys))
 	}
 }
 
@@ -463,10 +563,10 @@ fn finish_receipt(
 	status: ExitStatus,
 	timed_out: bool,
 	captures: (ReaderCapture, ReaderCapture),
+	env_keys: Vec<String>,
 ) -> ProcessReceipt {
 	let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
 	let (process_status, exit_code, signal) = receipt_status(status, timed_out);
-	let env_keys: Vec<String> = args.env.keys().cloned().collect();
 	let stdout = captures.0.into_stream();
 	let stderr = captures.1.into_stream();
 	let artifact = ProcessArtifact {
@@ -504,6 +604,31 @@ fn finish_receipt(
 		stderr: artifact.stderr.summary.clone(),
 		artifact,
 	}
+}
+
+#[cfg(unix)]
+fn merge_environment(
+	executable: &TrustedExecutable,
+	provider_env: &BTreeMap<String, String>,
+) -> Result<BTreeMap<String, String>, ProcessRejection> {
+	for key in provider_env.keys() {
+		if executable.fixed_env.contains_key(key) {
+			return Err(ProcessRejection::InvalidEnvironment);
+		}
+	}
+	let mut merged = executable.fixed_env.clone();
+	merged.extend(
+		provider_env
+			.iter()
+			.map(|(key, value)| (key.clone(), value.clone())),
+	);
+	let merged_bytes = merged.iter().try_fold(0_usize, |total, (key, value)| {
+		total.checked_add(key.len())?.checked_add(value.len())
+	});
+	if !matches!(merged_bytes, Some(total) if total <= MAX_ENV_BYTES) {
+		return Err(ProcessRejection::InvalidEnvironment);
+	}
+	Ok(merged)
 }
 
 fn validate_args(args: &BashArgs) -> Result<(), ProcessRejection> {
@@ -546,6 +671,10 @@ fn validate_args(args: &BashArgs) -> Result<(), ProcessRejection> {
 
 fn valid_string(value: &str, maximum: usize) -> bool {
 	!value.contains('\0') && value.len() <= maximum
+}
+
+fn valid_fixed_env_key(key: &str) -> bool {
+	key == "PATH"
 }
 
 fn validate_logical_name(logical_name: &str) -> Result<(), ProcessRejection> {

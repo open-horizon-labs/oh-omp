@@ -319,7 +319,7 @@
     "entity_ids": { "message_id": null, "tool_call_id": "tool_00000000-0000-4000-8000-000000000002", "source_envelope_id": "src_00000000-0000-4000-8000-000000000003", "artifact_id": "art_00000000-0000-4000-8000-000000000002", "assemble_id": null, "context_item_ids": [], "trace_id": null, "error_id": null, "provider_event_id": null },
     "visibility": { "model": true, "transcript": true, "recall": true, "assemble": true, "share": false, "debug": true },
     "redaction": "sensitive",
-    "payload": { "source_kind": "tool_result", "tool_name": "read", "path": "packages/coding-agent/src/context/concept-graph.ts", "truncated": false, "preview": "export class ConceptGraphResolver {\n  // fixture content\n}" },
+    "payload": { "source_kind": "tool_result", "tool_name": "read", "path": "packages/coding-agent/src/context/concept-graph.ts", "truncated": false, "expected_sha256": "sha256:c1487a4a259aca8209bb8e0a7ad026b80606128639e335758ad81f9954365dff", "content_scope": "full_file", "provider_result_truncated": false, "preview": "export class ConceptGraphResolver {\n  // fixture content\n}" },
     "artifact": { "media_type": "text/plain", "encoding": "utf-8", "sha256": "sha256:c1487a4a259aca8209bb8e0a7ad026b80606128639e335758ad81f9954365dff", "byte_length": 59, "preview": "export class ConceptGraphResolver {\n  // fixture content\n}", "content": "export class ConceptGraphResolver {\n  // fixture content\n}\n" }
   },
   {

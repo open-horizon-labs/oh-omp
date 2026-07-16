@@ -7,8 +7,8 @@ use successor_protocol::artifact::ArtifactHash;
 use super::{
 	mutation::{
 		MAX_EDITS, MAX_REPLACEMENT_BYTES, MAX_RESULT_BYTES, MutationReceipt, MutationRejection,
-		ensure_expected_hash, existing_regular_file, parse_arguments, publish_replace,
-		read_text_source, receipt, trusted_root,
+		deserialize_expected_sha256, ensure_expected_hash, existing_regular_file, parse_arguments,
+		publish_replace, read_text_source, receipt, trusted_root,
 	},
 	validate_relative_path_lexically,
 };
@@ -17,6 +17,10 @@ use super::{
 #[serde(deny_unknown_fields)]
 pub struct EditArgs {
 	pub path:            String,
+	/// SHA-256 precondition from the latest read; accepts `sha256:<64 lowercase
+	/// hex>` or bare lowercase hex.
+	#[serde(deserialize_with = "deserialize_expected_sha256")]
+	#[schemars(with = "String", regex(pattern = "^(sha256:)?[0-9a-f]{64}$"))]
 	pub expected_sha256: ArtifactHash,
 	pub edits:           Vec<EditRange>,
 }

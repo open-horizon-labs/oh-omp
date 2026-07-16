@@ -178,6 +178,82 @@ fn read_rejects_symlink_escape_the_string_prefix_trap() {
 
 #[cfg(unix)]
 #[test]
+fn read_of_symlink_inside_root_targeting_an_in_root_file_yields_exact_bytes_and_hash() {
+	// A symlink whose target is itself inside the workspace root must be
+	// followed and read normally, distinct from the escape-rejection cases
+	// above: containment is on the canonicalized target, not on whether the
+	// candidate path itself is a symlink.
+	let root = unique_temp_dir("symlink-in-root");
+	let content = b"symlink target content read through an in-root link\n";
+	std::fs::write(root.join("target.txt"), content).unwrap();
+	std::os::unix::fs::symlink("target.txt", root.join("link.txt")).unwrap();
+
+	let artifact = read(&root, "link.txt", None, None)
+		.expect("a symlink resolving to an in-root file must be read successfully");
+
+	assert_eq!(artifact.bytes, content, "must return the symlink target's exact raw bytes");
+	assert_eq!(
+		artifact.sha256,
+		ArtifactHash::compute(content),
+		"hash must be the canonical hash of the exact target bytes"
+	);
+	assert_eq!(artifact.byte_length, content.len() as u64);
+	assert_eq!(artifact.file_sha256, artifact.sha256);
+
+	std::fs::remove_dir_all(&root).ok();
+}
+
+#[cfg(unix)]
+#[test]
+fn read_of_nul_free_invalid_utf8_file_preserves_exact_bytes_with_honest_lossy_provider_text() {
+	// No NUL byte is present, so `looks_binary` must not reject this file
+	// (Dissent ruling 4: the only binary signal is a NUL byte, not UTF-8
+	// validity). The artifact must carry the exact raw bytes and their
+	// canonical hash regardless of encoding; a provider-facing text view is
+	// necessarily lossy for invalid UTF-8, and this test computes that lossy
+	// view honestly (via `String::from_utf8_lossy` over the real returned
+	// bytes) rather than asserting fabricated text.
+	let root = unique_temp_dir("invalid-utf8");
+	// 0xFF and 0xFE are never valid UTF-8 lead bytes; 0x80 is a lone
+	// continuation byte. None of these bytes is 0x00.
+	let raw: &[u8] = &[b'h', b'i', 0xffu8, 0xfeu8, 0x80u8, b'!', b'\n'];
+	assert!(!raw.contains(&0u8), "fixture must be NUL-free to exercise this path");
+	#[allow(invalid_from_utf8, reason = "intentionally exercising a known-invalid UTF-8 fixture")]
+	let is_invalid_utf8 = std::str::from_utf8(raw).is_err();
+	assert!(is_invalid_utf8, "fixture must be genuinely invalid UTF-8");
+	std::fs::write(root.join("invalid.txt"), raw).unwrap();
+
+	let artifact = read(&root, "invalid.txt", None, None)
+		.expect("a NUL-free file must be read even when its bytes are invalid UTF-8");
+
+	assert_eq!(artifact.bytes, raw, "raw artifact bytes must be returned exactly, unmodified");
+	assert_eq!(
+		artifact.sha256,
+		ArtifactHash::compute(raw),
+		"hash must be computed from the exact raw bytes, not from any lossy text"
+	);
+	assert_eq!(artifact.byte_length, raw.len() as u64);
+
+	// Honest provider-facing representation: a real lossy conversion of the
+	// real returned bytes, not a fabricated string. It is bounded (a valid,
+	// finite `String`) and visibly lossy (contains at least one U+FFFD
+	// replacement character), which the raw artifact bytes above never do.
+	let provider_facing_text = String::from_utf8_lossy(&artifact.bytes).into_owned();
+	assert!(
+		provider_facing_text.contains('\u{FFFD}'),
+		"provider-facing text over invalid UTF-8 must honestly surface the replacement character"
+	);
+	assert_ne!(
+		provider_facing_text.as_bytes(),
+		artifact.bytes.as_slice(),
+		"lossy provider-facing text must differ from the exact raw artifact bytes"
+	);
+
+	std::fs::remove_dir_all(&root).ok();
+}
+
+#[cfg(unix)]
+#[test]
 fn read_rejects_permission_denied_file_where_portable() {
 	use std::os::unix::fs::PermissionsExt;
 
@@ -299,6 +375,8 @@ fn read_offset_and_limit_returns_exactly_the_requested_in_range_lines() {
 	assert_eq!(artifact.bytes, b"two\nthree\n");
 	assert_eq!(artifact.byte_length, artifact.bytes.len() as u64);
 	assert_eq!(artifact.sha256, ArtifactHash::compute(&artifact.bytes));
+	assert_eq!(artifact.file_sha256, ArtifactHash::compute(b"one\ntwo\nthree\nfour\nfive\n"));
+	assert_ne!(artifact.file_sha256, artifact.sha256);
 
 	std::fs::remove_dir_all(&root).ok();
 }
@@ -337,6 +415,7 @@ fn read_offset_beyond_end_of_file_returns_empty_content_not_an_error() {
 	assert_eq!(artifact.bytes, b"");
 	assert_eq!(artifact.byte_length, 0);
 	assert_eq!(artifact.sha256, ArtifactHash::compute(b""));
+	assert_eq!(artifact.file_sha256, ArtifactHash::compute(b"one\ntwo\nthree\nfour\nfive\n"));
 
 	std::fs::remove_dir_all(&root).ok();
 }
@@ -348,6 +427,7 @@ fn read_without_offset_or_limit_still_returns_the_whole_file() {
 
 	let whole = read(&root, "lines.txt", None, None).expect("a whole-file read must succeed");
 	assert_eq!(whole.bytes, b"one\ntwo\nthree\nfour\nfive\n");
+	assert_eq!(whole.file_sha256, whole.sha256);
 
 	std::fs::remove_dir_all(&root).ok();
 }

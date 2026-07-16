@@ -30,6 +30,10 @@ fn hash(bytes: &[u8]) -> String {
 	ArtifactHash::compute(bytes).to_string()
 }
 
+fn bare_hash(bytes: &[u8]) -> String {
+	ArtifactHash::compute(bytes).hex_digest().to_owned()
+}
+
 fn edit_args(path: &str, expected: &[u8], edits: serde_json::Value) -> serde_json::Value {
 	json!({"path": path, "expected_sha256": hash(expected), "edits": edits})
 }
@@ -49,21 +53,44 @@ fn edit_range(
 }
 
 fn assert_no_temps(root: &Path) {
-	let entries = fs::read_dir(root).expect("must read workspace");
-	assert!(entries.filter_map(Result::ok).all(|entry| {
-		!entry
-			.file_name()
-			.to_string_lossy()
-			.starts_with(".successor-mutation-")
-	}));
+	fn walk(dir: &Path) {
+		for entry in fs::read_dir(dir)
+			.expect("must read workspace")
+			.filter_map(Result::ok)
+		{
+			let file_type = entry.file_type().expect("must read file type");
+			assert!(
+				!entry
+					.file_name()
+					.to_string_lossy()
+					.starts_with(".successor-mutation-"),
+				"found leaked temp file: {}",
+				entry.path().display()
+			);
+			if file_type.is_dir() {
+				walk(&entry.path());
+			}
+		}
+	}
+	walk(root);
 }
 
 #[test]
 fn schemas_deny_unknown_fields_and_expose_required_contract_properties() {
 	let edit_schema = serde_json::to_value(EditArgs::schema()).unwrap();
 	let write_schema = serde_json::to_value(WriteArgs::schema()).unwrap();
-	assert!(edit_schema.to_string().contains("expected_sha256"));
-	assert!(write_schema.to_string().contains("expected_sha256"));
+	for schema in [&edit_schema, &write_schema] {
+		assert_eq!(
+			schema.pointer("/properties/expected_sha256/pattern"),
+			Some(&json!("^(sha256:)?[0-9a-f]{64}$")),
+		);
+		let description = schema
+			.pointer("/properties/expected_sha256/description")
+			.and_then(serde_json::Value::as_str)
+			.expect("expected_sha256 schema description");
+		assert!(description.contains("sha256:<64 lowercase hex>"));
+		assert!(description.contains("bare lowercase hex"));
+	}
 
 	let root = unique_temp_dir("schema");
 	fs::write(root.join("file.txt"), "old").unwrap();
@@ -144,6 +171,97 @@ fn edit_allows_boundary_insertions_in_deterministic_original_coordinate_order() 
 }
 
 #[test]
+fn edit_and_write_accept_bare_sha256_preconditions() {
+	let root = unique_temp_dir("bare-sha256");
+	let file = root.join("file.txt");
+	fs::write(&file, "old").unwrap();
+
+	let edit_receipt = edit::execute(
+		&root,
+		&json!({
+			"path": "file.txt",
+			"expected_sha256": bare_hash(b"old"),
+			"edits": [edit_range(1, 0, 1, 3, "mid")],
+		}),
+	)
+	.unwrap();
+	assert_eq!(edit_receipt.before_sha256.unwrap().to_string(), hash(b"old"));
+	assert_eq!(fs::read(&file).unwrap(), b"mid");
+
+	let write_receipt = write::execute(
+		&root,
+		&json!({
+			"path": "file.txt",
+			"mode": "replace",
+			"content": "new",
+			"expected_sha256": bare_hash(b"mid"),
+		}),
+	)
+	.unwrap();
+	assert_eq!(write_receipt.before_sha256.unwrap().to_string(), hash(b"mid"));
+	assert_eq!(fs::read(&file).unwrap(), b"new");
+	assert_no_temps(&root);
+	fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn malformed_sha256_forms_fail_before_mutation() {
+	let root = unique_temp_dir("malformed-sha256");
+	let file = root.join("file.txt");
+	fs::write(&file, "old").unwrap();
+
+	let valid_hex = "a".repeat(64);
+	let malformed_forms: Vec<(&str, String)> = vec![
+		("uppercase bare", "A".repeat(64)),
+		("uppercase prefixed", format!("sha256:{}", "A".repeat(64))),
+		("leading whitespace", format!(" {valid_hex}")),
+		("trailing whitespace", format!("{valid_hex} ")),
+		("short length", "a".repeat(63)),
+		("long length", "a".repeat(65)),
+		("non-hex bare", format!("{}g", "a".repeat(63))),
+		("non-hex prefixed", format!("sha256:{}g", "a".repeat(63))),
+		("duplicate prefix", format!("sha256:sha256:{valid_hex}")),
+		("unknown prefix", format!("md5:{valid_hex}")),
+		("arbitrary string", "not-a-hash".to_owned()),
+	];
+
+	for (label, value) in malformed_forms {
+		let malformed_edit = edit::execute(
+			&root,
+			&json!({
+				"path": "file.txt",
+				"expected_sha256": &value,
+				"edits": [edit_range(1, 0, 1, 3, "new")],
+			}),
+		);
+		assert_eq!(
+			malformed_edit.unwrap_err(),
+			MutationRejection::MalformedArguments,
+			"edit must reject {label}: {value:?}"
+		);
+		assert_eq!(fs::read(&file).unwrap(), b"old", "edit must not mutate on {label}");
+
+		let malformed_write = write::execute(
+			&root,
+			&json!({
+				"path": "file.txt",
+				"mode": "replace",
+				"content": "new",
+				"expected_sha256": &value,
+			}),
+		);
+		assert_eq!(
+			malformed_write.unwrap_err(),
+			MutationRejection::MalformedArguments,
+			"write must reject {label}: {value:?}"
+		);
+		assert_eq!(fs::read(&file).unwrap(), b"old", "write must not mutate on {label}");
+	}
+	assert_no_temps(&root);
+	fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn stale_edit_and_replace_leave_existing_bytes_unchanged() {
 	let root = unique_temp_dir("stale");
 	fs::write(root.join("file.txt"), "current").unwrap();
@@ -160,6 +278,27 @@ fn stale_edit_and_replace_leave_existing_bytes_unchanged() {
 		}),
 	);
 	assert_eq!(stale_write.unwrap_err(), MutationRejection::StaleHash);
+
+	let stale_edit_bare = edit::execute(
+		&root,
+		&json!({
+			"path": "file.txt",
+			"expected_sha256": bare_hash(b"old"),
+			"edits": [edit_range(1, 0, 1, 7, "new")],
+		}),
+	);
+	assert_eq!(stale_edit_bare.unwrap_err(), MutationRejection::StaleHash);
+	let stale_write_bare = write::execute(
+		&root,
+		&json!({
+			"path": "file.txt",
+			"mode": "replace",
+			"content": "new",
+			"expected_sha256": bare_hash(b"old"),
+		}),
+	);
+	assert_eq!(stale_write_bare.unwrap_err(), MutationRejection::StaleHash);
+
 	assert_eq!(fs::read(root.join("file.txt")).unwrap(), b"current");
 	assert_no_temps(&root);
 	fs::remove_dir_all(root).unwrap();
@@ -398,4 +537,80 @@ fn catalog_and_registry_now_pin_edit_and_write_as_executable() {
 		assert!(registry.is_dispatchable(name));
 		assert_eq!(catalog::tool_status(name), Some(ToolStatusV0::Executable));
 	}
+}
+
+#[test]
+fn write_expected_sha256_absent_and_explicit_null_semantics() {
+	let root = unique_temp_dir("sha256-null");
+	let receipt = write::execute(
+		&root,
+		&json!({"path": "created.txt", "mode": "create", "content": "created"}),
+	)
+	.expect("missing expected_sha256 must default to None for create");
+	assert!(receipt.before_sha256.is_none());
+	assert_eq!(fs::read(root.join("created.txt")).unwrap(), b"created");
+
+	assert_eq!(
+		write::execute(
+			&root,
+			&json!({"path": "created.txt", "mode": "replace", "content": "unauthorized"}),
+		)
+		.unwrap_err(),
+		MutationRejection::ReplaceWithoutExpectedHash
+	);
+	assert_eq!(fs::read(root.join("created.txt")).unwrap(), b"created");
+
+	assert_eq!(
+		write::execute(
+			&root,
+			&json!({
+				"path": "other.txt",
+				"mode": "create",
+				"content": "unreachable",
+				"expected_sha256": null,
+			}),
+		)
+		.unwrap_err(),
+		MutationRejection::MalformedArguments
+	);
+	assert!(!root.join("other.txt").exists());
+
+	assert_eq!(
+		write::execute(
+			&root,
+			&json!({
+				"path": "created.txt",
+				"mode": "replace",
+				"content": "unreachable",
+				"expected_sha256": null,
+			}),
+		)
+		.unwrap_err(),
+		MutationRejection::MalformedArguments
+	);
+	assert_eq!(fs::read(root.join("created.txt")).unwrap(), b"created");
+	assert_no_temps(&root);
+	fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn write_schema_expected_sha256_is_optional_string_with_no_default_advertised() {
+	let write_schema = serde_json::to_value(WriteArgs::schema()).unwrap();
+	let expected_sha256 = write_schema
+		.pointer("/properties/expected_sha256")
+		.expect("expected_sha256 schema property");
+	assert_eq!(expected_sha256.get("type"), Some(&json!("string")));
+	assert_eq!(expected_sha256.get("pattern"), Some(&json!("^(sha256:)?[0-9a-f]{64}$")));
+	assert!(
+		expected_sha256.get("default").is_none(),
+		"write schema must not advertise a default/null value for expected_sha256"
+	);
+	let required = write_schema
+		.pointer("/required")
+		.and_then(serde_json::Value::as_array)
+		.expect("write schema required array");
+	assert!(
+		!required.iter().any(|value| value == "expected_sha256"),
+		"expected_sha256 must remain optional-by-absence in the JSON Schema"
+	);
 }

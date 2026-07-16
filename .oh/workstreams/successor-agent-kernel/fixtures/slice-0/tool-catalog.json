@@ -236,7 +236,11 @@
             "items": { "$ref": "#/definitions/EditRange" },
             "type": "array"
           },
-          "expected_sha256": { "type": "string" },
+          "expected_sha256": {
+            "description": "SHA-256 precondition from the latest read; accepts `sha256:<64 lowercase hex>` or bare lowercase hex.",
+            "pattern": "^(sha256:)?[0-9a-f]{64}$",
+            "type": "string"
+          },
           "path": { "type": "string" }
         },
         "required": ["edits", "expected_sha256", "path"],
@@ -260,7 +264,11 @@
         },
         "properties": {
           "content": { "type": "string" },
-          "expected_sha256": { "default": null, "type": ["string", "null"] },
+          "expected_sha256": {
+            "description": "SHA-256 precondition for replace mode; accepts `sha256:<64 lowercase hex>` or bare lowercase hex.",
+            "pattern": "^(sha256:)?[0-9a-f]{64}$",
+            "type": "string"
+          },
           "mode": { "$ref": "#/definitions/WriteMode" },
           "path": { "type": "string" }
         },

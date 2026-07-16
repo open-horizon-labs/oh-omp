@@ -8,12 +8,11 @@
 //! count); omitting both preserves the original whole-file behavior
 //! exactly. [`read`] resolves `relative_path` against `root_path` through
 //! the shared [`super::WorkspaceRoot`] substrate (never naming that type
-//! in this module's public API — see its doc comment), then hashes and
-//! measures exactly the returned bytes via the accepted
-//! `successor-protocol` A1 hashing surface:
-//! [`successor_protocol::artifact::ArtifactHash::compute`] and
-//! [`successor_protocol::artifact::validate_artifact_content`]. This
-//! module adds no separate hashing dependency.
+//! in this module's public API — see its doc comment), then hashes and measures
+//! exactly the returned bytes via the accepted `successor-protocol` A1 hashing
+//! surface. Ranged reads additionally carry the whole source-file hash as the
+//! mutation precondition; that hash is distinct from the returned-range
+//! artifact hash. This module adds no separate hashing dependency.
 //!
 //! Binary detection (Dissent ruling 4): a NUL byte anywhere in the file is
 //! treated as binary-looking and rejected as [`ReadRejection::BinaryLooking`].
@@ -32,22 +31,28 @@ use super::{
 	validate_relative_path_lexically,
 };
 
-/// Whole-file content produced by a successful [`read`].
+/// File content produced by a successful [`read`].
 ///
-/// This is Slice 0 read-tool output, not a persisted
+/// `bytes`, `sha256`, and `byte_length` describe exactly the returned content:
+/// the whole file for an unbounded read or the selected line range for a ranged
+/// read. `file_sha256` always describes the complete current file so callers
+/// can use it as an edit/write precondition without confusing a range hash for
+/// a whole-file hash.
+///
+/// This is read-tool output, not a persisted
 /// `successor_protocol::artifact::ArtifactV0` — assigning a platform
-/// `ArtifactId` is a persistence concern owned by a later lane (the turn
-/// runner / event pipeline). This struct carries everything a later lane
-/// needs to build one once an `ArtifactId` is available: raw bytes, the
-/// same [`ArtifactHash`] type `ArtifactV0` stores, and the byte length.
+/// `ArtifactId` is a persistence concern owned by the turn runner / event
+/// pipeline.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReadArtifactContent {
-	/// The whole file content, exactly as read from disk.
+	/// Content returned by this read, exactly as read from disk.
 	pub bytes:       Vec<u8>,
 	/// SHA-256 of `bytes`, computed via `ArtifactHash::compute`.
 	pub sha256:      ArtifactHash,
 	/// `bytes.len()` as `u64`.
 	pub byte_length: u64,
+	/// SHA-256 of the complete current file, before any line range is selected.
+	pub file_sha256: ArtifactHash,
 }
 
 /// Typed rejection produced by [`read`].
@@ -188,21 +193,27 @@ pub(crate) fn read_with_root(
 		return Err(ReadRejection::NotAFile);
 	}
 
-	let bytes = std::fs::read(&resolved).map_err(map_read_io)?;
-	if looks_binary(&bytes) {
+	let file_bytes = std::fs::read(&resolved).map_err(map_read_io)?;
+	if looks_binary(&file_bytes) {
 		return Err(ReadRejection::BinaryLooking);
 	}
-	let bytes = if offset.is_some() || limit.is_some() {
-		select_line_range(&bytes, offset, limit)
+	let range_applied = offset.is_some() || limit.is_some();
+	let (file_sha256, file_byte_length) = compute_artifact_bytes(&file_bytes);
+	let bytes = if range_applied {
+		select_line_range(&file_bytes, offset, limit)
 	} else {
-		bytes
+		file_bytes
 	};
 
-	let (sha256, byte_length) = compute_artifact_bytes(&bytes);
+	let (sha256, byte_length) = if range_applied {
+		compute_artifact_bytes(&bytes)
+	} else {
+		(file_sha256.clone(), file_byte_length)
+	};
 	validate_artifact_content(sha256.as_str(), byte_length, &bytes)
 		.expect("hash/length computed from these exact bytes must validate against them");
 
-	Ok(ReadArtifactContent { bytes, sha256, byte_length })
+	Ok(ReadArtifactContent { bytes, sha256, byte_length, file_sha256 })
 }
 
 /// Select a 1-indexed, `\n`-delimited line range from `bytes`, preserving
@@ -268,6 +279,7 @@ mod tests {
 		assert_eq!(artifact.bytes, content);
 		assert_eq!(artifact.byte_length, content.len() as u64);
 		assert_eq!(artifact.sha256, ArtifactHash::compute(content));
+		assert_eq!(artifact.file_sha256, ArtifactHash::compute(content));
 		validate_artifact_content(artifact.sha256.as_str(), artifact.byte_length, &artifact.bytes)
 			.expect("returned artifact fields must validate via the protocol helper");
 

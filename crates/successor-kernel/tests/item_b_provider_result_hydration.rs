@@ -47,6 +47,7 @@ use successor_kernel::{
 	stream::KernelFrameStream,
 };
 use successor_protocol::{
+	artifact::ArtifactHash,
 	ids::{MessageId, ToolCallId},
 	provider::ProviderApiShapeV0,
 	tool_catalog::ToolCatalogV0,
@@ -276,10 +277,15 @@ async fn provider_continuation_round_after_read_carries_the_full_bounded_file_co
 	let tool_result_content = round1[2]["content"][0]["content"]
 		.as_str()
 		.expect("tool_result content is a bounded text string");
-	assert!(
-		tool_result_content.contains(manifest_body),
-		"round 1's tool_result must carry the full bounded Cargo.toml body, not a preview or a bare \
-		 artifact handle; got: {tool_result_content:?}"
+	assert_eq!(
+		tool_result_content,
+		format!(
+			"expected_sha256: {}\ncontent_scope: full_file\ncontent_truncated: \
+			 false\ncontent:\n{manifest_body}",
+			ArtifactHash::compute(manifest_body.as_bytes()),
+		),
+		"round 1's read result must carry the authoritative whole-file mutation precondition, \
+		 explicit content scope, truncation state, and full bounded Cargo.toml body",
 	);
 	assert!(
 		!tool_result_content.contains("artifact:"),

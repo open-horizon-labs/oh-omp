@@ -11,7 +11,7 @@ use std::{
 	sync::atomic::{AtomicU64, Ordering},
 };
 
-use serde::Serialize;
+use serde::{Deserialize, Deserializer, Serialize};
 use successor_protocol::artifact::ArtifactHash;
 
 use super::{
@@ -141,6 +141,42 @@ pub(crate) fn parse_arguments<T: serde::de::DeserializeOwned>(
 	arguments: &serde_json::Value,
 ) -> Result<T, MutationRejection> {
 	serde_json::from_value(arguments.clone()).map_err(|_| MutationRejection::MalformedArguments)
+}
+
+const EXPECTED_SHA256_ERROR: &str =
+	"expected SHA-256 must be 64 lowercase hex characters, optionally prefixed by `sha256:`";
+
+pub(crate) fn deserialize_expected_sha256<'de, D>(deserializer: D) -> Result<ArtifactHash, D::Error>
+where
+	D: Deserializer<'de>,
+{
+	let value = String::deserialize(deserializer)?;
+	normalize_expected_sha256(value).map_err(serde::de::Error::custom)
+}
+
+pub(crate) fn deserialize_optional_expected_sha256<'de, D>(
+	deserializer: D,
+) -> Result<Option<ArtifactHash>, D::Error>
+where
+	D: Deserializer<'de>,
+{
+	let value = String::deserialize(deserializer)?;
+	normalize_expected_sha256(value)
+		.map(Some)
+		.map_err(serde::de::Error::custom)
+}
+
+fn normalize_expected_sha256(value: String) -> Result<ArtifactHash, &'static str> {
+	let canonical = if value.len() == 64
+		&& value
+			.bytes()
+			.all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+	{
+		format!("sha256:{value}")
+	} else {
+		value
+	};
+	ArtifactHash::parse(canonical).map_err(|_| EXPECTED_SHA256_ERROR)
 }
 
 pub(crate) fn trusted_root(workspace_root: &Path) -> Result<WorkspaceRoot, MutationRejection> {

@@ -469,15 +469,62 @@ fn artifact_ref(
 
 const MAX_PROVIDER_VISIBLE_READ_BYTES: usize = 200_000;
 
-fn bound_provider_visible_text(text: &str) -> String {
-	if text.len() <= MAX_PROVIDER_VISIBLE_READ_BYTES {
-		return text.to_owned();
+fn utf8_prefix_at_most(text: &str, max_bytes: usize) -> &str {
+	if text.len() <= max_bytes {
+		return text;
 	}
-	let mut end = MAX_PROVIDER_VISIBLE_READ_BYTES;
+	let mut end = max_bytes;
 	while !text.is_char_boundary(end) {
 		end -= 1;
 	}
-	text[..end].to_owned()
+	&text[..end]
+}
+
+fn bound_provider_visible_text(text: &str) -> String {
+	utf8_prefix_at_most(text, MAX_PROVIDER_VISIBLE_READ_BYTES).to_owned()
+}
+
+fn read_provider_result_text(
+	expected_sha256: &ArtifactHash,
+	text: &str,
+	range_applied: bool,
+) -> (String, bool) {
+	let content_scope = if range_applied {
+		"selected_range"
+	} else {
+		"full_file"
+	};
+	let complete_prefix = format!(
+		"expected_sha256: {expected_sha256}\ncontent_scope: {content_scope}\ncontent_truncated: \
+		 false\ncontent:\n"
+	);
+	if matches!(
+		complete_prefix.len().checked_add(text.len()),
+		Some(total) if total <= MAX_PROVIDER_VISIBLE_READ_BYTES
+	) {
+		let mut result = complete_prefix;
+		result.push_str(text);
+		return (result, false);
+	}
+
+	let mut result = format!(
+		"expected_sha256: {expected_sha256}\ncontent_scope: {content_scope}\ncontent_truncated: \
+		 true\ncontent:\n"
+	);
+	let content_budget = MAX_PROVIDER_VISIBLE_READ_BYTES
+		.checked_sub(result.len())
+		.expect("read provider metadata must fit within its byte budget");
+	let mut content = utf8_prefix_at_most(text, content_budget);
+	if content.len() == text.len() {
+		let last_character_start = text
+			.char_indices()
+			.next_back()
+			.map_or(0, |(index, _)| index);
+		content = &text[..last_character_start];
+	}
+	result.push_str(content);
+	debug_assert!(result.len() <= MAX_PROVIDER_VISIBLE_READ_BYTES);
+	(result, true)
 }
 
 fn execute_search_files(
@@ -517,13 +564,23 @@ fn execute_read(
 		.map_err(|err| err.to_string())?;
 	let text = String::from_utf8_lossy(&content.bytes).into_owned();
 	let preview = text.strip_suffix('\n').unwrap_or(&text);
-	let provider_result_text = bound_provider_visible_text(&text);
+	let range_applied = args.offset.is_some() || args.limit.is_some();
+	let content_scope = if range_applied {
+		"selected_range"
+	} else {
+		"full_file"
+	};
+	let (provider_result_text, provider_result_truncated) =
+		read_provider_result_text(&content.file_sha256, &text, range_applied);
 	Ok(ToolExecution {
 		payload: json!({
 			"source_kind": "tool_result",
 			"tool_name": "read",
 			"path": args.path,
 			"truncated": false,
+			"expected_sha256": content.file_sha256.as_str(),
+			"content_scope": content_scope,
+			"provider_result_truncated": provider_result_truncated,
 			"preview": preview,
 		}),
 		artifact: artifact_ref(

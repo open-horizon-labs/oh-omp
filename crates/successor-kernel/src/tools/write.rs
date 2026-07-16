@@ -6,9 +6,10 @@ use successor_protocol::artifact::ArtifactHash;
 
 use super::{
 	mutation::{
-		MutationReceipt, MutationRejection, ensure_expected_hash, existing_regular_file,
-		parse_arguments, publish_create, publish_replace, read_text_source, receipt,
-		target_in_existing_parent, trusted_root, validate_content,
+		MutationReceipt, MutationRejection, deserialize_optional_expected_sha256,
+		ensure_expected_hash, existing_regular_file, parse_arguments, publish_create,
+		publish_replace, read_text_source, receipt, target_in_existing_parent, trusted_root,
+		validate_content,
 	},
 	validate_relative_path_lexically,
 };
@@ -19,7 +20,14 @@ pub struct WriteArgs {
 	pub path:            String,
 	pub mode:            WriteMode,
 	pub content:         String,
-	#[serde(default)]
+	/// SHA-256 precondition for replace mode; accepts `sha256:<64 lowercase
+	/// hex>` or bare lowercase hex.
+	#[serde(
+		default,
+		deserialize_with = "deserialize_optional_expected_sha256",
+		skip_serializing_if = "Option::is_none"
+	)]
+	#[schemars(with = "String", regex(pattern = "^(sha256:)?[0-9a-f]{64}$"))]
 	pub expected_sha256: Option<ArtifactHash>,
 }
 

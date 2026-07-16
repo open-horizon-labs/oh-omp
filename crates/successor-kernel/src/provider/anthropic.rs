@@ -18,6 +18,9 @@
 //! The `live_smoke_*` test at the bottom of this module is strictly
 //! opt-in -- see its doc comment -- and is never required by the default
 //! suite or CI (Dissent ruling 3).
+//!
+//! Direct-provider gate invocations must not inherit ambient proxy credentials
+//! or URLs. See `crates/successor-kernel/LIVE-PROVIDER.md`.
 
 use serde_json::Value as WireJson;
 use successor_protocol::{

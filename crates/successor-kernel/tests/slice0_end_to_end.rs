@@ -16,6 +16,7 @@
 //! prose, token counts, or timing.
 
 use std::{
+	collections::BTreeMap,
 	env,
 	path::PathBuf,
 	sync::{
@@ -403,13 +404,17 @@ async fn kernel_http_sse_bytes_never_leak_a_provider_credential_on_a_real_transp
 async fn live_smoke_against_the_real_anthropic_messages_api_produces_a_replayable_terminal_frame() {
 	let live_gate = std::env::var("SUCCESSOR_LIVE_PROVIDER_SMOKE").unwrap_or_default();
 	let api_key = std::env::var("ANTHROPIC_API_KEY").unwrap_or_default();
-	if live_gate != "1" || api_key.is_empty() {
-		eprintln!(
-			"skipping live smoke: SUCCESSOR_LIVE_PROVIDER_SMOKE=1 and a non-empty ANTHROPIC_API_KEY \
-			 are both required"
-		);
-		return;
-	}
+	assert!(
+		live_gate == "1" && !api_key.is_empty(),
+		"live smoke is opt-in via #[ignore] but must fail closed once explicitly invoked, never \
+		 silently pass: requires SUCCESSOR_LIVE_PROVIDER_SMOKE=1 (got {live_gate:?}) and a \
+		 non-empty, directly-set ANTHROPIC_API_KEY ({})",
+		if api_key.is_empty() {
+			"missing"
+		} else {
+			"present"
+		},
+	);
 
 	let server = TestServer::start("live").await;
 	let workspace = seed_workspace("live");
@@ -507,22 +512,21 @@ mod tests {
 }
 "#;
 
-fn seed_s8_disposable_crate(label: &str) -> (PathBuf, PathBuf) {
-	let workspace = seed_workspace(label);
-	let src_dir = workspace.join("src");
-	std::fs::create_dir_all(&src_dir).expect("create disposable crate source directory");
-	std::fs::write(
-		workspace.join("Cargo.toml"),
-		r#"[package]
+const S8_SEEDED_CARGO_TOML: &str = r#"[package]
 name = "successor-s8-disposable"
 version = "0.0.0"
 edition = "2021"
 
 [lib]
 path = "src/lib.rs"
-"#,
-	)
-	.expect("write disposable crate manifest");
+"#;
+
+fn seed_s8_disposable_crate(label: &str) -> (PathBuf, PathBuf) {
+	let workspace = seed_workspace(label);
+	let src_dir = workspace.join("src");
+	std::fs::create_dir_all(&src_dir).expect("create disposable crate source directory");
+	std::fs::write(workspace.join("Cargo.toml"), S8_SEEDED_CARGO_TOML)
+		.expect("write disposable crate manifest");
 	let lib_rs = src_dir.join("lib.rs");
 	std::fs::write(&lib_rs, S8_INITIAL_LIB_RS).expect("seed intentionally failing crate");
 
@@ -548,25 +552,29 @@ fn is_executable_file(path: &std::path::Path) -> bool {
 	}
 }
 
-fn resolve_cargo_executable() -> PathBuf {
+fn try_resolve_cargo_executable() -> Option<PathBuf> {
 	if let Some(raw_cargo) = env::var_os("CARGO") {
 		let cargo_path = PathBuf::from(&raw_cargo);
 		if cargo_path.is_absolute() && is_executable_file(&cargo_path) {
-			return cargo_path;
+			return Some(cargo_path);
 		}
 		if cargo_path.components().count() > 1 {
-			let current_dir = env::current_dir().expect("resolve current directory for cargo path");
+			let current_dir = env::current_dir().ok()?;
 			let joined = current_dir.join(&cargo_path);
 			if is_executable_file(&joined) {
-				return joined;
+				return Some(joined);
 			}
 		}
 		if let Some(found) = find_executable_on_path(&cargo_path) {
-			return found;
+			return Some(found);
 		}
 	}
 
 	find_executable_on_path(std::path::Path::new("cargo"))
+}
+
+fn resolve_cargo_executable() -> PathBuf {
+	try_resolve_cargo_executable()
 		.expect("cargo executable is required for the S8 live provider smoke")
 }
 
@@ -587,10 +595,34 @@ fn find_executable_on_path(executable_name: &std::path::Path) -> Option<PathBuf>
 	})
 }
 
+fn s8_cargo_bootstrap_path(cargo_path: &std::path::Path) -> String {
+	if let Some(override_path) = env::var_os("SUCCESSOR_S8_CARGO_BOOTSTRAP_PATH") {
+		return override_path
+			.into_string()
+			.expect("SUCCESSOR_S8_CARGO_BOOTSTRAP_PATH must be valid UTF-8");
+	}
+	let cargo_parent = cargo_path
+		.parent()
+		.expect("resolved cargo executable has a parent directory")
+		.to_owned();
+	let mut path_entries = vec![cargo_parent];
+	#[cfg(unix)]
+	path_entries.extend(["/usr/bin", "/bin", "/usr/sbin", "/sbin"].map(PathBuf::from));
+	env::join_paths(path_entries)
+		.expect("S8 cargo bootstrap entries must be representable as PATH")
+		.into_string()
+		.expect("S8 cargo bootstrap PATH must be valid UTF-8")
+}
+
 fn s8_trusted_cargo_allowlist() -> TrustedExecutableAllowlist {
 	let cargo_path = resolve_cargo_executable();
+	let bootstrap_path = s8_cargo_bootstrap_path(&cargo_path);
+	let mut fixed_env = BTreeMap::new();
+	fixed_env.insert("PATH".to_owned(), bootstrap_path);
 	let cargo = TrustedExecutable::new("cargo", cargo_path, Vec::new())
-		.expect("construct trusted cargo executable entry");
+		.expect("construct trusted cargo executable entry")
+		.with_fixed_env(fixed_env)
+		.expect("valid S8 cargo bootstrap fixed environment");
 	TrustedExecutableAllowlist::new([cargo]).expect("construct trusted cargo allowlist")
 }
 
@@ -632,10 +664,10 @@ fn raw_event_tool_names(events: &[RawEventV0], event_type: RawEventType) -> Vec<
 		.collect()
 }
 
-fn completed_bash_exit_codes(events: &[RawEventV0]) -> Vec<Option<i64>> {
+fn recorded_bash_exit_codes(events: &[RawEventV0]) -> Vec<Option<i64>> {
 	events
 		.iter()
-		.filter(|event| event.event_type == RawEventType::ToolCallCompleted)
+		.filter(|event| event.event_type == RawEventType::ToolResultRecorded)
 		.filter(|event| {
 			event
 				.payload
@@ -646,51 +678,113 @@ fn completed_bash_exit_codes(events: &[RawEventV0]) -> Vec<Option<i64>> {
 		.map(|event| {
 			event
 				.payload
-				.get("result")
-				.expect("completed bash event carries a result")
 				.get("exit_code")
 				.and_then(|exit_code| exit_code.as_i64())
 		})
 		.collect()
 }
 
+fn is_s8_inspection_tool(name: &str) -> bool {
+	matches!(name, "read" | "grep" | "find" | "search_files" | "ast_grep" | "list_dir")
+}
+
+fn is_s8_mutation_tool(name: &str) -> bool {
+	matches!(name, "edit" | "write")
+}
+
+fn requested_tool_events(events: &[RawEventV0]) -> Vec<&RawEventV0> {
+	events
+		.iter()
+		.filter(|event| event.event_type == RawEventType::ToolCallRequested)
+		.collect()
+}
+
+fn event_tool_name(event: &RawEventV0) -> Option<&str> {
+	event
+		.payload
+		.get("tool_name")
+		.and_then(|value| value.as_str())
+}
+
+/// Returns `Ok(())` only when `argv` is exactly `["test", "--quiet"]`, in that
+/// order, with no extra, reordered, duplicate, filter, or `--no-run` arguments.
+fn check_exact_cargo_test_quiet_argv(argv: &[&str]) -> Result<(), String> {
+	if argv == ["test", "--quiet"] {
+		Ok(())
+	} else {
+		Err(format!("expected exactly [\"test\", \"--quiet\"], got {argv:?}"))
+	}
+}
+
+/// Returns `Ok(())` only when `requested_seq` strictly precedes `terminal_seq`,
+/// matching the lifecycle invariant that a `tool_call.requested` event must be
+/// recorded before the unique terminal (`completed`/`failed`/`rejected`) event
+/// that resolves it.
+fn check_requested_precedes_terminal(requested_seq: u64, terminal_seq: u64) -> Result<(), String> {
+	if requested_seq < terminal_seq {
+		Ok(())
+	} else {
+		Err(format!(
+			"requested session_seq {requested_seq} must strictly precede terminal session_seq \
+			 {terminal_seq}"
+		))
+	}
+}
+
+/// Returns `Ok(())` only when `result_seq` strictly precedes `completed_seq`,
+/// matching the lifecycle invariant that the unique `tool_result.recorded`
+/// event must be recorded before the `tool_call.completed` event that
+/// resolves it.
+fn check_result_precedes_completed(result_seq: u64, completed_seq: u64) -> Result<(), String> {
+	if result_seq < completed_seq {
+		Ok(())
+	} else {
+		Err(format!(
+			"result session_seq {result_seq} must strictly precede completed session_seq \
+			 {completed_seq}"
+		))
+	}
+}
+
 fn assert_s8_semantic_tool_contract(events: &[RawEventV0]) {
 	let completed = completed_tool_names(events);
 	let inspection_count = completed
 		.iter()
-		.filter(|name| {
-			matches!(
-				name.as_str(),
-				"read" | "grep" | "find" | "search_files" | "ast_grep" | "list_dir"
-			)
-		})
+		.filter(|name| is_s8_inspection_tool(name))
 		.count();
 	assert!(inspection_count >= 1, "expected at least one completed inspection tool");
 
 	let completed_mutation_count = completed
 		.iter()
-		.filter(|name| matches!(name.as_str(), "edit" | "write"))
+		.filter(|name| is_s8_mutation_tool(name))
 		.count();
 	assert!(
 		(1..=2).contains(&completed_mutation_count),
 		"expected one or two completed mutation calls, got {completed_mutation_count}"
 	);
 
-	let bash_exit_codes = completed_bash_exit_codes(events);
+	let bash_exit_codes = recorded_bash_exit_codes(events);
 	assert!(
 		(1..=3).contains(&bash_exit_codes.len()),
-		"expected one to three completed bash calls, got {}",
+		"expected one to three recorded bash results, got {}",
 		bash_exit_codes.len()
 	);
-	let final_exit_code = bash_exit_codes.last().expect("at least one bash receipt");
-	assert_eq!(*final_exit_code, Some(0), "final cargo test receipt must succeed");
+	let final_exit_code = bash_exit_codes
+		.last()
+		.expect("at least one recorded bash result");
+	assert_eq!(
+		*final_exit_code,
+		Some(0),
+		"final cargo test receipt must succeed; completed tools: {completed:?}; bash exit codes: \
+		 {bash_exit_codes:?}",
+	);
 
 	let rejected = raw_event_tool_names(events, RawEventType::ToolCallRejected);
 	assert!(rejected.is_empty(), "S8 must not reject tool calls: {rejected:?}");
 	let failed = raw_event_tool_names(events, RawEventType::ToolCallFailed);
 	let failed_mutation_count = failed
 		.iter()
-		.filter(|name| matches!(name.as_str(), "edit" | "write"))
+		.filter(|name| is_s8_mutation_tool(name))
 		.count();
 	assert_eq!(
 		failed_mutation_count,
@@ -705,6 +799,188 @@ fn assert_s8_semantic_tool_contract(events: &[RawEventV0]) {
 		completed_mutation_count + failed_mutation_count <= 2,
 		"expected at most two total mutation attempts, completed {completed_mutation_count}, failed \
 		 {failed_mutation_count}"
+	);
+
+	// Ordering: the first requested inspection tool call must precede the first
+	// requested mutation tool call (inspect-before-mutate).
+	let requested = requested_tool_events(events);
+	assert!(!requested.is_empty(), "S8 must record at least one tool_call.requested event");
+	let first_inspection_seq = requested
+		.iter()
+		.filter(|event| event_tool_name(event).is_some_and(is_s8_inspection_tool))
+		.map(|event| event.session_seq)
+		.min()
+		.expect("S8 must request at least one inspection tool call");
+	let first_mutation_seq = requested
+		.iter()
+		.filter(|event| event_tool_name(event).is_some_and(is_s8_mutation_tool))
+		.map(|event| event.session_seq)
+		.min()
+		.expect("S8 must request at least one mutation tool call");
+	assert!(
+		first_inspection_seq < first_mutation_seq,
+		"S8 must inspect before mutating; first inspection tool_call.requested at session_seq \
+		 {first_inspection_seq}, first mutation tool_call.requested at session_seq \
+		 {first_mutation_seq}"
+	);
+
+	// Name and ID consistency: every requested tool call must resolve to exactly
+	// one terminal (completed/failed/rejected) event sharing its
+	// entity_ids.tool_call_id and payload.tool_name, and every completed call must
+	// resolve to exactly one tool_result.recorded event doing the same.
+	for event in &requested {
+		let tool_call_id = event.entity_ids.tool_call_id.as_ref().unwrap_or_else(|| {
+			panic!("tool_call.requested event {:?} is missing entity_ids.tool_call_id", event.event_id)
+		});
+		let requested_name = event_tool_name(event).unwrap_or_else(|| {
+			panic!("tool_call.requested event {:?} is missing payload.tool_name", event.event_id)
+		});
+
+		let terminal_events: Vec<&RawEventV0> = events
+			.iter()
+			.filter(|candidate| {
+				matches!(
+					candidate.event_type,
+					RawEventType::ToolCallCompleted
+						| RawEventType::ToolCallFailed
+						| RawEventType::ToolCallRejected
+				) && candidate.entity_ids.tool_call_id.as_ref() == Some(tool_call_id)
+			})
+			.collect();
+		assert_eq!(
+			terminal_events.len(),
+			1,
+			"tool_call_id {tool_call_id:?} (requested tool {requested_name:?}) must resolve to \
+			 exactly one completed/failed/rejected event, found {}",
+			terminal_events.len()
+		);
+		let terminal_event = terminal_events[0];
+		check_requested_precedes_terminal(event.session_seq, terminal_event.session_seq)
+			.unwrap_or_else(|err| {
+				panic!(
+					"tool_call_id {tool_call_id:?} (requested tool {requested_name:?}) has a {:?} \
+					 terminal event that does not strictly follow its request: {err}",
+					terminal_event.event_type
+				)
+			});
+		let terminal_name = event_tool_name(terminal_event).unwrap_or_else(|| {
+			panic!(
+				"{:?} event for tool_call_id {tool_call_id:?} is missing payload.tool_name",
+				terminal_event.event_type
+			)
+		});
+		assert_eq!(
+			terminal_name, requested_name,
+			"tool_call_id {tool_call_id:?} was requested as {requested_name:?} but its {:?} event \
+			 reports tool_name {terminal_name:?}",
+			terminal_event.event_type
+		);
+
+		if terminal_event.event_type == RawEventType::ToolCallCompleted {
+			let results: Vec<&RawEventV0> = events
+				.iter()
+				.filter(|candidate| {
+					candidate.event_type == RawEventType::ToolResultRecorded
+						&& candidate.entity_ids.tool_call_id.as_ref() == Some(tool_call_id)
+				})
+				.collect();
+			assert_eq!(
+				results.len(),
+				1,
+				"completed tool_call_id {tool_call_id:?} (tool {requested_name:?}) must have exactly \
+				 one tool_result.recorded event, found {}",
+				results.len()
+			);
+			check_result_precedes_completed(results[0].session_seq, terminal_event.session_seq)
+				.unwrap_or_else(|err| {
+					panic!(
+						"tool_call_id {tool_call_id:?} (tool {requested_name:?}) has a \
+						 tool_result.recorded event that does not strictly precede its completion: {err}"
+					)
+				});
+			let result_name = event_tool_name(results[0]).unwrap_or_else(|| {
+				panic!(
+					"tool_result.recorded event for tool_call_id {tool_call_id:?} is missing \
+					 payload.tool_name"
+				)
+			});
+			assert_eq!(
+				result_name, requested_name,
+				"tool_call_id {tool_call_id:?} was requested as {requested_name:?} but its \
+				 tool_result.recorded reports tool_name {result_name:?}"
+			);
+		}
+	}
+
+	// The final requested tool call must be the verifying `cargo test --quiet`, and
+	// it must come after the final requested mutation call.
+	let last_requested = requested
+		.iter()
+		.max_by_key(|event| event.session_seq)
+		.expect("at least one tool_call.requested event");
+	let last_tool_name = event_tool_name(last_requested)
+		.expect("final tool_call.requested is missing payload.tool_name");
+	assert_eq!(
+		last_tool_name, "bash",
+		"the final tool call in S8 must be the verifying cargo test, got {last_tool_name:?}"
+	);
+	let final_arguments = last_requested
+		.payload
+		.get("arguments")
+		.unwrap_or_else(|| panic!("final bash tool_call.requested is missing payload.arguments"));
+	let final_executable = final_arguments
+		.get("executable")
+		.and_then(|value| value.as_str())
+		.unwrap_or_else(|| panic!("final bash tool_call.requested arguments is missing executable"));
+	assert_eq!(
+		final_executable, "cargo",
+		"the final bash tool call must run cargo, got executable {final_executable:?}"
+	);
+	let final_argv_values = final_arguments
+		.get("argv")
+		.and_then(|value| value.as_array())
+		.unwrap_or_else(|| panic!("final bash tool_call.requested arguments is missing argv"));
+	assert!(
+		final_argv_values
+			.iter()
+			.all(|value| value.as_str().is_some()),
+		"the final bash tool call argv must contain only string elements, got {final_argv_values:?}"
+	);
+	let final_argv: Vec<&str> = final_argv_values
+		.iter()
+		.filter_map(|value| value.as_str())
+		.collect();
+	check_exact_cargo_test_quiet_argv(&final_argv).unwrap_or_else(|err| {
+		panic!("the final bash tool call must run exactly `cargo test --quiet`: {err}")
+	});
+	let last_mutation_seq = requested
+		.iter()
+		.filter(|event| event_tool_name(event).is_some_and(is_s8_mutation_tool))
+		.map(|event| event.session_seq)
+		.max()
+		.expect("S8 must request at least one mutation tool call");
+	assert!(
+		last_mutation_seq < last_requested.session_seq,
+		"the final cargo test tool call (session_seq {}) must come after the final mutation tool \
+		 call (session_seq {last_mutation_seq})",
+		last_requested.session_seq
+	);
+
+	// No tool call may be requested after the turn's assistant_turn.recorded
+	// completion event.
+	let first_assistant_turn_seq = events
+		.iter()
+		.filter(|event| event.event_type == RawEventType::AssistantTurnRecorded)
+		.map(|event| event.session_seq)
+		.min()
+		.expect("S8 must record an assistant_turn.recorded event terminating the turn");
+	assert!(
+		!events.iter().any(|event| {
+			event.event_type == RawEventType::ToolCallRequested
+				&& event.session_seq > first_assistant_turn_seq
+		}),
+		"no tool call may be requested after assistant_turn.recorded (turn completion) at \
+		 session_seq {first_assistant_turn_seq}"
 	);
 }
 
@@ -782,13 +1058,19 @@ async fn assert_no_s8_secret_leaks(
 async fn s8_live_anthropic_provider_repairs_disposable_rust_crate_and_replays_after_resume() {
 	let live_gate = env::var("SUCCESSOR_LIVE_PROVIDER_SMOKE").unwrap_or_default();
 	let api_key = env::var("ANTHROPIC_API_KEY").unwrap_or_default();
-	if live_gate != "1" || api_key.is_empty() {
-		eprintln!(
-			"skipping S8 live smoke: SUCCESSOR_LIVE_PROVIDER_SMOKE=1 and a non-empty \
-			 ANTHROPIC_API_KEY are both required"
-		);
-		return;
-	}
+	let cargo_present = try_resolve_cargo_executable().is_some();
+	assert!(
+		live_gate == "1" && !api_key.is_empty() && cargo_present,
+		"S8 live provider smoke is opt-in via #[ignore] but must fail closed once explicitly \
+		 invoked, never silently pass: requires SUCCESSOR_LIVE_PROVIDER_SMOKE=1 (got \
+		 {live_gate:?}), a non-empty, directly-set ANTHROPIC_API_KEY ({}), and a resolvable local \
+		 cargo executable (found: {cargo_present})",
+		if api_key.is_empty() {
+			"missing"
+		} else {
+			"present"
+		},
+	);
 
 	let server = TestServer::start("s8-live").await;
 	let (workspace, lib_rs) = seed_s8_disposable_crate("s8-live");
@@ -842,25 +1124,6 @@ async fn s8_live_anthropic_provider_repairs_disposable_rust_crate_and_replays_af
 	let frames = parse_sse_frames(&response_bytes);
 	assert!(!frames.is_empty(), "expected kernel frames from S8 live provider turn");
 	let terminal_frame = frames.last().expect("non-empty frames");
-	assert_eq!(
-		terminal_frame.kind.as_str(),
-		"turn_completed",
-		"S8 live task must complete successfully; terminal payload: {}",
-		terminal_frame.payload
-	);
-
-	let actual_source =
-		std::fs::read_to_string(&lib_rs).expect("read disposable crate source after provider turn");
-	assert_eq!(actual_source, S8_EXPECTED_FIXED_LIB_RS);
-
-	let cargo_status = std::process::Command::new(resolve_cargo_executable())
-		.arg("test")
-		.arg("--quiet")
-		.current_dir(&workspace)
-		.status()
-		.expect("run independent cargo test verification");
-	assert!(cargo_status.success(), "independent cargo test --quiet must pass after S8 turn");
-
 	let session_id = frames.first().expect("non-empty frames").session_id.clone();
 	let db_str = server.db_path.to_str().expect("utf-8 temp db path");
 	let reconnected_append_store = SqliteAppendStore::connect(db_str)
@@ -875,6 +1138,52 @@ async fn s8_live_anthropic_provider_repairs_disposable_rust_crate_and_replays_af
 		.expect("read durable S8 raw events");
 	let events = event_page.events;
 	assert!(!events.is_empty(), "S8 raw events must be durable");
+	let tool_trace: Vec<serde_json::Value> = events
+		.iter()
+		.filter(|event| {
+			matches!(
+				&event.event_type,
+				RawEventType::ToolCallRequested
+					| RawEventType::ToolCallCompleted
+					| RawEventType::ToolCallFailed
+					| RawEventType::ToolCallRejected
+			)
+		})
+		.map(|event| {
+			serde_json::json!({
+				"event_type": event.event_type.as_str(),
+				"payload": event.payload,
+			})
+		})
+		.collect();
+	assert_eq!(
+		terminal_frame.kind.as_str(),
+		"turn_completed",
+		"S8 live task must complete successfully; terminal payload: {}; durable tool trace: {}",
+		terminal_frame.payload,
+		serde_json::to_string_pretty(&tool_trace).expect("serialize S8 failure tool trace"),
+	);
+
+	let actual_source =
+		std::fs::read_to_string(&lib_rs).expect("read disposable crate source after provider turn");
+	assert_eq!(actual_source, S8_EXPECTED_FIXED_LIB_RS);
+
+	let cargo_status = std::process::Command::new(resolve_cargo_executable())
+		.arg("test")
+		.arg("--quiet")
+		.current_dir(&workspace)
+		.status()
+		.expect("run independent cargo test verification");
+	assert!(cargo_status.success(), "independent cargo test --quiet must pass after S8 turn");
+
+	let cargo_toml_bytes =
+		std::fs::read(workspace.join("Cargo.toml")).expect("read seeded Cargo.toml after S8 run");
+	assert_eq!(
+		cargo_toml_bytes,
+		S8_SEEDED_CARGO_TOML.as_bytes(),
+		"S8's coding task only touches src/lib.rs; the seeded Cargo.toml must remain byte-identical"
+	);
+
 	let projection = project_session(&events).expect("S8 durable events project successfully");
 	assert_s8_semantic_tool_contract(&events);
 
@@ -924,6 +1233,13 @@ async fn s8_live_anthropic_provider_repairs_disposable_rust_crate_and_replays_af
 		"fresh S8 kernel router must resume persisted session"
 	);
 	let resume_bytes = body_bytes(resume_response).await;
+	assert_never_leaks_either_sentinel("S8 resume response raw bytes", &resume_bytes);
+	assert_sentinel_absent(
+		"S8 resume response raw bytes",
+		"Anthropic API key",
+		&api_key,
+		std::str::from_utf8(&resume_bytes).expect("S8 resume response raw bytes are utf-8"),
+	);
 	let resume_payload: ResumeResponse =
 		serde_json::from_slice(&resume_bytes).expect("parse S8 resume response");
 	assert_same_raw_event_sequence(&events, &resume_payload.events.events);
@@ -1765,4 +2081,84 @@ async fn recoverable_tool_failures_consume_the_executable_tool_round_budget_like
 		"exactly MAX_EXECUTABLE_TOOL_ROUNDS failures must be durable before the budget stops the \
 		 turn"
 	);
+}
+
+#[cfg(test)]
+mod pure_contract_checks {
+	use super::*;
+
+	#[test]
+	fn exact_cargo_test_quiet_argv_is_accepted() {
+		check_exact_cargo_test_quiet_argv(&["test", "--quiet"])
+			.expect("the canonical two-argument invocation must be accepted");
+	}
+
+	#[test]
+	fn cargo_test_quiet_argv_rejects_an_extra_trailing_argument() {
+		check_exact_cargo_test_quiet_argv(&["test", "--quiet", "--release"])
+			.expect_err("an extra trailing argument must be rejected");
+	}
+
+	#[test]
+	fn cargo_test_quiet_argv_rejects_reordered_arguments() {
+		check_exact_cargo_test_quiet_argv(&["--quiet", "test"]).expect_err(
+			"reordered arguments must be rejected even though the same tokens are present",
+		);
+	}
+
+	#[test]
+	fn cargo_test_quiet_argv_rejects_a_duplicated_argument() {
+		check_exact_cargo_test_quiet_argv(&["test", "test", "--quiet"])
+			.expect_err("a duplicated `test` argument must be rejected");
+	}
+
+	#[test]
+	fn cargo_test_quiet_argv_rejects_a_test_name_filter() {
+		check_exact_cargo_test_quiet_argv(&["test", "--quiet", "doubles_then_offsets"])
+			.expect_err("a narrowing test-name filter must be rejected");
+	}
+
+	#[test]
+	fn cargo_test_quiet_argv_rejects_no_run() {
+		check_exact_cargo_test_quiet_argv(&["test", "--quiet", "--no-run"])
+			.expect_err("--no-run must be rejected because it never actually executes the tests");
+	}
+
+	#[test]
+	fn requested_session_seq_strictly_before_terminal_is_accepted() {
+		check_requested_precedes_terminal(3, 4).expect("a strictly later terminal event must pass");
+	}
+
+	#[test]
+	fn requested_session_seq_equal_to_terminal_is_rejected() {
+		check_requested_precedes_terminal(5, 5).expect_err(
+			"a terminal event recorded at the same session_seq as its own request is invalid ordering",
+		);
+	}
+
+	#[test]
+	fn requested_session_seq_after_terminal_is_rejected() {
+		check_requested_precedes_terminal(9, 4)
+			.expect_err("a terminal event recorded before its own request is invalid ordering");
+	}
+
+	#[test]
+	fn result_session_seq_strictly_before_completed_is_accepted() {
+		check_result_precedes_completed(6, 7).expect("a strictly earlier result event must pass");
+	}
+
+	#[test]
+	fn result_session_seq_equal_to_completed_is_rejected() {
+		check_result_precedes_completed(8, 8).expect_err(
+			"a tool_result.recorded event at the same session_seq as its own completion is invalid \
+			 ordering",
+		);
+	}
+
+	#[test]
+	fn result_session_seq_after_completed_is_rejected() {
+		check_result_precedes_completed(12, 3).expect_err(
+			"a tool_result.recorded event that follows its own completion is invalid ordering",
+		);
+	}
 }

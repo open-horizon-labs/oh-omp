@@ -1,4 +1,5 @@
 use std::{
+	collections::BTreeMap,
 	fs,
 	io::Write,
 	path::PathBuf,
@@ -40,6 +41,24 @@ fn helper_allowlist(helper: &str) -> TrustedExecutableAllowlist {
 	TrustedExecutableAllowlist::new([
 		TrustedExecutable::new("helper", binary, fixed_argv).expect("trusted helper")
 	])
+	.expect("one trusted helper")
+}
+
+fn helper_allowlist_with_fixed_env(
+	helper: &str,
+	fixed_env: BTreeMap<String, String>,
+) -> TrustedExecutableAllowlist {
+	let binary = std::env::current_exe().expect("current integration-test executable");
+	let fixed_argv = vec![
+		"--ignored".to_owned(),
+		"--exact".to_owned(),
+		helper.to_owned(),
+		"--nocapture".to_owned(),
+	];
+	TrustedExecutableAllowlist::new([TrustedExecutable::new("helper", binary, fixed_argv)
+		.expect("trusted helper")
+		.with_fixed_env(fixed_env)
+		.expect("valid fixed env")])
 	.expect("one trusted helper")
 }
 
@@ -209,6 +228,197 @@ fn separate_streams_nonzero_and_env_clear_are_receipts() {
 }
 
 #[test]
+fn with_fixed_env_rejects_invalid_keys_and_over_bound_values() {
+	let executable = || {
+		TrustedExecutable::new("helper", std::env::current_exe().expect("current executable"), vec![])
+			.expect("trusted helper")
+	};
+	for key in [
+		"",
+		"1START",
+		"lower",
+		"HAS=EQUALS",
+		"HAS\u{0}NUL",
+		"MIXEDcase",
+		"LANG",
+		"CI",
+		"PATHS",
+		"PATH_",
+		"path",
+	] {
+		let mut fixed_env = BTreeMap::new();
+		fixed_env.insert(key.to_owned(), "value".to_owned());
+		assert!(
+			matches!(
+				executable().with_fixed_env(fixed_env),
+				Err(ProcessRejection::InvalidTrustedExecutable)
+			),
+			"key {key:?} must be rejected"
+		);
+	}
+
+	let mut oversize_key = BTreeMap::new();
+	oversize_key.insert(format!("A{}", "A".repeat(16 * 1024)), "value".to_owned());
+	assert!(matches!(
+		executable().with_fixed_env(oversize_key),
+		Err(ProcessRejection::InvalidTrustedExecutable)
+	));
+
+	let mut nul_value = BTreeMap::new();
+	nul_value.insert("PATH".to_owned(), "bad\u{0}value".to_owned());
+	assert!(matches!(
+		executable().with_fixed_env(nul_value),
+		Err(ProcessRejection::InvalidTrustedExecutable)
+	));
+
+	let mut oversize_value = BTreeMap::new();
+	oversize_value.insert("PATH".to_owned(), "x".repeat(17 * 1024));
+	assert!(matches!(
+		executable().with_fixed_env(oversize_value),
+		Err(ProcessRejection::InvalidTrustedExecutable)
+	));
+
+	assert!(executable().with_fixed_env(BTreeMap::new()).is_ok());
+}
+
+#[test]
+fn trusted_executable_debug_redacts_fixed_env_values() {
+	const SENTINEL: &str = "fixed-env-debug-sentinel-1d71";
+	let mut fixed_env = BTreeMap::new();
+	fixed_env.insert("PATH".to_owned(), SENTINEL.to_owned());
+	let executable = TrustedExecutable::new(
+		"helper",
+		std::env::current_exe().expect("current executable"),
+		vec![],
+	)
+	.expect("trusted helper")
+	.with_fixed_env(fixed_env)
+	.expect("valid fixed env");
+
+	let executable_debug = format!("{executable:?}");
+	assert!(executable_debug.contains("PATH"));
+	assert!(!executable_debug.contains(SENTINEL));
+	let allowlist = TrustedExecutableAllowlist::new([executable]).expect("one trusted helper");
+	assert!(!format!("{allowlist:?}").contains(SENTINEL));
+}
+
+#[test]
+fn provider_and_fixed_env_key_collision_is_rejected_even_with_matching_values() {
+	let root = unique_temp_dir("fixed-env-collision");
+	let mut fixed_env = BTreeMap::new();
+	fixed_env.insert("PATH".to_owned(), "/usr/bin".to_owned());
+	let allowlist = helper_allowlist_with_fixed_env("helper_streams", fixed_env);
+
+	let matching =
+		execute(&root, &allowlist, json!({"executable":"helper", "env":{"PATH":"/usr/bin"}}));
+	assert_eq!(matching, Err(ProcessRejection::InvalidEnvironment));
+	assert!(!format!("{matching:?}").contains("/usr/bin"));
+
+	let differing =
+		execute(&root, &allowlist, json!({"executable":"helper", "env":{"PATH":"/different"}}));
+	assert_eq!(differing, Err(ProcessRejection::InvalidEnvironment));
+}
+
+#[test]
+fn merged_fixed_and_provider_env_obeys_the_total_byte_bound() {
+	let root = unique_temp_dir("fixed-env-merged-bound");
+	let mut fixed_env = BTreeMap::new();
+	fixed_env.insert("PATH".to_owned(), "x".repeat(14 * 1024));
+	let allowlist = helper_allowlist_with_fixed_env("helper_noop", fixed_env);
+	let result = execute(
+		&root,
+		&allowlist,
+		json!({
+			"executable": "helper",
+			"env": {
+				"CI": "y".repeat(14 * 1024),
+				"NO_COLOR": "y".repeat(14 * 1024),
+				"TERM": "y".repeat(14 * 1024),
+				"CARGO_TERM_COLOR": "y".repeat(14 * 1024),
+			}
+		}),
+	);
+	assert_eq!(result, Err(ProcessRejection::InvalidEnvironment));
+}
+
+#[test]
+fn empty_fixed_env_leaves_process_environment_unchanged() {
+	let root = unique_temp_dir("fixed-env-empty");
+	let executable =
+		TrustedExecutable::new("helper", std::env::current_exe().expect("current executable"), vec![
+			"--ignored".to_owned(),
+			"--exact".to_owned(),
+			"helper_streams".to_owned(),
+			"--nocapture".to_owned(),
+		])
+		.expect("trusted helper")
+		.with_fixed_env(BTreeMap::new())
+		.expect("empty fixed env is valid");
+	let allowlist = TrustedExecutableAllowlist::new([executable]).expect("allowlist");
+
+	let receipt =
+		execute(&root, &allowlist, json!({"executable":"helper", "env":{"CI":"hermetic"}}))
+			.expect("helper receipt");
+	assert_eq!(receipt.status, ProcessStatus::Exited);
+	assert_eq!(receipt.exit_code, Some(0));
+	assert_eq!(receipt.env_keys, vec!["CI".to_owned()]);
+}
+
+#[test]
+fn fixed_env_is_visible_to_the_child_process() {
+	let root = unique_temp_dir("fixed-env-visible");
+	let mut fixed_env = BTreeMap::new();
+	fixed_env.insert("PATH".to_owned(), "fixed-visible-value".to_owned());
+	let allowlist = helper_allowlist_with_fixed_env("helper_fixed_env", fixed_env);
+
+	let receipt = execute(&root, &allowlist, arguments()).expect("fixed-env helper receipt");
+	assert_eq!(receipt.status, ProcessStatus::Exited);
+	assert_eq!(receipt.exit_code, Some(0));
+	assert!(receipt.stdout.provider_text.contains("fixed-visible-value"));
+}
+
+#[test]
+fn fixed_env_value_is_never_directly_serialized_when_the_child_does_not_echo_it() {
+	let root = unique_temp_dir("fixed-env-silent");
+	const SENTINEL: &str = "fixed-env-must-not-be-serialized-directly-9f21";
+	let mut fixed_env = BTreeMap::new();
+	fixed_env.insert("PATH".to_owned(), SENTINEL.to_owned());
+	let allowlist = helper_allowlist_with_fixed_env("helper_noop", fixed_env);
+
+	let receipt = execute(&root, &allowlist, arguments()).expect("silent helper receipt");
+	assert_eq!(receipt.status, ProcessStatus::Exited);
+	assert_eq!(receipt.exit_code, Some(0));
+	assert_eq!(receipt.env_keys, vec!["PATH".to_owned()]);
+	assert!(!receipt.stdout.provider_text.contains(SENTINEL));
+	assert!(!receipt.stderr.provider_text.contains(SENTINEL));
+	assert!(!receipt.provider_result_text().contains(SENTINEL));
+	assert!(
+		!receipt
+			.artifact
+			.canonical_bytes()
+			.windows(SENTINEL.len())
+			.any(|window| window == SENTINEL.as_bytes())
+	);
+	assert!(!format!("{receipt:?}").contains(SENTINEL));
+}
+
+#[test]
+fn fixed_and_provider_env_keys_form_a_sorted_union_in_the_receipt() {
+	let root = unique_temp_dir("fixed-env-union");
+	let mut fixed_env = BTreeMap::new();
+	fixed_env.insert("PATH".to_owned(), "/usr/bin".to_owned());
+	let allowlist = helper_allowlist_with_fixed_env("helper_noop", fixed_env);
+
+	let receipt =
+		execute(&root, &allowlist, json!({"executable":"helper", "env":{"CI":"hermetic"}}))
+			.expect("union receipt");
+	assert_eq!(receipt.status, ProcessStatus::Exited);
+	assert_eq!(receipt.exit_code, Some(0));
+	assert_eq!(receipt.env_keys, vec!["CI".to_owned(), "PATH".to_owned()]);
+	assert_eq!(receipt.artifact.env_keys, receipt.env_keys);
+}
+
+#[test]
 fn flood_hashes_every_drained_byte_beyond_both_capture_caps() {
 	let root = unique_temp_dir("flood");
 	let receipt =
@@ -346,6 +556,24 @@ fn helper_nonzero() {
 
 #[test]
 #[ignore = "hermetic local-process helper; selected only through a fixed allowlist prefix"]
+fn helper_fixed_env() {
+	let value = std::env::var("PATH").expect("fixed env variable visible to child");
+	println!("fixed-visible:{value}");
+}
+
+#[test]
+#[ignore = "hermetic local-process helper; selected only through a fixed allowlist prefix"]
+fn helper_argv_echo() {
+	let received: Vec<String> = std::env::args().collect();
+	println!("argv-echo::{}", received.join("\u{1}"));
+}
+
+#[test]
+#[ignore = "hermetic local-process helper; selected only through a fixed allowlist prefix"]
+fn helper_noop() {}
+
+#[test]
+#[ignore = "hermetic local-process helper; selected only through a fixed allowlist prefix"]
 fn helper_flood() {
 	let mut output = std::io::stdout().lock();
 	output
@@ -449,3 +677,31 @@ fn ignore_term() {
 
 #[cfg(not(unix))]
 fn ignore_term() {}
+
+#[test]
+fn provider_argv_shell_metacharacters_remain_literal_data() {
+	let root = unique_temp_dir("argv-shell-metacharacters");
+	let marker = root.join("shell-metacharacter-injection-marker");
+	let payload = format!(
+		"$(touch {marker}) `touch {marker}` ; touch {marker} && touch {marker} | tee {marker} > \
+		 {marker}",
+		marker = marker.display()
+	);
+	let allowlist = helper_allowlist("helper_argv_echo");
+
+	let receipt =
+		execute(&root, &allowlist, json!({"executable": "helper", "argv": [payload.clone()]}))
+			.expect("literal argv payload is accepted and the helper runs to completion");
+
+	assert_eq!(receipt.status, ProcessStatus::Exited);
+	assert_eq!(receipt.exit_code, Some(0));
+	assert!(
+		receipt.stdout.provider_text.contains(&payload),
+		"the child must receive the shell metacharacters as one untouched literal argument"
+	);
+	assert!(
+		!marker.exists(),
+		"shell metacharacters embedded in a single argv entry must never be interpreted as an extra \
+		 command or shell expansion"
+	);
+}

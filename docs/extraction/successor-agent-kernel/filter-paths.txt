@@ -1,0 +1,13 @@
+# source path<TAB>destination path; a trailing slash denotes a prefix
+standalone/successor/	/
+crates/successor-protocol/	crates/successor-protocol/
+crates/successor-context-platform/	crates/successor-context-platform/
+crates/successor-kernel/	crates/successor-kernel/
+crates/successor-cli/	crates/successor-cli/
+.oh/workstreams/successor-agent-kernel/	.oh/workstreams/successor-agent-kernel/
+docs/adr/0003-tiered-memory-locator-map.md	docs/adr/0003-tiered-memory-locator-map.md
+docs/adr/0004-tool-result-assembly-bridge.md	docs/adr/0004-tool-result-assembly-bridge.md
+docs/adr/0005-clean-sheet-mech-suit-runtime.md	docs/adr/0005-clean-sheet-mech-suit-runtime.md
+docs/adr/0007-standalone-successor-repository-and-port-ownership.md	docs/adr/0007-standalone-successor-repository-and-port-ownership.md
+docs/evidence/standalone-kernel/	docs/evidence/standalone-kernel/
+docs/extraction/successor-agent-kernel/	docs/extraction/successor-agent-kernel/

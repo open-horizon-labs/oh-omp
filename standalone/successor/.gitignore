@@ -1,0 +1,11 @@
+/target/
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+.env
+.env.*
+!.env.example
+.DS_Store
+.idea/
+.vscode/
+# Cargo.lock is intentionally tracked.

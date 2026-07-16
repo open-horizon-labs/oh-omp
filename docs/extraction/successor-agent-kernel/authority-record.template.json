@@ -1,0 +1,40 @@
+{
+  "schema_version": "successor.authority.v0",
+  "authority_state": "source_authoritative_candidate_absent",
+  "predecessor_commit": "6ef351ceb9139647d5a9a47669e3559b93e443fc",
+  "source": {
+    "url": "https://github.com/open-horizon-labs/oh-omp",
+    "default_branch": "successor-main",
+    "remote_exists": true,
+    "writable": true,
+    "cut_commit": null,
+    "retirement_commit": null
+  },
+  "destination": {
+    "url": "https://github.com/open-horizon-labs/successor-agent-kernel",
+    "default_branch": "main",
+    "remote_exists": false,
+    "writable": false,
+    "candidate_commit": null,
+    "authority_commit": null
+  },
+  "filter": {
+    "tool": "git-filter-repo",
+    "package_version": "2.47.0",
+    "observed_cli_version": null,
+    "argv": null,
+    "argv_sha256": null,
+    "commit_map_sha256": null
+  },
+  "verification": {},
+  "rollback": {
+    "decision": "not_required",
+    "reason": null
+  },
+  "excluded_local_state": [
+    "successor-context-platform.sqlite3",
+    "successor-context-platform.sqlite3-wal",
+    "successor-context-platform.sqlite3-shm",
+    "ignored .oh orchestration run logs"
+  ]
+}

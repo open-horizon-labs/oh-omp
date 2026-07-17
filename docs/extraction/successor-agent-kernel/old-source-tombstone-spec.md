@@ -16,10 +16,11 @@ Source-retained governance evidence under `docs/extraction/successor-agent-kerne
 
 ## Authority rules
 
-- Before authority flip, source is the only mutable implementation and the destination candidate is read-only.
-- If the tombstone cannot land, authority does not flip. Discard or park the candidate and keep source authoritative.
-- Emergency fixes before flip land only in source and invalidate the candidate/cut commit.
-- Emergency fixes after flip land only in destination.
+- Before source retirement, source is the only mutable implementation and the destination candidate is read-only.
+- After source retirement lands and before destination activation, both repositories are frozen: `source_retired_destination_pending_activation`.
+- If destination activation cannot land, revert the source-retirement commit and record `source_retained`; do not mutate destination as authority.
+- After destination activation, emergency fixes land only in destination.
+- Concrete authority evidence is committed after activation so it can reference the activation commit without self-reference.
 - Rollback first freezes and decommissions the current authority, records the decision, and only then transfers authority. Both repositories are never mutable simultaneously.
 
 ## Wave 4 deletion inventory

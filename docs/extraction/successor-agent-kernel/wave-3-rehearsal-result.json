@@ -1,0 +1,84 @@
+{
+  "schema_version": "successor.authority.v0",
+  "authority_state": "source_authoritative_candidate_read_only",
+  "predecessor_commit": "6ef351ceb9139647d5a9a47669e3559b93e443fc",
+  "source": {
+    "url": "https://github.com/open-horizon-labs/oh-omp",
+    "default_branch": "successor-main",
+    "remote_exists": true,
+    "writable": true,
+    "cut_commit": "28b73a4b5ac9030976117e4d0b829e52a758ad38",
+    "retirement_commit": null
+  },
+  "destination": {
+    "url": "https://github.com/open-horizon-labs/successor-agent-kernel",
+    "default_branch": "main",
+    "remote_exists": false,
+    "writable": false,
+    "candidate_commit": "9da28be0e279f0835233dcd22c80379f982da9eb",
+    "authority_commit": null
+  },
+  "filter": {
+    "tool": "git-filter-repo",
+    "package_version": "2.47.0",
+    "observed_cli_version": "a40bce548d2c",
+    "argv": [
+      "git-filter-repo",
+      "--source",
+      "/tmp/successor-wave3-filter.FUGvZF/source",
+      "--target",
+      "/tmp/successor-wave3-filter.FUGvZF/candidate",
+      "--force",
+      "--path",
+      "standalone/successor/",
+      "--path",
+      "crates/successor-protocol/",
+      "--path",
+      "crates/successor-context-platform/",
+      "--path",
+      "crates/successor-kernel/",
+      "--path",
+      "crates/successor-cli/",
+      "--path",
+      ".oh/workstreams/successor-agent-kernel/",
+      "--path",
+      "docs/adr/0003-tiered-memory-locator-map.md",
+      "--path",
+      "docs/adr/0004-tool-result-assembly-bridge.md",
+      "--path",
+      "docs/adr/0005-clean-sheet-mech-suit-runtime.md",
+      "--path",
+      "docs/adr/0007-standalone-successor-repository-and-port-ownership.md",
+      "--path",
+      "docs/evidence/standalone-kernel/",
+      "--path",
+      "docs/extraction/successor-agent-kernel/",
+      "--path-rename",
+      "standalone/successor/:"
+    ],
+    "argv_sha256": "e19eedd17bdcee3dddf0d3c11518132a968082aee6c2c112330b76a1d3a14512",
+    "commit_map_sha256": "a2dccd952525e2c93af52c5980898208ab3dea50cd07337f193304262b63172a"
+  },
+  "verification": {
+    "locked_check": "pass",
+    "locked_all_target_tests": "pass",
+    "package_metadata": "pass: four packages at 0.1.0 with approved author and repository",
+    "path_dependency_confinement": "pass after canonical /private/tmp root comparison",
+    "fixture_byte_parity": "pass",
+    "tracked_inventory": "pass: 169 expected, 169 actual, 0 missing, 0 extra",
+    "lockfile_reproducibility": "pass: ae05eedde31f73d60814b698fa3306d120ea816c73f00f79f7b11f44262d45f3",
+    "history_retention": "pass: source cut maps to candidate and runner history retained",
+    "candidate_remotes": "pass: none configured",
+    "candidate_branch": "pass: main"
+  },
+  "rollback": {
+    "decision": "not_required",
+    "reason": null
+  },
+  "excluded_local_state": [
+    "successor-context-platform.sqlite3",
+    "successor-context-platform.sqlite3-wal",
+    "successor-context-platform.sqlite3-shm",
+    "ignored .oh orchestration run logs"
+  ]
+}

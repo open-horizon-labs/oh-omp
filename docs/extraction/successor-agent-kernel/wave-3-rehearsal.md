@@ -24,14 +24,16 @@ Use a temporary directory outside the source checkout:
 SOURCE_REPO="$(git rev-parse --show-toplevel)"
 SOURCE_CUT="$(git rev-parse HEAD)"
 REHEARSAL_ROOT="$(mktemp -d)"
-CANDIDATE="$REHEARSAL_ROOT/successor-agent-kernel"
+SOURCE_CLONE="$REHEARSAL_ROOT/source"
+CANDIDATE="$REHEARSAL_ROOT/candidate"
 
-git clone --no-local "$SOURCE_REPO" "$CANDIDATE"
-git -C "$CANDIDATE" checkout --detach "$SOURCE_CUT"
+git clone --no-local "$SOURCE_REPO" "$SOURCE_CLONE"
+git -C "$SOURCE_CLONE" checkout --detach "$SOURCE_CUT"
+git clone --no-local "$SOURCE_CLONE" "$CANDIDATE"
 
 uvx --from git-filter-repo==2.47.0 git-filter-repo \
-  --source "$CANDIDATE" \
-  --target "$CANDIDATE-filtered" \
+  --source "$SOURCE_CLONE" \
+  --target "$CANDIDATE" \
   --force \
   --path standalone/successor/ \
   --path crates/successor-protocol/ \
@@ -46,11 +48,18 @@ uvx --from git-filter-repo==2.47.0 git-filter-repo \
   --path docs/evidence/standalone-kernel/ \
   --path docs/extraction/successor-agent-kernel/ \
   --path-rename standalone/successor/:
+
+git -C "$CANDIDATE" remote remove origin
+git -C "$CANDIDATE" switch -C main
+git -C "$CANDIDATE" for-each-ref --format='%(refname:short)' refs/heads | \
+  while read -r branch; do
+    test "$branch" = main || git -C "$CANDIDATE" branch -D "$branch"
+  done
 ```
 
-If the installed 2.47.0 CLI does not support `--source/--target`, stop and use a fresh clone in-place only after recording the exact supported syntax; do not substitute another history tool.
+`--target` must name an existing fresh Git repository; the second clone is required. If the pinned 2.47.0 CLI does not support `--source/--target`, stop rather than substituting another history tool.
 
-The filtered repository must be placed on local branch `main` without adding a remote or pushing.
+The filtered repository must be on local branch `main`, have no configured remotes, and remain non-authoritative.
 
 ## Candidate verification
 
@@ -75,7 +84,7 @@ Also verify:
 
 ## Authority record update
 
-Do not modify `authority-record.template.json` inside the cut or candidate. After filtering, create `docs/extraction/successor-agent-kernel/wave-3-rehearsal-result.json` **only in the authoritative source repository** from that template. Record package/CLI identity, exact argv, argv SHA-256, commit-map SHA-256, source cut, candidate commit, verification command outcomes, and candidate state `source_authoritative_candidate_read_only`. This post-cut source evidence is intentionally absent from the already filtered candidate, avoiding a self-referential candidate commit.
+Do not modify `authority-record.template.json` inside the cut or candidate. After filtering, create `docs/extraction/successor-agent-kernel/wave-3-rehearsal-result.json` **only in the authoritative source repository** from that template. Record package/CLI identity, exact argv, source cut, candidate commit, verification outcomes, and candidate state `source_authoritative_candidate_read_only`. Define `argv_sha256` as SHA-256 over UTF-8 compact JSON serialization of the argv array with no trailing newline; define `commit_map_sha256` over the raw commit-map bytes. This post-cut source evidence is intentionally absent from the already filtered candidate, avoiding a self-referential candidate commit.
 
 The concrete Wave 4 record is `docs/extraction/successor-agent-kernel/authority-record.v0.json`. It is created only after remote existence, candidate commit, authority-record commit, and source-retirement commit are known.
 

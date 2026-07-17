@@ -7,7 +7,7 @@
   "required": ["schema_version", "authority_state", "predecessor_commit", "source", "destination", "filter", "verification", "rollback", "excluded_local_state"],
   "properties": {
     "schema_version": { "const": "successor.authority.v0" },
-    "authority_state": { "enum": ["source_authoritative_candidate_absent", "source_authoritative_candidate_read_only", "destination_authoritative"] },
+    "authority_state": { "enum": ["source_authoritative_candidate_absent", "source_authoritative_candidate_read_only", "source_authoritative_candidate_published_read_only", "destination_authoritative"] },
     "predecessor_commit": { "$ref": "#/$defs/gitCommit" },
     "source": { "$ref": "#/$defs/sourceState" },
     "destination": { "$ref": "#/$defs/destinationState" },
@@ -34,6 +34,17 @@
         "properties": {
           "source": { "properties": { "remote_exists": { "const": true }, "writable": { "const": true }, "cut_commit": { "$ref": "#/$defs/gitCommit" }, "retirement_commit": { "type": "null" } } },
           "destination": { "properties": { "remote_exists": { "const": false }, "writable": { "const": false }, "candidate_commit": { "$ref": "#/$defs/gitCommit" }, "authority_commit": { "type": "null" } } },
+          "filter": { "properties": { "observed_cli_version": { "type": "string", "minLength": 1 }, "argv": { "type": "array", "minItems": 1 }, "argv_sha256": { "$ref": "#/$defs/sha256" }, "commit_map_sha256": { "$ref": "#/$defs/sha256" } } },
+          "verification": { "minProperties": 1 }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "authority_state": { "const": "source_authoritative_candidate_published_read_only" } } },
+      "then": {
+        "properties": {
+          "source": { "properties": { "remote_exists": { "const": true }, "writable": { "const": true }, "cut_commit": { "$ref": "#/$defs/gitCommit" }, "retirement_commit": { "type": "null" } } },
+          "destination": { "properties": { "remote_exists": { "const": true }, "writable": { "const": false }, "candidate_commit": { "$ref": "#/$defs/gitCommit" }, "authority_commit": { "type": "null" } } },
           "filter": { "properties": { "observed_cli_version": { "type": "string", "minLength": 1 }, "argv": { "type": "array", "minItems": 1 }, "argv_sha256": { "$ref": "#/$defs/sha256" }, "commit_map_sha256": { "$ref": "#/$defs/sha256" } } },
           "verification": { "minProperties": 1 }
         }

@@ -3,28 +3,28 @@
 **Date:** 2026-07-16
 **State:** source authoritative; destination candidate published read-only
 
-## Identities
+## Final identities
 
 - Source repository: `https://github.com/open-horizon-labs/oh-omp`
-- Source cut: `77132b843e5958cf311121bc36864b932047f55a`
+- Source cut: `f72b95dc763f06765ea83d82251f0f11e834fa06`
 - Destination repository: `https://github.com/open-horizon-labs/successor-agent-kernel`
 - Destination visibility: private
 - Destination default branch: `main`
-- Published candidate: `31148f9159859ff0b856390edda83e2230c51611`
+- Published candidate: `f8196dd6b252ca70edf3bc04112ca352b43bafad`
 
-The owner authorized source publication and private candidate creation. Source retirement and authority transfer were not authorized. `destination.writable=false` in the authority record means no successor changes are authorized there; it is a governance state, not a claim that GitHub administrators lack write capability.
+The owner authorized source publication and private candidate creation. Source retirement and authority transfer were not authorized. `destination.writable=false` means no successor changes are authorized there; it is a governance state, not a claim that GitHub administrators lack write capability.
 
 The exact durable mapping line is:
 
 ```text
-77132b843e5958cf311121bc36864b932047f55a 31148f9159859ff0b856390edda83e2230c51611
+f72b95dc763f06765ea83d82251f0f11e834fa06 f8196dd6b252ca70edf3bc04112ca352b43bafad
 ```
 
 The full commit-map digest was verified against the ephemeral local generation workspace. GitHub clones do not contain `.git/filter-repo/commit-map`; the evidence does not claim remote re-verifiability of that artifact.
 
 ## Verification
 
-Before repository creation, the final candidate passed:
+Before final publication, the explicit-filter candidate passed:
 
 - locked formatting, Clippy/check, and full all-target tests;
 - committed-lock integrity with no post-command diff;
@@ -32,35 +32,33 @@ Before repository creation, the final candidate passed:
 - canonical path-dependency confinement;
 - slice-0 fixture byte parity;
 - exact tracked inventory: 171 expected, 171 actual, zero missing or extra;
-- source-cut to candidate commit-map verification;
-- retained source history;
-- one local branch `main`, no remotes, and clean worktree;
-- published-read-only schema validation and premature-flip rejection.
+- source-cut to candidate commit-map verification and retained history;
+- exactly one local branch `main` and a clean worktree;
+- published-read-only schema validation and premature-flip rejection;
+- explicit exclusion of Wave 4 publication/authority records from candidate identity inputs.
 
-After repository creation:
+The private remote was first created from verified candidate `31148f9159859ff0b856390edda83e2230c51611`. After governance controls were corrected and committed, `main` was updated with force-with-lease requiring that exact old commit. Final remote `main` is `f8196dd6b252ca70edf3bc04112ca352b43bafad`.
 
-- GitHub reported visibility `PRIVATE` and default branch `main`;
-- remote `main` resolved to the exact candidate commit;
-- a fresh private-remote clone resolved to the same commit and clean `main` branch;
-- source `successor-main` remained synchronized with origin and authoritative.
+A fresh private-remote clone resolved to final candidate `f8196dd6b252ca70edf3bc04112ca352b43bafad`, clean branch `main`, and contained no source-only Wave 4 publication or concrete authority record.
 
 ## Publication corrections
 
-The publication gate caught two process-definition defects before remote creation:
+The publication gate caught and corrected these process-definition defects before authority transfer:
 
-1. The authority schema lacked a published-but-non-authoritative candidate state. `source_authoritative_candidate_published_read_only` was added, reviewed, validated, committed, and pushed before regenerating the candidate.
-2. `cargo generate-lockfile` was incorrectly used as a reproducibility probe. Because crates.io is moving, regeneration selected newer compatible versions. The candidate lockfile was restored; evidence now correctly requires a committed lockfile, `--locked` commands, and a clean post-command diff.
-3. Future regeneration now filters explicit pre-publication extraction-control files. This publication result/evidence and concrete authority records remain source-retained and are excluded, preventing candidate identity self-reference.
+1. Added explicit `source_authoritative_candidate_published_read_only` state.
+2. Replaced the invalid `cargo generate-lockfile` reproducibility probe with committed-lock `--locked` integrity.
+3. Replaced directory-wide extraction-control filtering with explicit pre-publication files, excluding source-only Wave 4 governance evidence.
+4. Defined `writable` as governance-authorized mutation rather than provider ACL capability.
+5. Persisted the exact mapping line and scoped full commit-map verification to the ephemeral generation workspace.
 
 ## Remaining Wave 4 gate
 
-Source remains the sole mutable authority. Authority transfer requires a separate owner decision and these still-open steps:
+Source remains the sole mutable authority. Authority transfer still requires a separate owner decision and:
 
-1. create and review the exact source-retirement/tombstone commit;
-2. create the concrete `authority-record.v0.json` with source-retirement and destination authority commits;
-3. verify no successor changes landed after source cut; otherwise regenerate the candidate;
-4. land source retirement;
-5. create the destination authority commit and record the final transition;
-6. independently verify source is retired and destination is the sole authorized mutation location.
+1. exact source-retirement/tombstone commit review;
+2. concrete `authority-record.v0.json` with source-retirement and destination authority commits;
+3. verification that no candidate-input changes landed after source cut;
+4. source retirement landing before destination authority activation;
+5. independent verification that source is retired and destination is the sole authorized mutation location.
 
 If source retirement cannot land, the private candidate remains non-authoritative or is deleted; source remains authoritative.

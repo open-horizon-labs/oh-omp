@@ -7,7 +7,7 @@
     "default_branch": "successor-main",
     "remote_exists": true,
     "writable": true,
-    "cut_commit": "77132b843e5958cf311121bc36864b932047f55a",
+    "cut_commit": "f72b95dc763f06765ea83d82251f0f11e834fa06",
     "retirement_commit": null
   },
   "destination": {
@@ -15,7 +15,7 @@
     "default_branch": "main",
     "remote_exists": true,
     "writable": false,
-    "candidate_commit": "31148f9159859ff0b856390edda83e2230c51611",
+    "candidate_commit": "f8196dd6b252ca70edf3bc04112ca352b43bafad",
     "authority_commit": null
   },
   "filter": {
@@ -25,9 +25,9 @@
     "argv": [
       "git-filter-repo",
       "--source",
-      "/tmp/successor-wave4-final.C9RTzh/source",
+      "/tmp/successor-wave4-closure.76lxM7/source",
       "--target",
-      "/tmp/successor-wave4-final.C9RTzh/candidate",
+      "/tmp/successor-wave4-closure.76lxM7/candidate",
       "--force",
       "--path",
       "standalone/successor/",
@@ -52,12 +52,26 @@
       "--path",
       "docs/evidence/standalone-kernel/",
       "--path",
-      "docs/extraction/successor-agent-kernel/",
+      "docs/extraction/successor-agent-kernel/authority-record.template.json",
+      "--path",
+      "docs/extraction/successor-agent-kernel/authority-record.v0.schema.json",
+      "--path",
+      "docs/extraction/successor-agent-kernel/filter-paths.txt",
+      "--path",
+      "docs/extraction/successor-agent-kernel/old-source-tombstone-spec.md",
+      "--path",
+      "docs/extraction/successor-agent-kernel/wave-3-preparation.md",
+      "--path",
+      "docs/extraction/successor-agent-kernel/wave-3-rehearsal.md",
+      "--path",
+      "docs/extraction/successor-agent-kernel/wave-3-rehearsal-evidence.md",
+      "--path",
+      "docs/extraction/successor-agent-kernel/wave-3-rehearsal-result.json",
       "--path-rename",
       "standalone/successor/:"
     ],
-    "argv_sha256": "0e2f0532cc74e9dac0565159de21c0b03feaf8b91bd8c9021bc093cd076e0c1f",
-    "commit_map_sha256": "6b659aa5da5be64d134ddeee7e586c9d41feb7f5508cdb2cfcbd4042ec20bd52"
+    "argv_sha256": "1b6ed5dffe04db9a96928270663e7ba0a3568d3b0b29ad3a7c5f10bc41caa3a6",
+    "commit_map_sha256": "2eb8c03bffbf77889c2ec91a15b8ea5207e9333ce41d6100acc3f81c71d7a17f"
   },
   "verification": {
     "locked_check": "pass",
@@ -68,13 +82,14 @@
     "fixture_byte_parity": "pass",
     "tracked_inventory": "pass: 171 expected, 171 actual, 0 missing, 0 extra",
     "history_retention": "pass",
-    "source_mapping": "pass: 77132b843e5958cf311121bc36864b932047f55a maps to 31148f9159859ff0b856390edda83e2230c51611",
-    "source_mapping_line": "77132b843e5958cf311121bc36864b932047f55a 31148f9159859ff0b856390edda83e2230c51611",
+    "source_mapping": "pass: source cut maps to candidate",
+    "source_mapping_line": "f72b95dc763f06765ea83d82251f0f11e834fa06 f8196dd6b252ca70edf3bc04112ca352b43bafad",
     "commit_map_artifact_scope": "digest and mapping line verified against ephemeral generation workspace; full commit-map is not present in the published remote",
     "future_filter_exclusion": "pass: Wave 4 publication and authority records are source-retained and excluded from regenerated candidate inputs",
-    "private_remote_clone": "pass: fresh clone main equals candidate commit",
+    "private_remote_clone": "pass: fresh clone main equals candidate commit and contains no source-only Wave 4 records",
     "destination_visibility": "pass: PRIVATE",
     "destination_default_branch": "pass: main",
+    "force_with_lease": "pass: remote main advanced only from expected candidate 31148f9159859ff0b856390edda83e2230c51611",
     "authority_policy": "pass: source authorized for mutation; destination candidate published but no successor mutations authorized"
   },
   "rollback": {

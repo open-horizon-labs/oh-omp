@@ -46,7 +46,14 @@ uvx --from git-filter-repo==2.47.0 git-filter-repo \
   --path docs/adr/0005-clean-sheet-mech-suit-runtime.md \
   --path docs/adr/0007-standalone-successor-repository-and-port-ownership.md \
   --path docs/evidence/standalone-kernel/ \
-  --path docs/extraction/successor-agent-kernel/ \
+  --path docs/extraction/successor-agent-kernel/authority-record.template.json \
+  --path docs/extraction/successor-agent-kernel/authority-record.v0.schema.json \
+  --path docs/extraction/successor-agent-kernel/filter-paths.txt \
+  --path docs/extraction/successor-agent-kernel/old-source-tombstone-spec.md \
+  --path docs/extraction/successor-agent-kernel/wave-3-preparation.md \
+  --path docs/extraction/successor-agent-kernel/wave-3-rehearsal.md \
+  --path docs/extraction/successor-agent-kernel/wave-3-rehearsal-evidence.md \
+  --path docs/extraction/successor-agent-kernel/wave-3-rehearsal-result.json \
   --path-rename standalone/successor/:
 
 git -C "$CANDIDATE" remote remove origin
@@ -60,6 +67,8 @@ git -C "$CANDIDATE" for-each-ref --format='%(refname:short)' refs/heads | \
 `--target` must name an existing fresh Git repository; the second clone is required. If the pinned 2.47.0 CLI does not support `--source/--target`, stop rather than substituting another history tool.
 
 The filtered repository must be on local branch `main`, have no configured remotes, and remain non-authoritative.
+
+`wave-4-publication-result.json`, `wave-4-publication-evidence.md`, and concrete authority-transfer records are source-retained governance evidence. They must remain excluded from any regenerated filtered candidate so candidate identity never consumes evidence that describes that candidate.
 
 ## Candidate verification
 

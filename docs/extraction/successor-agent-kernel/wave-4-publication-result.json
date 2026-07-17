@@ -1,0 +1,90 @@
+{
+  "schema_version": "successor.authority.v0",
+  "authority_state": "source_authoritative_candidate_published_read_only",
+  "predecessor_commit": "06bde3c8d8a798e5053eff3594b9478606f9e98a",
+  "source": {
+    "url": "https://github.com/open-horizon-labs/oh-omp",
+    "default_branch": "successor-main",
+    "remote_exists": true,
+    "writable": true,
+    "cut_commit": "77132b843e5958cf311121bc36864b932047f55a",
+    "retirement_commit": null
+  },
+  "destination": {
+    "url": "https://github.com/open-horizon-labs/successor-agent-kernel",
+    "default_branch": "main",
+    "remote_exists": true,
+    "writable": false,
+    "candidate_commit": "31148f9159859ff0b856390edda83e2230c51611",
+    "authority_commit": null
+  },
+  "filter": {
+    "tool": "git-filter-repo",
+    "package_version": "2.47.0",
+    "observed_cli_version": "a40bce548d2c",
+    "argv": [
+      "git-filter-repo",
+      "--source",
+      "/tmp/successor-wave4-final.C9RTzh/source",
+      "--target",
+      "/tmp/successor-wave4-final.C9RTzh/candidate",
+      "--force",
+      "--path",
+      "standalone/successor/",
+      "--path",
+      "crates/successor-protocol/",
+      "--path",
+      "crates/successor-context-platform/",
+      "--path",
+      "crates/successor-kernel/",
+      "--path",
+      "crates/successor-cli/",
+      "--path",
+      ".oh/workstreams/successor-agent-kernel/",
+      "--path",
+      "docs/adr/0003-tiered-memory-locator-map.md",
+      "--path",
+      "docs/adr/0004-tool-result-assembly-bridge.md",
+      "--path",
+      "docs/adr/0005-clean-sheet-mech-suit-runtime.md",
+      "--path",
+      "docs/adr/0007-standalone-successor-repository-and-port-ownership.md",
+      "--path",
+      "docs/evidence/standalone-kernel/",
+      "--path",
+      "docs/extraction/successor-agent-kernel/",
+      "--path-rename",
+      "standalone/successor/:"
+    ],
+    "argv_sha256": "0e2f0532cc74e9dac0565159de21c0b03feaf8b91bd8c9021bc093cd076e0c1f",
+    "commit_map_sha256": "6b659aa5da5be64d134ddeee7e586c9d41feb7f5508cdb2cfcbd4042ec20bd52"
+  },
+  "verification": {
+    "locked_check": "pass",
+    "locked_all_target_tests": "pass",
+    "locked_resolution_integrity": "pass: Cargo.lock remained clean after all locked commands",
+    "package_metadata": "pass: four packages at 0.1.0 with approved author and repository",
+    "path_dependency_confinement": "pass",
+    "fixture_byte_parity": "pass",
+    "tracked_inventory": "pass: 171 expected, 171 actual, 0 missing, 0 extra",
+    "history_retention": "pass",
+    "source_mapping": "pass: 77132b843e5958cf311121bc36864b932047f55a maps to 31148f9159859ff0b856390edda83e2230c51611",
+    "source_mapping_line": "77132b843e5958cf311121bc36864b932047f55a 31148f9159859ff0b856390edda83e2230c51611",
+    "commit_map_artifact_scope": "digest and mapping line verified against ephemeral generation workspace; full commit-map is not present in the published remote",
+    "future_filter_exclusion": "pass: Wave 4 publication and authority records are source-retained and excluded from regenerated candidate inputs",
+    "private_remote_clone": "pass: fresh clone main equals candidate commit",
+    "destination_visibility": "pass: PRIVATE",
+    "destination_default_branch": "pass: main",
+    "authority_policy": "pass: source authorized for mutation; destination candidate published but no successor mutations authorized"
+  },
+  "rollback": {
+    "decision": "not_required",
+    "reason": null
+  },
+  "excluded_local_state": [
+    "successor-context-platform.sqlite3",
+    "successor-context-platform.sqlite3-wal",
+    "successor-context-platform.sqlite3-shm",
+    "ignored .oh orchestration run logs"
+  ]
+}

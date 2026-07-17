@@ -75,7 +75,7 @@
         "url": { "type": "string", "format": "uri" },
         "default_branch": { "type": "string", "minLength": 1 },
         "remote_exists": { "type": "boolean" },
-        "writable": { "type": "boolean" },
+        "writable": { "type": "boolean", "description": "Whether successor mutations are authorized in this repository by the authority protocol; not a statement about provider ACL or administrator capability." },
         "cut_commit": { "$ref": "#/$defs/nullableGitCommit" },
         "retirement_commit": { "$ref": "#/$defs/nullableGitCommit" }
       }
@@ -88,7 +88,7 @@
         "url": { "type": "string", "format": "uri" },
         "default_branch": { "type": "string", "minLength": 1 },
         "remote_exists": { "type": "boolean" },
-        "writable": { "type": "boolean" },
+        "writable": { "type": "boolean", "description": "Whether successor mutations are authorized in this repository by the authority protocol; not a statement about provider ACL or administrator capability." },
         "candidate_commit": { "$ref": "#/$defs/nullableGitCommit" },
         "authority_commit": { "$ref": "#/$defs/nullableGitCommit" }
       }

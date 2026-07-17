@@ -12,6 +12,8 @@ Remove the four successor crate directories, active successor fixture implementa
 
 The source pointer must state that all successor issues, changes, releases, and fixtures belong only to `https://github.com/open-horizon-labs/successor-agent-kernel` after authority flip.
 
+Source-retained governance evidence under `docs/extraction/successor-agent-kernel/`—including Wave 4 publication and concrete authority-transfer records—remains in the retired source repository. It is not copied into regenerated candidate identity inputs.
+
 ## Authority rules
 
 - Before authority flip, source is the only mutable implementation and the destination candidate is read-only.

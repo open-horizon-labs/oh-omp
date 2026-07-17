@@ -26,7 +26,7 @@ The actual argv and machine-readable state are in `wave-3-rehearsal-result.json`
 | Package metadata | PASS; version `0.1.0`, author Open Horizon Labs, approved repository URL |
 | `make check-rs` | PASS; formatting, Clippy with warnings denied, Cargo check |
 | `make test-rs` | PASS; full workspace all-target tests |
-| Lockfile regeneration | PASS; byte-identical SHA-256 `ae05eedde31f73d60814b698fa3306d120ea816c73f00f79f7b11f44262d45f3` |
+| Locked resolution integrity | PASS; tracked `Cargo.lock` SHA-256 `ae05eedde31f73d60814b698fa3306d120ea816c73f00f79f7b11f44262d45f3`; locked metadata/check/test commands left it unchanged |
 | Path dependency confinement | PASS; every path dependency resolves inside canonical candidate root |
 | Canonical slice-0 fixture parity | PASS; recursive byte comparison matched source cut |
 | Tracked inventory | PASS; 169 expected, 169 actual, zero missing, zero extra |
@@ -57,6 +57,7 @@ The rehearsal found and corrected preparation defects before authority transfer:
 4. macOS canonicalizes `/tmp` to `/private/tmp`; dependency confinement now compares canonical roots.
 5. Authority evidence was split into a pre-cut template and post-cut source-only result to prevent candidate identity self-reference.
 6. The authority schema now enforces state-dependent writable/remote/commit invariants, and CI actions use immutable commit pins.
+7. A later publication probe showed that `cargo generate-lockfile` can select newly published compatible registry versions. The acceptance contract was corrected: regeneration is an update operation; reproducibility is enforced by the committed lockfile, `--locked` commands, and a clean post-command diff.
 
 ## Scope and residual conditions
 

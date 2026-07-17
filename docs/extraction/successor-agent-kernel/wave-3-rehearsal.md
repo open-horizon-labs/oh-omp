@@ -73,7 +73,7 @@ make test-rs
 
 Also verify:
 
-- `Cargo.lock` is tracked and unchanged after `cargo generate-lockfile`;
+- `Cargo.lock` is tracked; `cargo metadata --locked`, `make check-rs`, and `make test-rs` complete without changing it; do not run `cargo generate-lockfile` as verification because it intentionally resolves the newest compatible registry state;
 - all package versions are `0.1.0`, author is Open Horizon Labs, and repository URL is the approved destination;
 - `cargo tree --workspace` has no path dependency outside candidate root;
 - no monorepo patch, Bun, package, upstream, DB/WAL, or unrelated crate path remains;
@@ -99,6 +99,6 @@ Simulate without changing source:
 
 ## Stop conditions
 
-Stop Wave 3 if the pinned tool is unavailable, the exact filter cannot be reproduced, candidate files exceed inventory, fixture bytes differ, root metadata is unresolved, lockfile changes after generation, any path dependency escapes candidate root, history/commit map is absent, destination identity changes, or authority state would become ambiguous.
+Stop Wave 3 if the pinned tool is unavailable, the exact filter cannot be reproduced, candidate files exceed inventory, fixture bytes differ, root metadata is unresolved, any locked command requests or produces a lockfile change, any path dependency escapes candidate root, history/commit map is absent, destination identity changes, or authority state would become ambiguous.
 
 Never create/push the destination or retire source in Wave 3.

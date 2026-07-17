@@ -66,7 +66,7 @@
     "path_dependency_confinement": "pass after canonical /private/tmp root comparison",
     "fixture_byte_parity": "pass",
     "tracked_inventory": "pass: 169 expected, 169 actual, 0 missing, 0 extra",
-    "lockfile_reproducibility": "pass: ae05eedde31f73d60814b698fa3306d120ea816c73f00f79f7b11f44262d45f3",
+    "locked_resolution_integrity": "pass: tracked Cargo.lock sha256 ae05eedde31f73d60814b698fa3306d120ea816c73f00f79f7b11f44262d45f3 remained unchanged through locked metadata/check/test commands",
     "history_retention": "pass: source cut maps to candidate and runner history retained",
     "candidate_remotes": "pass: none configured",
     "candidate_branch": "pass: main"

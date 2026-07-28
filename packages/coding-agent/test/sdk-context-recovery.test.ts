@@ -132,6 +132,66 @@ describe("SDK context recovery request path", () => {
 		}
 	});
 
+	test("keeps custom-first history on the normal path when the latest literal user remains", async () => {
+		const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "oh-omp-context-custom-start-"));
+		tempDirs.push(tempDir);
+		const { session } = await createAgentSession({
+			cwd: tempDir,
+			agentDir: tempDir,
+			sessionManager: SessionManager.inMemory(tempDir),
+			settings: Settings.isolated({
+				"contextManager.mode": "assembler",
+				"assembler.hotWindowTurns": 2,
+				"assembler.safetyMarginPercent": 0,
+				"assembler.turnBufferPercent": 0,
+				"assembler.messageBudgetPercent": 100,
+				"assembler.hydrationBudgetPercent": 0,
+				"assembler.contextWindowCap": ASSEMBLED_CONTEXT_WINDOW,
+				"providers.embeddings": "disabled",
+			}),
+			model,
+			systemPrompt: "s",
+			disableExtensionDiscovery: true,
+			skills: [],
+			contextFiles: [],
+			promptTemplates: [],
+			slashCommands: [],
+			enableMCP: false,
+			enableLsp: false,
+			skipPythonPreflight: true,
+			toolNames: [],
+		});
+
+		try {
+			const messages: AgentMessage[] = [
+				{
+					role: "custom",
+					customType: "skill-prompt",
+					content: "Original requirement: list every persisted customer lifecycle event.",
+					display: true,
+					attribution: "user",
+					timestamp: Date.now(),
+				},
+				...makeToolTurn(0),
+				makeUser("Correction: include customer.deleted."),
+			];
+
+			const converted = await session.convertMessagesToLlm(messages);
+			const snapshot = session.getLastPromptSnapshot();
+
+			expect(snapshot?.messages.transformMetadata?.recovery).toBeUndefined();
+			expect(snapshot?.messages.transformMetadata?.overflowSummary).toBeUndefined();
+			expect(snapshot?.messages.transformMetadata?.decisions[0]?.action).not.toBe("dropped");
+			expect(snapshot?.messages.final[0]?.role).toBe("custom");
+			expect(converted[0]?.role).toBe("user");
+			expect(JSON.stringify(converted)).toContain("Original requirement");
+			expect(JSON.stringify(converted)).toContain("result-0");
+			expect(JSON.stringify(converted)).toContain("include customer.deleted");
+		} finally {
+			await session.dispose();
+		}
+	});
+
 	test("accounts and serializes the recovery nudge only after fallback activates", async () => {
 		const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "oh-omp-context-recovery-"));
 		tempDirs.push(tempDir);

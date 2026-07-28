@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed false rejection of assembler histories starting with synthetic messages that serialize to an LLM user role, while preserving the latest literal user turn.
+
 ## [0.12.2] - 2026-07-15
 
 ### Fixed

@@ -6,9 +6,11 @@ import {
 	dedupCodec,
 	deriveBudget,
 	formatStubText,
+	isValidBoundedTransform,
 	readCodec,
 	segmentIntoTurns,
 	TOOL_RESULT_STUB_TEXT,
+	type TransformResult,
 	transformMessages,
 	transformMessagesWithRecovery,
 	warmCodec,
@@ -1014,6 +1016,39 @@ describe("transformMessages — pre-budget conversation compression", () => {
 });
 
 describe("transformMessagesWithRecovery", () => {
+	test("does not accept a canonical custom start after dropping the latest literal user", () => {
+		const user = makeUser("include customer.deleted");
+		const custom: AgentMessage = {
+			role: "custom",
+			customType: "async-result",
+			content: "Background work completed",
+			display: true,
+			attribution: "agent",
+			timestamp: nextTimestamp(),
+		};
+		const sourceMessages: AgentMessage[] = [user, custom];
+		const ordinary = transformMessages(sourceMessages, { maxTokens: 1_000, hotWindowTurns: 1 });
+		const unsafe = {
+			messages: [custom],
+			metadata: {
+				...ordinary.metadata,
+				decisions: ordinary.metadata.decisions.map(decision =>
+					decision.turnIndex === 0
+						? {
+								...decision,
+								action: "dropped" as const,
+								reason: "budget-exceeded" as const,
+								tokensAfter: 0,
+							}
+						: decision,
+				),
+				droppedCount: 1,
+			},
+		} satisfies TransformResult;
+
+		expect(isValidBoundedTransform(sourceMessages, unsafe)).toBe(false);
+	});
+
 	test("uses ordinary conversation compression before considering recovery", () => {
 		const longAssistantText = Array.from({ length: 40 }, (_, index) => `line ${index}: ${"x".repeat(30)}`).join("\n");
 		const messages: AgentMessage[] = [

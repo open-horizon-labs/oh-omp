@@ -240,6 +240,36 @@ export function sanitizeRehydratedOpenAIResponsesAssistantMessage(message: Assis
 	};
 }
 
+/**
+ * Return the Message role emitted at the AgentMessage-to-Message conversion
+ * boundary. Provider adapters may translate Message roles further. Messages
+ * excluded from LLM context return undefined.
+ */
+export function getLlmMessageRole(message: AgentMessage): Message["role"] | undefined {
+	switch (message.role) {
+		case "bashExecution":
+		case "pythonExecution":
+			return message.excludeFromContext ? undefined : "user";
+		case "custom":
+		case "hookMessage":
+		case "branchSummary":
+		case "compactionSummary":
+		case "fileMention":
+		case "user":
+			return "user";
+		case "developer":
+			return "developer";
+		case "assistant":
+			return "assistant";
+		case "toolResult":
+			return "toolResult";
+		default:
+			// biome-ignore lint/correctness/noSwitchDeclarations: exhaustive check
+			const _exhaustiveCheck: never = message;
+			return _exhaustiveCheck;
+	}
+}
+
 /** Convert CustomMessageEntry to AgentMessage format */
 export function createCustomMessage(
 	customType: string,
@@ -271,11 +301,9 @@ export function createCustomMessage(
 export function convertToLlm(messages: AgentMessage[]): Message[] {
 	return messages
 		.map((m): Message | undefined => {
+			if (getLlmMessageRole(m) === undefined) return undefined;
 			switch (m.role) {
 				case "bashExecution":
-					if (m.excludeFromContext) {
-						return undefined;
-					}
 					return {
 						role: "user",
 						content: [{ type: "text", text: bashExecutionToText(m) }],
@@ -283,9 +311,6 @@ export function convertToLlm(messages: AgentMessage[]): Message[] {
 						timestamp: m.timestamp,
 					};
 				case "pythonExecution":
-					if (m.excludeFromContext) {
-						return undefined;
-					}
 					return {
 						role: "user",
 						content: [{ type: "text", text: pythonExecutionToText(m) }],

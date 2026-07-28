@@ -19,6 +19,7 @@ import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { TextContent, ToolResultMessage, UserMessage } from "@oh-my-pi/pi-ai";
 import { logger } from "@oh-my-pi/pi-utils";
 import { parseMCPToolName } from "../../mcp/tool-bridge";
+import { getLlmMessageRole } from "../../session/messages";
 import type { MemoryAssemblyBudget } from "../memory-contract";
 import { buildPeek, contentHash, extractText, isReadTool, VERBATIM_LINE_THRESHOLD } from "./codecs/shared";
 import type { BudgetDerivationInput, CodecContext, ContentCodec, FileReadEntry } from "./types";
@@ -488,6 +489,42 @@ export function segmentIntoTurns(messages: AgentMessage[]): Turn[] {
 	}
 
 	return turns;
+}
+
+function startsWithCanonicalLlmUser(messages: AgentMessage[]): boolean {
+	for (const message of messages) {
+		const role = getLlmMessageRole(message);
+		if (role === undefined) continue;
+		return role === "user";
+	}
+	return false;
+}
+
+function findLatestLiteralUserTurn(turns: Turn[]): number {
+	for (let index = turns.length - 1; index >= 0; index--) {
+		if (turns[index].messages[0]?.role === "user") return index;
+	}
+	return -1;
+}
+
+/**
+ * Validate a bounded result at the AgentMessage-to-LLM boundary.
+ *
+ * Canonically user-role synthetic messages may satisfy provider ordering, but
+ * they cannot replace the latest literal user intent boundary.
+ *
+ * Requires a result produced by passing exactly sourceMessages to
+ * transformMessages: decisions are a dense parallel array over those messages'
+ * segmented turns.
+ */
+export function isValidBoundedTransform(sourceMessages: AgentMessage[], result: TransformResult): boolean {
+	if (!startsWithCanonicalLlmUser(result.messages)) return false;
+
+	const latestUserTurn = findLatestLiteralUserTurn(segmentIntoTurns(sourceMessages));
+	if (latestUserTurn < 0) return true;
+
+	const decision = result.metadata.decisions[latestUserTurn];
+	return decision !== undefined && decision.action !== "dropped";
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1444,7 +1481,7 @@ export function transformMessagesWithRecovery(
 	recovery: TransformRecoveryOptions = {},
 ): TransformResult {
 	const initial = transformMessages(messages, options);
-	if (initial.messages[0]?.role === "user") return initial;
+	if (isValidBoundedTransform(messages, initial)) return initial;
 
 	const configuredMaxTokens = options.maxTokens;
 	if (configuredMaxTokens === undefined || !Number.isFinite(configuredMaxTokens) || configuredMaxTokens < 0) {
@@ -1453,13 +1490,7 @@ export function transformMessagesWithRecovery(
 	const maxTokens = Math.floor(configuredMaxTokens);
 
 	const turns = segmentIntoTurns(messages);
-	let latestUserTurn = -1;
-	for (let i = turns.length - 1; i >= 0; i--) {
-		if (turns[i].messages[0]?.role === "user") {
-			latestUserTurn = i;
-			break;
-		}
-	}
+	const latestUserTurn = findLatestLiteralUserTurn(turns);
 	if (latestUserTurn < 0) return initial;
 
 	if (maxTokens === 0) return buildUnrecoverableResult(initial, 0, "zero-token-budget");
@@ -1492,12 +1523,10 @@ export function transformMessagesWithRecovery(
 				...turns.slice(suffixStart).map((_, index) => suffixStart + index),
 			];
 			const candidateTurns = [anchorTurn, ...turns.slice(suffixStart)];
-			const retry = transformMessages(
-				candidateTurns.flatMap(turn => turn.messages),
-				retryOptions,
-			);
+			const candidateMessages = candidateTurns.flatMap(turn => turn.messages);
+			const retry = transformMessages(candidateMessages, retryOptions);
 			attempts++;
-			if (retry.messages[0]?.role !== "user") continue;
+			if (!isValidBoundedTransform(candidateMessages, retry)) continue;
 			if (retry.metadata.tokensAfter > messageBudget) continue;
 
 			return {

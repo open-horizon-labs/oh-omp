@@ -45,6 +45,7 @@ import {
 	estimateMessageTokens,
 	estimateToolDefinitionTokens,
 	getOverflowSummaryAnchorId,
+	isValidBoundedTransform,
 	type OverflowSummaryCheckpoint,
 	type OverflowSummaryModelCandidate,
 	segmentIntoTurns,
@@ -2059,7 +2060,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 					relevanceScores,
 				};
 				const boundedPass = transformMessages(messages, boundedOptions);
-				if (boundedPass.messages[0]?.role === "user") {
+				if (isValidBoundedTransform(messages, boundedPass)) {
 					boundedMessages = boundedPass.messages;
 					finalTransformMetadata = boundedPass.metadata;
 				} else {

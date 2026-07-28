@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { Message } from "@oh-my-pi/pi-ai";
 import { inferCopilotInitiator } from "@oh-my-pi/pi-ai/providers/github-copilot-headers";
-import { convertToLlm } from "@oh-my-pi/pi-coding-agent/session/messages";
+import { convertToLlm, getLlmMessageRole } from "@oh-my-pi/pi-coding-agent/session/messages";
 
 function expectAttribution(message: Message | undefined, expected: "user" | "agent" | undefined): void {
 	expect(message).toBeDefined();
@@ -88,8 +88,25 @@ describe("convertToLlm custom message mapping", () => {
 		const converted = convertToLlm(messages);
 
 		expect(converted).toHaveLength(1);
+		expect(getLlmMessageRole(messages[0])).toBe("user");
 		expect(converted[0]?.role).toBe("user");
 		expectAttribution(converted[0], "user");
 		expect(inferCopilotInitiator(converted)).toBe("user");
+	});
+
+	it("classifies excluded execution messages as absent from LLM context", () => {
+		const message: AgentMessage = {
+			role: "bashExecution",
+			command: "git status",
+			output: "",
+			exitCode: 0,
+			cancelled: false,
+			truncated: false,
+			excludeFromContext: true,
+			timestamp: Date.now(),
+		};
+
+		expect(getLlmMessageRole(message)).toBeUndefined();
+		expect(convertToLlm([message])).toEqual([]);
 	});
 });

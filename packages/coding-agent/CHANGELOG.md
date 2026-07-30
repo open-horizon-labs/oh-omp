@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.12.4] - 2026-07-30
+
+### Fixed
+
+- Prevented passive recall from re-injecting current-session messages already present in its live query window, and kept dynamic assembler context before the latest literal user request.
+
 ## [0.12.3] - 2026-07-28
 
 ### Fixed

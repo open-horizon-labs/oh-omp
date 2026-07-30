@@ -29,7 +29,12 @@ import {
 	type RecallBand,
 } from "./temporal";
 import type { ToolResultStore } from "./tool-result-store";
-import { DEFAULT_RECALL_MMR_LAMBDA, type RecallSearchResult } from "./types";
+import {
+	DEFAULT_RECALL_MMR_LAMBDA,
+	isRecallContentExcluded,
+	type RecallContentExclusion,
+	type RecallSearchResult,
+} from "./types";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Configuration
@@ -299,6 +304,10 @@ export class PassiveHydrator {
 		if (!hotWindowText) {
 			return { text: null, results: [], cacheHit: false, durationMs: Date.now() - start, trace: null };
 		}
+		const exclusion: RecallContentExclusion = {
+			sessionId: this.#sessionId,
+			contentKeys: query.sourceContentKeys,
+		};
 
 		// 2. Embed the Qwen-token-bounded hot window
 		const vectors = await this.#embedWithTimeout(hotWindowText, start);
@@ -325,7 +334,8 @@ export class PassiveHydrator {
 		// 3. Check cosine cache
 		const cacheResult = this.#cache.check(embedding);
 		if (cacheResult.hit) {
-			const text = formatHydratedContext(cacheResult.results, {
+			const results = cacheResult.results.filter(result => !isRecallContentExcluded(result, exclusion));
+			const text = formatHydratedContext(results, {
 				currentSessionId: this.#sessionId,
 				currentProjectCwd: this.#projectCwd,
 				recentWindowMs: this.#recentWindowMs,
@@ -333,12 +343,12 @@ export class PassiveHydrator {
 			const durationMs = Date.now() - start;
 			return {
 				text,
-				results: cacheResult.results,
+				results,
 				cacheHit: true,
 				durationMs,
 				trace: this.#buildTrace({
 					hotWindowText,
-					results: cacheResult.results,
+					results,
 					text,
 					cacheHit: true,
 					durationMs,
@@ -355,6 +365,7 @@ export class PassiveHydrator {
 			limit: this.#topK,
 			mode: "hybrid",
 			project: "all",
+			exclude: exclusion,
 		});
 		const topResults = response.results;
 

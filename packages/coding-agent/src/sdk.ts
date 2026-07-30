@@ -713,6 +713,15 @@ function finalizeRecallDebugTrace(
 	};
 }
 
+function insertBeforeLatestLiteralUser(messages: AgentMessage[], insertions: AgentMessage[]): AgentMessage[] {
+	if (insertions.length === 0) return messages;
+	for (let index = messages.length - 1; index >= 0; index--) {
+		if (messages[index].role !== "user") continue;
+		return [...messages.slice(0, index), ...insertions, ...messages.slice(index)];
+	}
+	return [...messages, ...insertions];
+}
+
 /**
  * Create an AgentSession with the specified options.
  *
@@ -2179,14 +2188,10 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				});
 			}
 
-			// Step 6: Inject bounded context inputs as developer messages at the TAIL.
-			// Cache discipline: Anthropic prompt caching matches on a stable message
-			// prefix. These blocks regenerate every request (recalled-context entries,
-			// concept-graph facts), so placing them at the front invalidated the cache
-			// at message 0 every turn — the entire transcript was rewritten at
-			// cache-write prices (measured write/read 2.3–8.0 vs ~0.1 control).
-			// At the tail they cost one block of fresh input per request and never
-			// break the conversation prefix.
+			// Step 6: Inject bounded context inputs immediately before the latest
+			// literal user. These blocks regenerate every request, so keeping them
+			// in the dynamic suffix preserves the stable transcript prefix while
+			// leaving the user's current request as the final actionable instruction.
 			const contextMessages: AgentMessage[] = [];
 			if (conceptGraphText) {
 				contextMessages.push({
@@ -2213,7 +2218,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 					timestamp: Date.now(),
 				});
 			}
-			const finalMessages = contextMessages.length > 0 ? [...boundedMessages, ...contextMessages] : boundedMessages;
+			const finalMessages = insertBeforeLatestLiteralUser(boundedMessages, contextMessages);
 
 			// Step 7: Capture effective-prompt snapshot.
 			const turnId = `turn-${Date.now()}`;
@@ -2247,19 +2252,18 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				}
 			}
 
-			// Step 8: Append assembly summary as the final developer message.
-			// Tail placement for the same cache reason as Step 6: the summary's
-			// counts and budget numbers change every request.
-			const outputMessages = [...finalMessages];
+			// Step 8: Insert the dynamic assembly summary at the same boundary.
 			const summary = formatAssemblySummary(lastPromptSnapshot);
-			if (summary) {
-				outputMessages.push({
-					role: "developer" as const,
-					content: summary,
-					attribution: "agent" as const,
-					timestamp: Date.now(),
-				} satisfies AgentMessage);
-			}
+			const outputMessages = summary
+				? insertBeforeLatestLiteralUser(finalMessages, [
+						{
+							role: "developer" as const,
+							content: summary,
+							attribution: "agent" as const,
+							timestamp: Date.now(),
+						} satisfies AgentMessage,
+					])
+				: finalMessages;
 
 			return outputMessages;
 		};

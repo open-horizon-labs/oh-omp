@@ -5,7 +5,12 @@ import * as path from "node:path";
 import { HybridRetriever } from "../../../src/context/recall/hybrid-retriever";
 import { RecallStore } from "../../../src/context/recall/store";
 import { ToolResultStore } from "../../../src/context/recall/tool-result-store";
-import { buildRecallRowKey, EMBEDDING_DIM, type RecallRow } from "../../../src/context/recall/types";
+import {
+	buildRecallContentKey,
+	buildRecallRowKey,
+	EMBEDDING_DIM,
+	type RecallRow,
+} from "../../../src/context/recall/types";
 
 let tmpDir: string;
 let testCounter = 0;
@@ -221,6 +226,62 @@ describe("HybridRetriever", () => {
 		expect(response.results).toHaveLength(2);
 		expect(response.results[0].turn).toBe(2);
 		expect(response.results[1].turn).toBe(1);
+
+		toolResultStore.close();
+		recallStore.close();
+	});
+
+	test("excludes current-session content already represented in the passive query", async () => {
+		const duplicated = makeRow({
+			text: "deployment status is still pending",
+			turn: 14,
+			role: "assistant",
+			tool_name: null,
+			vector: makeVector(1),
+		});
+		const olderCurrentSession = makeRow({
+			text: "earlier deployment investigation",
+			turn: 8,
+			role: "assistant",
+			tool_name: null,
+			vector: makeVector(0.99),
+		});
+		const sameContentOtherSession = makeRow({
+			text: duplicated.text,
+			turn: 3,
+			role: "assistant",
+			tool_name: null,
+			session_id: "other-session",
+			vector: makeVector(0.98),
+		});
+		const { recallStore, toolResultStore } = await createStores([
+			duplicated,
+			olderCurrentSession,
+			sameContentOtherSession,
+		]);
+		const retriever = new HybridRetriever({
+			store: recallStore,
+			toolResultStore,
+			sessionId: "test-session",
+			projectCwd: "/tmp/current-project",
+		});
+
+		const response = await retriever.search({
+			query: "deployment status",
+			queryVector: makeVector(1),
+			limit: 5,
+			mode: "hybrid",
+			project: "current",
+			exclude: {
+				sessionId: "test-session",
+				contentKeys: new Set([buildRecallContentKey(duplicated)]),
+			},
+		});
+
+		expect(response.results.map(result => `${result.session_id}:${result.turn}`)).toEqual(
+			expect.arrayContaining(["test-session:8", "other-session:3"]),
+		);
+		expect(response.results.some(result => result.session_id === "test-session" && result.turn === 14)).toBe(false);
 
 		toolResultStore.close();
 		recallStore.close();

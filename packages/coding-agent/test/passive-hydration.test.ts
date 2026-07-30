@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import type { AssistantMessage, ToolResultMessage, UserMessage } from "@oh-my-pi/pi-ai";
 import {
 	buildPassiveRecallQuery,
+	buildRecallContentKey,
 	CosineCache,
 	EMBEDDING_DIM,
 	formatHydratedContext,
@@ -104,6 +105,12 @@ describe("buildPassiveRecallQuery", () => {
 		expect(result.text).toContain("I will inspect hydration");
 		expect(result.metadata.originalCharCount).toBe(result.metadata.effectiveCharCount);
 		expect(result.metadata.toolResults.encoded).toBe(0);
+		expect(result.sourceContentKeys).toEqual(
+			new Set([
+				buildRecallContentKey({ role: "user", tool_name: null, text: "fix passive recall" }),
+				buildRecallContentKey({ role: "assistant", tool_name: null, text: "I will inspect hydration" }),
+			]),
+		);
 	});
 
 	test("bounds the projected hot window with exact Qwen tokens", () => {

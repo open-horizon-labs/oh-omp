@@ -13,6 +13,7 @@ import { extractText } from "../assembler/codecs/shared";
 import type { CodecContext, ContentCodec, FileReadEntry } from "../assembler/types";
 import { extractAssistantText, extractToolResultText, extractUserText } from "./message-text";
 import { qwen3EmbeddingProfile } from "./model-profile";
+import { buildRecallContentKey } from "./types";
 
 const DEFAULT_PASSIVE_RECALL_CODECS: ContentCodec[] = [dedupCodec, readCodec, warmCodec];
 
@@ -36,6 +37,8 @@ export interface PassiveRecallQueryMetadata {
 export interface PassiveRecallQuery {
 	text: string | null;
 	metadata: PassiveRecallQueryMetadata;
+	/** Exact content identities already represented in the projected live window. */
+	sourceContentKeys: ReadonlySet<string>;
 }
 
 export interface PassiveRecallQueryOptions {
@@ -53,6 +56,7 @@ export function buildPassiveRecallQuery(
 	const readHistory = new Map<string, FileReadEntry>();
 	const parts: string[] = [];
 	const originalParts: string[] = [];
+	const sourceContentKeys = new Set<string>();
 	const metadata: PassiveRecallQueryMetadata = {
 		originalCharCount: 0,
 		effectiveCharCount: 0,
@@ -74,7 +78,16 @@ export function buildPassiveRecallQuery(
 				if (isSelected) {
 					const rawText = extractToolResultText(toolMessage.content);
 					metadata.toolResultRawCharCount += rawText.length;
-					if (rawText) originalParts.push(rawText);
+					if (rawText) {
+						originalParts.push(rawText);
+						sourceContentKeys.add(
+							buildRecallContentKey({
+								role: "tool_result",
+								tool_name: toolMessage.toolName,
+								text: rawText,
+							}),
+						);
+					}
 
 					const projection = projectToolResult(toolMessage, {
 						codecRegistry,
@@ -106,12 +119,14 @@ export function buildPassiveRecallQuery(
 				if (text) {
 					parts.push(text);
 					originalParts.push(text);
+					sourceContentKeys.add(buildRecallContentKey({ role: "user", tool_name: null, text }));
 				}
 			} else if (message.role === "assistant") {
 				const text = extractAssistantText(message.content);
 				if (text) {
 					parts.push(text);
 					originalParts.push(text);
+					sourceContentKeys.add(buildRecallContentKey({ role: "assistant", tool_name: null, text }));
 				}
 			}
 		}
@@ -125,7 +140,7 @@ export function buildPassiveRecallQuery(
 	metadata.projectedTokenCount = prepared.originalTokenCount;
 	metadata.effectiveTokenCount = prepared.tokenCount;
 	metadata.queryTruncated = prepared.truncated;
-	return { text: prepared.text.length > 0 ? prepared.text : null, metadata };
+	return { text: prepared.text.length > 0 ? prepared.text : null, metadata, sourceContentKeys };
 }
 
 function selectHotWindowMessages(messages: AgentMessage[], windowTurns = 5): AgentMessage[] {

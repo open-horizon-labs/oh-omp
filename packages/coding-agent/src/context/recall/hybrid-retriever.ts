@@ -3,11 +3,13 @@ import type { RecallDebugCandidateTrace, RecallDebugSource } from "./debug-trace
 import { mmrRerank } from "./mmr";
 import type { RecallStore } from "./store";
 import { DEFAULT_LIVE_WINDOW_MS, getRecallAgeMs, normalizeRecentWindowMs } from "./temporal";
-import type { ToolResultStore } from "./tool-result-store";
+import type { SearchResult, ToolResultStore } from "./tool-result-store";
 import {
 	buildRecallLookupKey,
 	buildRecallRowKey,
+	isRecallContentExcluded,
 	type MmrCandidate,
+	type RecallContentExclusion,
 	type RecallLookupKey,
 	type RecallRow,
 	type RecallSearchResult,
@@ -47,6 +49,7 @@ export interface HybridSearchRequest {
 	project?: "current" | "all";
 	mode?: HybridSearchMode;
 	mmrLambda?: number;
+	exclude?: RecallContentExclusion;
 }
 
 export interface HybridSearchTrace {
@@ -89,8 +92,11 @@ export class HybridRetriever {
 	async search(request: HybridSearchRequest): Promise<HybridSearchResponse> {
 		const mode = request.mode ?? "hybrid";
 		const effectiveFilter = this.#buildEffectiveFilter(request);
-		const semanticLimit = Math.max(request.limit * this.#semanticOverfetchFactor, request.limit);
-		const semanticResults = await this.#store.search(request.queryVector, semanticLimit, effectiveFilter);
+		const exclusionOverfetch = Math.min(request.exclude?.contentKeys.size ?? 0, request.limit * 5);
+		const semanticLimit = Math.max(request.limit * this.#semanticOverfetchFactor, request.limit) + exclusionOverfetch;
+		const semanticResults = (await this.#store.search(request.queryVector, semanticLimit, effectiveFilter)).filter(
+			result => !isRecallContentExcluded(result, request.exclude),
+		);
 		if (semanticResults.length === 0) {
 			return {
 				results: [],
@@ -120,11 +126,13 @@ export class HybridRetriever {
 			};
 		}
 
-		const keywordResults = this.#toolResultStore.search(request.query, {
-			limit: Math.max(request.limit * this.#keywordOverfetchFactor, request.limit),
-			projectCwd: request.project === "current" ? this.#projectCwd : undefined,
-			role: request.role,
-		});
+		const keywordResults = this.#toolResultStore
+			.search(request.query, {
+				limit: Math.max(request.limit * this.#keywordOverfetchFactor, request.limit) + exclusionOverfetch,
+				projectCwd: request.project === "current" ? this.#projectCwd : undefined,
+				role: request.role,
+			})
+			.filter(result => !this.#isKeywordResultExcluded(result, request.exclude));
 		if (keywordResults.length === 0) {
 			const reranked = this.#rerankSemantic(semanticResults, request.limit, request.mmrLambda);
 			return {
@@ -312,6 +320,18 @@ export class HybridRetriever {
 			clauses.push(`(${request.filter.trim()})`);
 		}
 		return clauses.length > 0 ? clauses.join(" AND ") : undefined;
+	}
+
+	#isKeywordResultExcluded(result: SearchResult, exclusion: RecallContentExclusion | undefined): boolean {
+		return isRecallContentExcluded(
+			{
+				session_id: result.sessionId,
+				role: result.role,
+				tool_name: result.toolName,
+				text: result.content,
+			},
+			exclusion,
+		);
 	}
 
 	#escapeSqlLiteral(value: string): string {

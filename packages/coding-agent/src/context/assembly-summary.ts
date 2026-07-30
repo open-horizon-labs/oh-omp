@@ -5,9 +5,9 @@
  * LLM can make informed decisions about its context window state: what was
  * kept, what was stubbed/dropped, and how much headroom remains.
  *
- * Injected as a developer message before the conversation — not as user
- * content — so it functions as system-level metadata the LLM can reference
- * but doesn't need to respond to directly.
+ * Injected as a developer message immediately before the latest literal user —
+ * not as user content — so it functions as system-level metadata without
+ * displacing the user's current request as the final actionable instruction.
  */
 
 import { formatNumber } from "@oh-my-pi/pi-utils";

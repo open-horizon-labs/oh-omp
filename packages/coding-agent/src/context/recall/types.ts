@@ -32,6 +32,12 @@ export interface RecallSearchResult extends RecallRow {
 	_distance: number;
 }
 
+/** Current-session recall content that must not be returned to the active prompt. */
+export interface RecallContentExclusion {
+	sessionId: string;
+	contentKeys: ReadonlySet<string>;
+}
+
 /** Deterministic lookup key shared between semantic rows and lexical index rows. */
 export interface RecallLookupKey {
 	session_id: string;
@@ -50,6 +56,22 @@ export interface MmrCandidate<T> {
 
 export function hashRecallText(text: string): string {
 	return Bun.hash(text).toString(16);
+}
+
+/** Content identity used to suppress duplicates independently of ingest turn numbering. */
+export function buildRecallContentKey(input: Pick<RecallRow, "role" | "tool_name" | "text">): string {
+	return `${input.role}:${input.tool_name ?? ""}:${hashRecallText(input.text)}`;
+}
+
+export function isRecallContentExcluded(
+	input: Pick<RecallRow, "session_id" | "role" | "tool_name" | "text">,
+	exclusion: RecallContentExclusion | undefined,
+): boolean {
+	return (
+		exclusion !== undefined &&
+		input.session_id === exclusion.sessionId &&
+		exclusion.contentKeys.has(buildRecallContentKey(input))
+	);
 }
 
 export function buildRecallLookupKey(

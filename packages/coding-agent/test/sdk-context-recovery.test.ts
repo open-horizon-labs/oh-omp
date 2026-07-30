@@ -187,6 +187,13 @@ describe("SDK context recovery request path", () => {
 			expect(JSON.stringify(converted)).toContain("Original requirement");
 			expect(JSON.stringify(converted)).toContain("result-0");
 			expect(JSON.stringify(converted)).toContain("include customer.deleted");
+			const latestUserIndex = converted.findIndex(message =>
+				JSON.stringify(message.content).includes("include customer.deleted"),
+			);
+			const assemblyIndex = converted.findIndex(message => JSON.stringify(message.content).includes("[Assembly:"));
+			expect(assemblyIndex).toBeGreaterThanOrEqual(0);
+			expect(assemblyIndex).toBeLessThan(latestUserIndex);
+			expect(latestUserIndex).toBe(converted.length - 1);
 		} finally {
 			await session.dispose();
 		}

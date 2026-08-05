@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.12.5] - 2026-08-06
+
 ### Changed
 
 - Replaced threshold-gated conversation compression (which could never fire: similarity floor exceeded the decayed threshold) with budget-driven relevance ranking — least-relevant turns compress first, only under budget pressure, targeting a 0.9 watermark.

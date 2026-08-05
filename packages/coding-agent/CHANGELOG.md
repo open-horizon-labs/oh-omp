@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.12.6] - 2026-08-06
+
+### Fixed
+
+- Restored the overflow-summary/recovery path, made unreachable in 0.12.5: budget drops were clamped at the latest user turn, so the bounded transform could never become invalid and the recovery ladder never engaged, while over-budget windows shipped silently. The anchor is now protected by routing (invalid bounded result engages recovery), compression exemption remains.
+
 ## [0.12.5] - 2026-08-06
 
 ### Changed

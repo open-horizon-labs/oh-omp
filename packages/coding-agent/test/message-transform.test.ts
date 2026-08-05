@@ -1174,7 +1174,10 @@ describe("transformMessagesWithRecovery", () => {
 		}
 
 		const options = { maxTokens: 180, hotWindowTurns: 2 };
-		expect(transformMessages(messages, options).messages[0]?.role).toBe("user");
+		// The raw bounded pass must drop the anchor here (front-drop exhausts the
+		// conversation), producing an INVALID result that routes to recovery — the
+		// anchor is protected by routing, not by clamping drops.
+		expect(isValidBoundedTransform(messages, transformMessages(messages, options))).toBe(false);
 
 		const result = transformMessagesWithRecovery(messages, options, { standardControlPromptTokens: 20 });
 

@@ -168,7 +168,7 @@ describe("buildPassiveRecallQuery", () => {
 
 		const result = buildPassiveRecallQuery(messages, { windowTurns: 3 });
 
-		expect(result.text).toContain('[warm:bash | command="bun check:ts" | 8 lines]');
+		expect(result.text).toContain('[warm:bash | command="bun check:ts" | 8 lines | recall expands]');
 		expect(result.text).toContain("[... 3 lines omitted]");
 		expect(result.text).not.toContain("MIDDLE_RAW_OUTPUT_SHOULD_NOT_SURVIVE");
 		expect(result.metadata.toolResults.counts.warm).toBe(1);

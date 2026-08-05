@@ -1261,32 +1261,23 @@ export function transformMessages(messages: AgentMessage[], options: MessageTran
 	let dropCount = 0;
 	if (hasBudget) {
 		dropCount = computeBudgetDropCount(transformedTokens, maxTokens, hotWindowTurns, budgetTarget);
-		if (latestLiteralUserTurn >= 0) dropCount = Math.min(dropCount, latestLiteralUserTurn);
 	}
 
 	// 3b. Ensure surviving messages start with a user turn (Claude API requirement).
+	// The walk stops at the first user-role turn, which may be the latest literal
+	// user anchor itself. If drops swallow the anchor, the result is deliberately
+	// INVALID (isValidBoundedTransform fails) so the overflow-summary/recovery
+	// ladder engages — the anchor is protected by routing, not by clamping drops,
+	// which would silently ship an over-budget window and starve the recovery path.
 	// The tombstone is inserted after this validation. startsWithCanonicalLlmUser
 	// skips developer messages so the synthesized tombstone does not reset the constraint.
 	if (dropCount > 0) {
-		const latestUserBoundary = latestLiteralUserTurn >= 0 ? latestLiteralUserTurn : transformedTurns.length;
-		while (
-			dropCount < hotWindowStart &&
-			dropCount < latestUserBoundary &&
-			transformedTurns[dropCount].messages[0].role !== "user"
-		) {
-			dropCount++;
-		}
-		while (
-			dropCount < transformedTurns.length &&
-			dropCount < latestUserBoundary &&
-			transformedTurns[dropCount].messages[0].role !== "user"
-		) {
+		while (dropCount < transformedTurns.length && transformedTurns[dropCount].messages[0].role !== "user") {
 			dropCount++;
 		}
 	}
 
 	if (hasBudget && dropCount > 0) {
-		const latestUserBoundary = latestLiteralUserTurn >= 0 ? latestLiteralUserTurn : transformedTurns.length;
 		let projectedTokens = transformedTokens.slice(dropCount).reduce((sum, tokens) => sum + tokens, 0);
 		projectedTokens += estimateMessageTokens([
 			buildElidedTombstone(
@@ -1294,13 +1285,9 @@ export function transformMessages(messages: AgentMessage[], options: MessageTran
 				originalTokens.slice(0, dropCount).reduce((sum, tokens) => sum + tokens, 0),
 			),
 		]);
-		while (projectedTokens > maxTokens && dropCount < hotWindowStart && dropCount < latestUserBoundary) {
+		while (projectedTokens > maxTokens && dropCount < hotWindowStart) {
 			dropCount++;
-			while (
-				dropCount < hotWindowStart &&
-				dropCount < latestUserBoundary &&
-				transformedTurns[dropCount].messages[0].role !== "user"
-			) {
+			while (dropCount < hotWindowStart && transformedTurns[dropCount].messages[0].role !== "user") {
 				dropCount++;
 			}
 			projectedTokens = transformedTokens.slice(dropCount).reduce((sum, tokens) => sum + tokens, 0);

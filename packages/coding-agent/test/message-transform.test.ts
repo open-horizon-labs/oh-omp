@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage, DeveloperMessage, ToolResultMessage, UserMessage } from "@oh-my-pi/pi-ai";
 import {
+	computeTurnKey,
 	DEFAULT_HOT_WINDOW_TURNS,
 	dedupCodec,
 	deriveBudget,
@@ -100,6 +101,12 @@ function makeLargeToolResult(toolCallId: string, charCount: number, toolName = "
 // ═══════════════════════════════════════════════════════════════════════════
 // segmentIntoTurns
 // ═══════════════════════════════════════════════════════════════════════════
+function withoutElidedTombstone(messages: AgentMessage[]): AgentMessage[] {
+	return messages.filter(msg => {
+		const content = (msg as { content?: unknown }).content;
+		return !(msg.role === "developer" && typeof content === "string" && content.startsWith("[Elided:"));
+	});
+}
 
 describe("segmentIntoTurns", () => {
 	test("empty messages → empty turns", () => {
@@ -388,9 +395,11 @@ describe("transformMessages — budget bounding", () => {
 		// Budget of 700 tokens with hotWindowTurns=1 → only last turn protected
 		// Drops oldest until fits: drops 'a' (313), total 626 ≤ 700
 		const { messages: result } = transformMessages(messages, { maxTokens: 700, hotWindowTurns: 1 });
-		expect(result).toHaveLength(2);
-		// First message dropped
-		expect((result[0] as UserMessage).content).toBe("b".repeat(1000));
+		expect(result).toHaveLength(3);
+		expect(result[0].role).toBe("developer");
+		expect((result[0] as DeveloperMessage).content).toStartWith("[Elided: turns 1-1,");
+		// First message dropped; tombstone records the seam.
+		expect((result[1] as UserMessage).content).toBe("b".repeat(1000));
 	});
 
 	test("hot window is never dropped even if over budget", () => {
@@ -854,8 +863,9 @@ describe("transformMessages — front-drop API ordering", () => {
 		// Fix must extend drop to also remove turn 1, making turn 2 (user) the front.
 		const { messages: result, metadata } = transformMessages(messages, { maxTokens: 100, hotWindowTurns: 1 });
 
+		const visible = withoutElidedTombstone(result);
 		// First surviving message must be user
-		expect(result[0].role).toBe("user");
+		expect(visible[0]?.role).toBe("user");
 
 		// Both turn 0 and turn 1 should be dropped
 		expect(metadata.decisions[0].action).toBe("dropped");
@@ -880,7 +890,8 @@ describe("transformMessages — front-drop API ordering", () => {
 
 		const { messages: result, metadata } = transformMessages(messages, { maxTokens: 100, hotWindowTurns: 1 });
 
-		expect(result[0].role).toBe("user");
+		const visible = withoutElidedTombstone(result);
+		expect(visible[0]?.role).toBe("user");
 		expect(metadata.decisions[0].action).toBe("dropped");
 		expect(metadata.decisions[1].action).toBe("dropped");
 		expect(metadata.decisions[2].action).toBe("dropped");
@@ -900,9 +911,11 @@ describe("transformMessages — front-drop API ordering", () => {
 		const { messages: result, metadata } = transformMessages(messages, { maxTokens: 50, hotWindowTurns: 1 });
 
 		// Hot window user message must survive
-		expect(result).toHaveLength(1);
-		expect(result[0].role).toBe("user");
-		expect((result[0] as UserMessage).content).toBe("end");
+		const visible = withoutElidedTombstone(result);
+		expect(visible).toHaveLength(1);
+		expect(visible[0]?.role).toBe("user");
+		expect((visible[0] as UserMessage).content).toBe("end");
+		expect(result[0].role).toBe("developer");
 		expect(metadata.droppedCount).toBe(2);
 	});
 
@@ -919,8 +932,9 @@ describe("transformMessages — front-drop API ordering", () => {
 		const { messages: result } = transformMessages(messages, { maxTokens: 50, hotWindowTurns: 3 });
 
 		// Hot window starts with user → OK
-		expect(result[0].role).toBe("user");
-		expect((result[0] as UserMessage).content).toBe("recent-1");
+		const visible = withoutElidedTombstone(result);
+		expect(visible[0]?.role).toBe("user");
+		expect((visible[0] as UserMessage).content).toBe("recent-1");
 	});
 
 	test("developer turn at front after drop → also dropped", () => {
@@ -937,7 +951,8 @@ describe("transformMessages — front-drop API ordering", () => {
 
 		const { messages: result } = transformMessages(messages, { maxTokens: 50, hotWindowTurns: 1 });
 
-		expect(result[0].role).toBe("user");
+		const visible = withoutElidedTombstone(result);
+		expect(visible[0]?.role).toBe("user");
 	});
 
 	test("hot window starts with assistant after budget drop → extends into hot window", () => {
@@ -957,9 +972,10 @@ describe("transformMessages — front-drop API ordering", () => {
 
 		const { messages: result, metadata } = transformMessages(messages, { maxTokens: 50, hotWindowTurns: 2 });
 
+		const visible = withoutElidedTombstone(result);
 		// First surviving message must be user
-		expect(result[0].role).toBe("user");
-		expect((result[0] as UserMessage).content).toBe("end");
+		expect(visible[0]?.role).toBe("user");
+		expect((visible[0] as UserMessage).content).toBe("end");
 		// Turn 0 and turn 1 both dropped
 		expect(metadata.decisions[0].action).toBe("dropped");
 		expect(metadata.decisions[1].action).toBe("dropped");
@@ -1012,6 +1028,78 @@ describe("transformMessages — pre-budget conversation compression", () => {
 		expect(result.messages[1]).toBe(assistant);
 		expect(result.metadata.decisions[1].action).toBe("kept");
 		expect(result.metadata.compressedCount).toBe(0);
+	});
+
+	test("sticky turn keys keep conversation turns compressed without budget pressure", () => {
+		const oldAssistant = makeAssistantText(
+			Array.from({ length: 60 }, (_, index) => `sticky ${index} ${"x".repeat(40)}`).join("\n"),
+		);
+		const messages: AgentMessage[] = [makeUser("task"), oldAssistant, makeUser("recent")];
+		const stickyKey = computeTurnKey(segmentIntoTurns(messages)[1]);
+
+		const result = transformMessages(messages, {
+			hotWindowTurns: 1,
+			stickyCompressedKeys: new Set([stickyKey]),
+			relevanceScores: new Map([[1, 1]]),
+		});
+
+		expect(result.metadata.decisions[1].action).toBe("compressed");
+		expect(result.metadata.decisions[1].reason).toBe("conversation-compressed");
+		expect(result.metadata.conversationCompressedKeys).toEqual([stickyKey]);
+	});
+
+	test("budget pressure compresses scored turns by ascending cosine before unscored turns", () => {
+		const makeLong = (label: string) =>
+			Array.from({ length: 70 }, (_, index) => `${label} ${index} ${"x".repeat(35)}`).join("\n");
+		const messages: AgentMessage[] = [
+			makeUser(makeLong("high")),
+			makeAssistantText(makeLong("lowest")),
+			makeUser(makeLong("unscored")),
+			makeAssistantText(makeLong("middle")),
+			makeUser("recent anchor"),
+		];
+		const turns = segmentIntoTurns(messages);
+		const result = transformMessages(messages, {
+			maxTokens: 900,
+			hotWindowTurns: 1,
+			relevanceScores: new Map([
+				[0, 0.8],
+				[1, -0.6],
+				[3, 0.2],
+			]),
+		});
+
+		const compressedKeys = result.metadata.conversationCompressedKeys;
+		expect(compressedKeys.slice(0, 2)).toEqual([computeTurnKey(turns[1]), computeTurnKey(turns[3])]);
+		const unscoredIndex = compressedKeys.indexOf(computeTurnKey(turns[2]));
+		if (unscoredIndex !== -1) expect(unscoredIndex).toBeGreaterThan(1);
+	});
+
+	test("tight budgets emit deterministic elision tombstones at the drop seam", () => {
+		const messages: AgentMessage[] = [
+			makeUser(`first task ${"a".repeat(800)}`),
+			makeAssistantText(`old answer ${"b".repeat(800)}`, [{ id: "tc-edit", name: "edit" }]),
+			makeToolResult("tc-edit", "edited", "edit"),
+			makeUser(`middle request ${"c".repeat(800)}`),
+			makeAssistantText(`middle answer ${"d".repeat(800)}`),
+			makeUser("latest literal anchor"),
+		];
+		(messages[1] as AssistantMessage).content.push({
+			type: "toolCall",
+			id: "tc-path",
+			name: "edit",
+			arguments: { path: "src/a.ts" },
+		});
+
+		const first = transformMessages(messages, { maxTokens: 120, hotWindowTurns: 1 });
+		const second = transformMessages(messages, { maxTokens: 120, hotWindowTurns: 1 });
+
+		expect(first.messages[0].role).toBe("developer");
+		expect((first.messages[0] as DeveloperMessage).content).toStartWith("[Elided:");
+		expect((first.messages[0] as DeveloperMessage).content).toContain("Files touched: src/a.ts (1)");
+		expect(first.messages).toEqual(second.messages);
+		expect(first.metadata.elided?.turnCount).toBeGreaterThan(0);
+		expect(withoutElidedTombstone(first.messages).at(-1)).toBe(messages.at(-1));
 	});
 });
 
@@ -1086,7 +1174,7 @@ describe("transformMessagesWithRecovery", () => {
 		}
 
 		const options = { maxTokens: 180, hotWindowTurns: 2 };
-		expect(transformMessages(messages, options).messages).toEqual([]);
+		expect(transformMessages(messages, options).messages[0]?.role).toBe("user");
 
 		const result = transformMessagesWithRecovery(messages, options, { standardControlPromptTokens: 20 });
 
@@ -1105,7 +1193,7 @@ describe("transformMessagesWithRecovery", () => {
 		expect(result.metadata.recovery?.selectedOriginalTurnIndexes).toEqual([0, 7, 8]);
 		expect(result.metadata.recovery?.outputTokens).toBe(result.metadata.tokensAfter);
 		expect(result.metadata.recovery?.controlPrompt).toBe("standard");
-		expect(result.metadata.recovery?.initial.tokensAfter).toBe(0);
+		expect(result.metadata.recovery?.initial.tokensAfter).toBeGreaterThan(0);
 	});
 
 	test("shrinks a hot suffix until the complete recovery output fits", () => {

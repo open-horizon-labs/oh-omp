@@ -165,6 +165,28 @@ export class RecallStore {
 		return matched;
 	}
 
+	async getSessionConversationVectors(sessionId: string): Promise<Array<{ text: string; vector: number[] }>> {
+		const escapedId = sessionId.replace(/'/g, "''");
+		const filter = `session_id = '${escapedId}' AND role IN ('user', 'assistant')`;
+		const timeout = Bun.sleep(5000).then(() => [] as Array<{ text: string; vector: number[] }>);
+		const rows = (await Promise.race([
+			this.#table.query().where(filter).select(["text", "vector"]).toArray(),
+			timeout,
+		])) as Array<{ text?: unknown; vector?: unknown }>;
+
+		const vectors: Array<{ text: string; vector: number[] }> = [];
+		for (const row of rows) {
+			if (typeof row.text !== "string") continue;
+			if (!row.text) continue;
+			if (!row.vector || typeof row.vector !== "object" || !(Symbol.iterator in row.vector)) continue;
+			const vector = Array.from(row.vector as Iterable<unknown>);
+			if (vector.length === 0) continue;
+			if (!vector.every(value => typeof value === "number" && Number.isFinite(value))) continue;
+			vectors.push({ text: row.text, vector: vector as number[] });
+		}
+		return vectors;
+	}
+
 	async getEmbeddingsByTurns(turns: number[], sessionId: string): Promise<Map<number, Float32Array>> {
 		if (turns.length === 0) return new Map();
 		const escapedId = sessionId.replace(/'/g, "''");

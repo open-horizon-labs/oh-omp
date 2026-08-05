@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Replaced threshold-gated conversation compression (which could never fire: similarity floor exceeded the decayed threshold) with budget-driven relevance ranking — least-relevant turns compress first, only under budget pressure, targeting a 0.9 watermark.
+- Relevance scores now computed by direct cosine against session conversation rows matched by content hash, instead of nearest-neighbor search with exact-text matching that structurally could not score irrelevant turns.
+- Conversation-compression decisions are now monotonic across requests (sticky ratchet keyed by turn content hash) and budget drops extend to a watermark, keeping assembled prefixes byte-stable for provider prompt caching.
+- Passive recall and concept-graph injection are computed once per literal user turn and reused across the tool loop, preventing mid-loop `<recalled-context>` swaps from invalidating provider prompt caches.
+- Assembly summary reports cosine similarity ranges (`cos`) and elided-turn counts.
+
+### Added
+
+- Tombstone message at the budget-drop seam: a deterministic `[Elided: ...]` developer message summarizing dropped turns (user request first-lines, files touched, recall recovery recipe) so the model sees where and what history was amputated instead of a silent gap.
+
 ## [0.12.4] - 2026-07-30
 
 ### Fixed

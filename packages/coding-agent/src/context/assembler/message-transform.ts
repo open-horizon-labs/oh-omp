@@ -16,7 +16,7 @@
  */
 
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
-import type { TextContent, ToolResultMessage, UserMessage } from "@oh-my-pi/pi-ai";
+import type { DeveloperMessage, TextContent, ToolResultMessage, UserMessage } from "@oh-my-pi/pi-ai";
 import { logger } from "@oh-my-pi/pi-utils";
 import { parseMCPToolName } from "../../mcp/tool-bridge";
 import { getLlmMessageRole } from "../../session/messages";
@@ -191,10 +191,13 @@ export interface MessageTransformOptions {
 
 	/**
 	 * Pre-computed semantic relevance scores for turns, keyed by turn index.
-	 * Values are cosine similarity (0–1) between the turn's embedding and the
-	 * hot-window embedding. Missing entries default to keep-verbatim.
+	 * Values are cosine similarity in [-1, 1]. Used ordinally: lower scores
+	 * are less relevant and compress first under budget pressure.
 	 */
 	relevanceScores?: Map<number, number>;
+
+	/** Stable turn keys previously conversation-compressed; those turns stay compressed. */
+	stickyCompressedKeys?: ReadonlySet<number>;
 
 	/**
 	 * Working-set retention: keep the canonical (first-read) copy of actively
@@ -326,6 +329,12 @@ export interface TransformMetadata {
 
 	/** Min/max similarity scores observed (undefined if no scoring). */
 	similarityRange?: { min: number; max: number };
+
+	/** Stable keys for turns conversation-compressed in this pass. */
+	conversationCompressedKeys: number[];
+
+	/** Budget-elision tombstone emitted for front-dropped turns. */
+	elided?: { turnCount: number; tokens: number };
 
 	/** Emergency recovery applied after the normal bounded transform produced no valid user-led context. */
 	recovery?: TransformRecoveryMetadata;
@@ -494,7 +503,7 @@ export function segmentIntoTurns(messages: AgentMessage[]): Turn[] {
 function startsWithCanonicalLlmUser(messages: AgentMessage[]): boolean {
 	for (const message of messages) {
 		const role = getLlmMessageRole(message);
-		if (role === undefined) continue;
+		if (role === undefined || role === "developer") continue;
 		return role === "user";
 	}
 	return false;
@@ -855,13 +864,16 @@ function estimateTurnTokens(turn: Turn): number {
  *
  * Returns the number of turns dropped from the front.
  */
-function computeBudgetDropCount(tokenCounts: number[], maxTokens: number, hotWindowSize: number): number {
+function computeBudgetDropCount(
+	tokenCounts: number[],
+	maxTokens: number,
+	hotWindowSize: number,
+	targetTokens = maxTokens,
+): number {
 	if (tokenCounts.length === 0) return 0;
 
-	// The hot window is always preserved
 	const hotWindowStart = Math.max(0, tokenCounts.length - hotWindowSize);
 
-	// Sum total tokens from precomputed counts
 	let totalTokens = 0;
 	for (const count of tokenCounts) {
 		totalTokens += count;
@@ -869,9 +881,8 @@ function computeBudgetDropCount(tokenCounts: number[], maxTokens: number, hotWin
 
 	if (totalTokens <= maxTokens) return 0;
 
-	// Drop oldest turns until we fit
 	let dropUntil = 0;
-	while (dropUntil < hotWindowStart && totalTokens > maxTokens) {
+	while (dropUntil < hotWindowStart && totalTokens > targetTokens) {
 		totalTokens -= tokenCounts[dropUntil];
 		dropUntil++;
 	}
@@ -883,50 +894,51 @@ function computeBudgetDropCount(tokenCounts: number[], maxTokens: number, hotWin
 // Conversation compression (non-tool turns)
 // ═══════════════════════════════════════════════════════════════════════════
 
-/** Cosine similarity baseline. Turns with similarity above the effective threshold are kept verbatim. */
-const BASE_RELEVANCE_THRESHOLD = 0.3;
-
-/** How aggressively the threshold drops with age. 0.5 means the oldest turn's threshold is half the base. */
-const RELEVANCE_DECAY_FACTOR = 0.5;
-
 /** Estimated token count below which non-tool turns are kept verbatim regardless of relevance. */
 const CONVERSATION_VERBATIM_TOKEN_THRESHOLD = 50;
 
-/**
- * Determine whether a non-tool turn should be compressed based on semantic relevance.
- *
- * Uses an age-decayed threshold: older turns need LESS similarity to survive,
- * accounting for foundational context that may have seeded the current work stream.
- *
- * Returns `true` if the turn should be compressed.
- */
-function shouldCompressConversationTurn(
+/** Budget drops and ranked compression aim below the hard cap to avoid per-turn cache churn. */
+const BUDGET_DROP_WATERMARK = 0.9;
+
+function extractTurnTextParts(turn: Turn): string[] {
+	const parts: string[] = [];
+	for (const msg of turn.messages) {
+		const content = (msg as { content?: unknown }).content;
+		if (typeof content === "string") {
+			parts.push(content);
+			continue;
+		}
+		if (!Array.isArray(content)) continue;
+		for (const block of content) {
+			if (typeof block === "string") {
+				parts.push(block);
+			} else if (block && typeof block === "object" && "text" in block && typeof block.text === "string") {
+				parts.push(block.text);
+			}
+		}
+	}
+	return parts;
+}
+
+export function computeTurnKey(turn: Turn): number {
+	return contentHash(extractTurnTextParts(turn).join("\n"));
+}
+
+function isConversationCompressionEligible(
 	turnIndex: number,
-	totalTurns: number,
 	turnTokens: number,
 	turn: Turn,
-	relevanceScores: Map<number, number> | undefined,
+	hotWindowStart: number,
+	workingSetExemptions: ReadonlySet<number>,
+	latestLiteralUserTurn: number,
 ): boolean {
-	// Developer messages beyond hot window are handled separately (dropped).
-	// This function only evaluates user/assistant conversation turns.
-	const role = turn.messages[0]?.role;
-	if (role === "developer") return false;
-
-	// Short messages: always keep verbatim (cheap to keep, risky to classify)
+	if (turnIndex >= hotWindowStart) return false;
+	if (turnIndex === latestLiteralUserTurn) return false;
+	if (workingSetExemptions.has(turnIndex)) return false;
+	if (turn.hasToolResults) return false;
 	if (turnTokens <= CONVERSATION_VERBATIM_TOKEN_THRESHOLD) return false;
-
-	// No relevance data: keep verbatim (safe default)
-	if (!relevanceScores || relevanceScores.size === 0) return false;
-
-	// Look up pre-computed similarity. Missing = no embedding = keep.
-	const similarity = relevanceScores.get(turnIndex);
-	if (similarity === undefined) return false;
-
-	// Age-decayed threshold: older turns need less similarity to survive
-	const normalizedAge = totalTurns > 1 ? (totalTurns - 1 - turnIndex) / (totalTurns - 1) : 0;
-	const effectiveThreshold = BASE_RELEVANCE_THRESHOLD * (1 - RELEVANCE_DECAY_FACTOR * normalizedAge);
-
-	return similarity <= effectiveThreshold;
+	const role = turn.messages[0]?.role;
+	return role === "user" || role === "assistant";
 }
 
 /**
@@ -988,6 +1000,85 @@ function compressConversationTurn(turn: Turn): { turn: Turn; tokensAfter: number
 	return { turn: compressedTurn, tokensAfter: estimateTurnTokens(compressedTurn) };
 }
 
+function firstTextLine(turn: Turn): string | null {
+	const text = extractTurnTextParts(turn).join("\n").trim();
+	if (!text) return null;
+	const firstLine = text.split("\n")[0]?.trim();
+	if (!firstLine) return null;
+	return firstLine.length > 120 ? `${firstLine.slice(0, 119)}…` : firstLine;
+}
+
+function collectDroppedToolCallPaths(turns: readonly Turn[]): Array<{ path: string; count: number }> {
+	const counts = new Map<string, number>();
+	for (const turn of turns) {
+		for (const msg of turn.messages) {
+			const content = (msg as { content?: unknown }).content;
+			if (!Array.isArray(content)) continue;
+			for (const block of content) {
+				if (!block || typeof block !== "object") continue;
+				const candidate = block as { type?: string; name?: string; arguments?: unknown };
+				if (candidate.type !== "toolCall" || !candidate.name || !MUTATING_TOOL_NAMES.has(candidate.name)) continue;
+				const args = (candidate.arguments ?? {}) as { path?: unknown; notebook_path?: unknown };
+				const path =
+					typeof args.path === "string"
+						? args.path
+						: typeof args.notebook_path === "string"
+							? args.notebook_path
+							: null;
+				if (!path) continue;
+				counts.set(path, (counts.get(path) ?? 0) + 1);
+			}
+		}
+	}
+	return [...counts.entries()]
+		.map(([path, count]) => ({ path, count }))
+		.sort((a, b) => b.count - a.count || a.path.localeCompare(b.path))
+		.slice(0, 10);
+}
+
+function visibleDroppedUserLines(turns: readonly Turn[]): string[] {
+	const lines: string[] = [];
+	for (let i = 0; i < turns.length; i++) {
+		if (turns[i].messages[0]?.role !== "user") continue;
+		const line = firstTextLine(turns[i]);
+		if (line) lines.push(`${i + 1}. ${line}`);
+	}
+
+	if (lines.length <= 12) return lines;
+	return [...lines.slice(0, 4), `… and ${lines.length - 12} more`, ...lines.slice(-8)];
+}
+
+function buildElidedTombstone(droppedTurns: readonly Turn[], droppedTokens: number): DeveloperMessage {
+	const firstTimestamp = (droppedTurns[0]?.messages[0] as { timestamp?: unknown } | undefined)?.timestamp;
+	const lines: string[] = [`[Elided: turns 1-${droppedTurns.length}, ~${Math.round(droppedTokens / 1000)}K tokens]`];
+	lines.push(...visibleDroppedUserLines(droppedTurns));
+
+	const touched = collectDroppedToolCallPaths(droppedTurns);
+	if (touched.length > 0) {
+		lines.push(`Files touched: ${touched.map(entry => `${entry.path} (${entry.count})`).join(", ")}`);
+	}
+	lines.push("Recover with: recall(query=...) or recall(turn=N)");
+
+	while (lines.length > 2) {
+		const message: DeveloperMessage = {
+			role: "developer",
+			content: lines.join("\n"),
+			timestamp: typeof firstTimestamp === "number" ? firstTimestamp : 0,
+		};
+		if (estimateMessageTokens([message]) <= 800) return message;
+		const removableStart = 1;
+		const removableEnd = lines.length - (touched.length > 0 ? 3 : 2);
+		if (removableEnd <= removableStart) break;
+		lines.splice(Math.floor((removableStart + removableEnd) / 2), 1);
+	}
+
+	return {
+		role: "developer",
+		content: lines.join("\n"),
+		timestamp: typeof firstTimestamp === "number" ? firstTimestamp : 0,
+	};
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Main transform
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1023,6 +1114,7 @@ export function transformMessages(messages: AgentMessage[], options: MessageTran
 				tokensBefore: 0,
 				tokensAfter: 0,
 				scoredCount: 0,
+				conversationCompressedKeys: [],
 			},
 		};
 	}
@@ -1039,7 +1131,7 @@ export function transformMessages(messages: AgentMessage[], options: MessageTran
 	//      structural prefix. Keep only the latest of each type.
 	//   2. One-time injections (checkpoint reminders, synthetic prompts): identified
 	//      by content hash. Keep unique content, drop exact duplicates.
-	const REGENERATED_PREFIXES = ["[Assembly:", "<recalled-context"];
+	const REGENERATED_PREFIXES = ["[Assembly:", "<recalled-context", "[Elided:"];
 	const seenRegeneratedTypes = new Set<string>();
 	const seenDeveloperHashes = new Set<number>();
 	const developerTurnKeep = new Set<number>();
@@ -1049,6 +1141,7 @@ export function transformMessages(messages: AgentMessage[], options: MessageTran
 		const text = extractDeveloperText(originalTurns[i]);
 		// Check if this is a regenerated type (prefix match)
 		const matchedPrefix = REGENERATED_PREFIXES.find(p => text.startsWith(p));
+		if (matchedPrefix === "[Elided:") continue;
 		if (matchedPrefix) {
 			// Keep only the latest instance of each regenerated type
 			if (seenRegeneratedTypes.has(matchedPrefix)) continue;
@@ -1064,6 +1157,7 @@ export function transformMessages(messages: AgentMessage[], options: MessageTran
 
 	// Pre-compute original token costs per turn
 	const originalTokens = originalTurns.map(estimateTurnTokens);
+	const latestLiteralUserTurn = findLatestLiteralUserTurn(originalTurns);
 
 	// 2. Apply content replacement beyond hot window (codec-aware)
 	//    Build read history incrementally for dedup detection across turns.
@@ -1081,6 +1175,7 @@ export function transformMessages(messages: AgentMessage[], options: MessageTran
 					options.workingSet.tokenCap ?? DEFAULT_WORKING_SET_TOKEN_CAP,
 				)
 			: undefined;
+	const workingSetPinnedTurns = workingSetExemptions ?? new Set<number>();
 
 	const replacementResults: ContentReplacementResult[] = [];
 	for (let idx = 0; idx < totalTurns; idx++) {
@@ -1098,46 +1193,123 @@ export function transformMessages(messages: AgentMessage[], options: MessageTran
 
 	const transformedTurns = replacementResults.map(r => r.turn);
 	const conversationCompressedTurns = new Set<number>();
-
-	// Apply semantic conversation compression before budget selection so token
-	// savings can prevent unnecessary front-drop eviction. Missing relevance
-	// data remains a safe keep-verbatim fallback.
-	for (let i = 0; i < hotWindowStart; i++) {
-		const turn = originalTurns[i];
-		if (turn.hasToolResults || turn.messages[0]?.role === "developer") continue;
-		if (!shouldCompressConversationTurn(i, totalTurns, originalTokens[i], turn, options.relevanceScores)) continue;
-
-		const result = compressConversationTurn(transformedTurns[i]);
-		if (result.tokensAfter >= originalTokens[i]) continue;
-
-		transformedTurns[i] = result.turn;
-		conversationCompressedTurns.add(i);
-	}
-
-	// Pre-compute transformed token costs after tool codecs and conversation compression.
+	const conversationCompressedTurnKeys = new Set<number>();
 	const transformedTokens = transformedTurns.map(estimateTurnTokens);
 
-	// 3. Apply budget bounding if configured
+	const eligibleConversationTurns = new Set<number>();
+	for (let i = 0; i < hotWindowStart; i++) {
+		if (
+			isConversationCompressionEligible(
+				i,
+				originalTokens[i],
+				originalTurns[i],
+				hotWindowStart,
+				workingSetPinnedTurns,
+				latestLiteralUserTurn,
+			)
+		) {
+			eligibleConversationTurns.add(i);
+		}
+	}
+
+	const compressEligibleConversationTurn = (turnIndex: number): boolean => {
+		const result = compressConversationTurn(transformedTurns[turnIndex]);
+		if (result.tokensAfter >= transformedTokens[turnIndex]) return false;
+
+		transformedTurns[turnIndex] = result.turn;
+		transformedTokens[turnIndex] = result.tokensAfter;
+		conversationCompressedTurns.add(turnIndex);
+		conversationCompressedTurnKeys.add(computeTurnKey(originalTurns[turnIndex]));
+		return true;
+	};
+
+	for (const turnIndex of eligibleConversationTurns) {
+		const key = computeTurnKey(originalTurns[turnIndex]);
+		if (options.stickyCompressedKeys?.has(key) === true) {
+			compressEligibleConversationTurn(turnIndex);
+		}
+	}
+
+	// 3. Apply budget-driven ranked compression and front-drop bounding if configured.
 	const maxTokens = options.maxTokens;
 	const hasBudget = maxTokens !== undefined && Number.isFinite(maxTokens) && maxTokens >= 0;
+	const budgetTarget = hasBudget ? Math.floor(maxTokens * BUDGET_DROP_WATERMARK) : undefined;
+	if (hasBudget) {
+		let currentTokens = transformedTokens.reduce((sum, tokens) => sum + tokens, 0);
+		if (currentTokens > maxTokens && budgetTarget !== undefined) {
+			const candidates = [...eligibleConversationTurns]
+				.filter(turnIndex => !conversationCompressedTurns.has(turnIndex))
+				.sort((a, b) => {
+					const scoreA = options.relevanceScores?.get(a);
+					const scoreB = options.relevanceScores?.get(b);
+					if (scoreA !== undefined && scoreB !== undefined && scoreA !== scoreB) return scoreA - scoreB;
+					if (scoreA !== undefined && scoreB === undefined) return -1;
+					if (scoreA === undefined && scoreB !== undefined) return 1;
+					return a - b;
+				});
+
+			for (const turnIndex of candidates) {
+				if (currentTokens <= budgetTarget) break;
+				const before = transformedTokens[turnIndex];
+				if (compressEligibleConversationTurn(turnIndex)) {
+					currentTokens -= before - transformedTokens[turnIndex];
+				}
+			}
+		}
+	}
+
 	let dropCount = 0;
 	if (hasBudget) {
-		dropCount = computeBudgetDropCount(transformedTokens, maxTokens, hotWindowTurns);
+		dropCount = computeBudgetDropCount(transformedTokens, maxTokens, hotWindowTurns, budgetTarget);
+		if (latestLiteralUserTurn >= 0) dropCount = Math.min(dropCount, latestLiteralUserTurn);
 	}
 
 	// 3b. Ensure surviving messages start with a user turn (Claude API requirement).
-	// When budget drops remove a user turn at the front, the next surviving turn
-	// may be an assistant turn. Extend drops until a user turn is at the front.
-	// First pass: bounded by hotWindowStart (preserve hot window when possible).
-	// Fallback: if the hot window itself starts with a non-user turn, extend into
-	// it — the API constraint is harder than the hot-window preservation guarantee.
+	// The tombstone is inserted after this validation. startsWithCanonicalLlmUser
+	// skips developer messages so the synthesized tombstone does not reset the constraint.
 	if (dropCount > 0) {
-		while (dropCount < hotWindowStart && transformedTurns[dropCount].messages[0].role !== "user") {
+		const latestUserBoundary = latestLiteralUserTurn >= 0 ? latestLiteralUserTurn : transformedTurns.length;
+		while (
+			dropCount < hotWindowStart &&
+			dropCount < latestUserBoundary &&
+			transformedTurns[dropCount].messages[0].role !== "user"
+		) {
 			dropCount++;
 		}
-		// Fallback: hot-window boundary reached but first surviving turn is still non-user
-		while (dropCount < transformedTurns.length && transformedTurns[dropCount].messages[0].role !== "user") {
+		while (
+			dropCount < transformedTurns.length &&
+			dropCount < latestUserBoundary &&
+			transformedTurns[dropCount].messages[0].role !== "user"
+		) {
 			dropCount++;
+		}
+	}
+
+	if (hasBudget && dropCount > 0) {
+		const latestUserBoundary = latestLiteralUserTurn >= 0 ? latestLiteralUserTurn : transformedTurns.length;
+		let projectedTokens = transformedTokens.slice(dropCount).reduce((sum, tokens) => sum + tokens, 0);
+		projectedTokens += estimateMessageTokens([
+			buildElidedTombstone(
+				originalTurns.slice(0, dropCount),
+				originalTokens.slice(0, dropCount).reduce((sum, tokens) => sum + tokens, 0),
+			),
+		]);
+		while (projectedTokens > maxTokens && dropCount < hotWindowStart && dropCount < latestUserBoundary) {
+			dropCount++;
+			while (
+				dropCount < hotWindowStart &&
+				dropCount < latestUserBoundary &&
+				transformedTurns[dropCount].messages[0].role !== "user"
+			) {
+				dropCount++;
+			}
+			projectedTokens = transformedTokens.slice(dropCount).reduce((sum, tokens) => sum + tokens, 0);
+			projectedTokens += estimateMessageTokens([
+				buildElidedTombstone(
+					originalTurns.slice(0, dropCount),
+					originalTokens.slice(0, dropCount).reduce((sum, tokens) => sum + tokens, 0),
+				),
+			]);
 		}
 	}
 
@@ -1299,7 +1471,15 @@ export function transformMessages(messages: AgentMessage[], options: MessageTran
 		if (decision && decision.reason === "developer-dropped") continue;
 		survivingTurns.push(transformedTurns[i]);
 	}
-	const resultMessages = survivingTurns.flatMap(t => t.messages);
+	let resultMessages = survivingTurns.flatMap(t => t.messages);
+	let elided: TransformMetadata["elided"];
+	if (dropCount > 0) {
+		const droppedTokens = originalTokens.slice(0, dropCount).reduce((sum, tokens) => sum + tokens, 0);
+		const tombstone = buildElidedTombstone(originalTurns.slice(0, dropCount), droppedTokens);
+		resultMessages = [tombstone, ...resultMessages];
+		totalTokensAfter += estimateMessageTokens([tombstone]);
+		elided = { turnCount: dropCount, tokens: droppedTokens };
+	}
 
 	return {
 		messages: resultMessages,
@@ -1314,6 +1494,8 @@ export function transformMessages(messages: AgentMessage[], options: MessageTran
 			tokensAfter: totalTokensAfter,
 			scoredCount,
 			similarityRange: scoredCount > 0 ? { min: simMin, max: simMax } : undefined,
+			conversationCompressedKeys: [...conversationCompressedTurnKeys],
+			elided,
 		},
 	};
 }
@@ -1428,6 +1610,7 @@ function buildRecoveredMetadata(
 		tokensBefore: initial.metadata.tokensBefore,
 		tokensAfter: retry.metadata.tokensAfter,
 		scoredCount: 0,
+		conversationCompressedKeys: retry.metadata.conversationCompressedKeys,
 		recovery: {
 			trigger: "empty-selection",
 			outcome: "recovered",
@@ -1449,17 +1632,22 @@ function buildUnrecoverableResult(
 	reason: NonNullable<TransformRecoveryMetadata["unrecoverableAnchorReason"]>,
 ): TransformResult {
 	return {
-		...initial,
+		messages: [],
 		metadata: {
 			...initial.metadata,
+			keptCount: 0,
+			stubbedCount: 0,
+			compressedCount: 0,
+			droppedCount: initial.metadata.totalTurns,
+			tokensAfter: 0,
 			recovery: {
 				trigger: "empty-selection",
 				outcome: "unrecoverable",
 				attempts,
 				originalTurnCount: initial.metadata.totalTurns,
 				selectedOriginalTurnIndexes: [],
-				outputMessageCount: initial.messages.length,
-				outputTokens: initial.metadata.tokensAfter,
+				outputMessageCount: 0,
+				outputTokens: 0,
 				anchorTruncated: false,
 				controlPrompt: "omitted",
 				unrecoverableAnchorReason: reason,
@@ -1481,12 +1669,13 @@ export function transformMessagesWithRecovery(
 	recovery: TransformRecoveryOptions = {},
 ): TransformResult {
 	const initial = transformMessages(messages, options);
-	if (isValidBoundedTransform(messages, initial)) return initial;
-
 	const configuredMaxTokens = options.maxTokens;
 	if (configuredMaxTokens === undefined || !Number.isFinite(configuredMaxTokens) || configuredMaxTokens < 0) {
+		if (isValidBoundedTransform(messages, initial)) return initial;
 		return initial;
 	}
+	if (isValidBoundedTransform(messages, initial) && initial.metadata.tokensAfter <= configuredMaxTokens)
+		return initial;
 	const maxTokens = Math.floor(configuredMaxTokens);
 
 	const turns = segmentIntoTurns(messages);
@@ -1515,6 +1704,7 @@ export function transformMessagesWithRecovery(
 			maxTokens: messageBudget,
 			hotWindowTurns: Math.max(1, configuredHotWindow),
 			relevanceScores: undefined,
+			stickyCompressedKeys: undefined,
 		};
 
 		for (let suffixStart = firstSuffixTurn; suffixStart <= turns.length; suffixStart++) {

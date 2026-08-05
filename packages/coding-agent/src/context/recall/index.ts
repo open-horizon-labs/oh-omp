@@ -8,6 +8,7 @@ export * from "./mmr";
 export * from "./model-profile";
 export * from "./passive-hydration";
 export * from "./passive-query";
+export * from "./relevance";
 export * from "./store";
 export * from "./temporal";
 export * from "./types";

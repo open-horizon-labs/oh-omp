@@ -41,7 +41,7 @@ export function formatAssemblySummary(snapshot: EffectivePromptSnapshot): string
 			if (meta.scoredCount > 0 && meta.similarityRange) {
 				const min = meta.similarityRange.min.toFixed(2);
 				const max = meta.similarityRange.max.toFixed(2);
-				turnParts.push(`${meta.keptCount} kept (${meta.scoredCount} scored, sim ${min}-${max})`);
+				turnParts.push(`${meta.keptCount} kept (${meta.scoredCount} scored, cos ${min}-${max})`);
 			} else {
 				turnParts.push(`${meta.keptCount} kept`);
 			}
@@ -83,7 +83,8 @@ export function formatAssemblySummary(snapshot: EffectivePromptSnapshot): string
 			const overflowPreAnchor = meta.decisions.filter(d => d.reason === "overflow-pre-anchor").length;
 			const budgetDropped = meta.droppedCount - devDropped - recoveryExcluded - overflowPreAnchor;
 			const dropParts: string[] = [];
-			if (budgetDropped > 0) dropParts.push(`${budgetDropped} budget-dropped`);
+			if (meta.elided && budgetDropped > 0) dropParts.push(`${budgetDropped} elided (tombstoned)`);
+			else if (budgetDropped > 0) dropParts.push(`${budgetDropped} budget-dropped`);
 			if (devDropped > 0) dropParts.push(`${devDropped} dev-dropped`);
 			if (recoveryExcluded > 0) dropParts.push(`${recoveryExcluded} recovery-excluded`);
 			if (overflowPreAnchor > 0) dropParts.push(`${overflowPreAnchor} pre-anchor-dropped`);

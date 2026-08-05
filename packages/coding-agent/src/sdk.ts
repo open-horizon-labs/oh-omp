@@ -54,6 +54,7 @@ import {
 	transformMessagesWithRecovery,
 } from "./context/assembler";
 import { dedupCodec, readCodec, warmCodec } from "./context/assembler/codecs";
+import { contentHash } from "./context/assembler/codecs/shared";
 import { formatAssemblySummary } from "./context/assembly-summary";
 import { ToolResultBridge } from "./context/bridge";
 import { resolveConceptGraphInjection } from "./context/concept-graph-context";
@@ -62,6 +63,7 @@ import { captureEffectivePromptSnapshot, type EffectivePromptSnapshot } from "./
 import { extractPaths } from "./context/extract-paths";
 import {
 	buildRecallDebugEntries,
+	buildRelevanceScores,
 	daysToRecallWindowMs,
 	extractAssistantText,
 	extractPathsFromText,
@@ -70,6 +72,7 @@ import {
 	formatRecallAge,
 	getRecallAgeMs,
 	getRecallBand,
+	type HydrationResult,
 	IngestPipeline,
 	PassiveHydrator,
 	type RecallDebugTrace,
@@ -1756,6 +1759,22 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			evictAfterTurns: assemblerSettings.workingSetEvictTurns,
 			tokenCap: assemblerSettings.workingSetTokenCap,
 		};
+		const stickyCompressedKeys = new Set<number>();
+		let turnContextMemo:
+			| {
+					userKey: number;
+					hydration: HydrationResult;
+					cappedResults: RecallSearchResult[];
+					hydratedText: string | null;
+					hydratedTokens: number;
+					droppedEntries: RecallSearchResult[];
+					conceptGraphText: string | null;
+					conceptGraphTokens: number;
+					conceptGraphFactCount: number;
+					conceptGraphLinkCount: number;
+					finalizedTrace: RecallDebugTrace | null;
+			  }
+			| undefined;
 		let overflowSummaryCheckpoint: OverflowSummaryCheckpoint | undefined;
 		let overflowSummaryFailureState:
 			| {
@@ -1818,6 +1837,18 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			return snippets.join("\n").slice(-4_000);
 		};
 
+		const getLatestLiteralUserKey = (candidateMessages: AgentMessage[]): number | undefined => {
+			for (let i = candidateMessages.length - 1; i >= 0; i--) {
+				const message = candidateMessages[i];
+				if (message.role !== "user") continue;
+				const text = extractUserText(message.content as Parameters<typeof extractUserText>[0]);
+				// Key by content AND position so a repeated literal message (e.g. two
+				// "continue" turns) gets a fresh hydration pass for its own turn.
+				if (text) return contentHash(`${i}\u0000${text}`);
+			}
+			return undefined;
+		};
+
 		const assemblerTransform = async (messages: AgentMessage[], signal?: AbortSignal): Promise<AgentMessage[]> => {
 			// Derive budget from current model context window and measured costs.
 			// agent.state is read each turn to reflect model/tool changes mid-session.
@@ -1838,6 +1869,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				resolveToolResultStub,
 				codecs,
 				workingSet,
+				stickyCompressedKeys,
 			});
 			const transformedMessages = firstPass.messages;
 
@@ -1855,105 +1887,150 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 					})
 				: undefined;
 
-			// Step 2: Run passive hydration (embed hot window -> cache check -> search -> MMR).
-			const hydration = passiveHydrator
-				? await passiveHydrator.hydrate(messages)
-				: { text: null, results: [], cacheHit: false, durationMs: 0, trace: null };
+			// Step 2: Run passive hydration and concept graph assembly once per literal user turn.
+			const latestLiteralUserKey = getLatestLiteralUserKey(messages);
+			const reusedTurnContext =
+				latestLiteralUserKey !== undefined && turnContextMemo?.userKey === latestLiteralUserKey
+					? turnContextMemo
+					: undefined;
 
-			logger.debug("assembler:passive-hydration", {
-				resultCount: hydration.results.length,
-				cacheHit: hydration.cacheHit,
-				durationMs: Math.round(hydration.durationMs),
-			});
+			let hydration: HydrationResult;
+			let cappedResults: RecallSearchResult[];
+			let hydratedText: string | null;
+			let hydratedTokens: number;
+			let droppedEntries: RecallSearchResult[];
+			let conceptGraphText: string | null;
+			let conceptGraphTokens: number;
+			let conceptGraphFactCount: number;
+			let conceptGraphLinkCount: number;
+			let reusedRecallTrace: RecallDebugTrace | null = null;
 
-			// Step 3: Enforce hydration cap at entry level.
-			// When hydrated tokens exceed budget.hydrationBudgetMax, drop lower-priority
-			// temporal bands (durable → recent → live) until the formatted XML fits.
-			// Never truncate the XML blob.
-			let cappedResults = hydration.results;
-			let hydratedText = hydration.text;
-			let hydratedTokens = hydratedText ? estimateMessageTokens([{ role: "developer", content: hydratedText }]) : 0;
-			let droppedEntries: RecallSearchResult[] = [];
+			if (reusedTurnContext) {
+				hydration = reusedTurnContext.hydration;
+				cappedResults = reusedTurnContext.cappedResults;
+				hydratedText = reusedTurnContext.hydratedText;
+				hydratedTokens = reusedTurnContext.hydratedTokens;
+				droppedEntries = reusedTurnContext.droppedEntries;
+				conceptGraphText = reusedTurnContext.conceptGraphText;
+				conceptGraphTokens = reusedTurnContext.conceptGraphTokens;
+				conceptGraphFactCount = reusedTurnContext.conceptGraphFactCount;
+				conceptGraphLinkCount = reusedTurnContext.conceptGraphLinkCount;
+				reusedRecallTrace = reusedTurnContext.finalizedTrace;
+				logger.debug("assembler:turn-context-cache-hit", { userKey: latestLiteralUserKey });
+			} else {
+				hydration = passiveHydrator
+					? await passiveHydrator.hydrate(messages)
+					: { text: null, results: [], cacheHit: false, durationMs: 0, trace: null };
 
-			if (budget && hydratedTokens > budget.hydrationBudgetMax && cappedResults.length > 0) {
-				// Drop lower-priority temporal bands first (durable → recent → live),
-				// using real token counts via formatHydratedContext + estimateMessageTokens
-				// each iteration to account for XML wrapper overhead accurately.
-				const remaining = [...cappedResults];
-				const droppedDuringCap: RecallSearchResult[] = [];
-				while (remaining.length > 0) {
-					const candidateText = formatHydratedContext(remaining, {
-						currentSessionId: sessionId,
-						currentProjectCwd: cwd,
-						recentWindowMs,
-					});
-					const candidateTokens = candidateText
-						? estimateMessageTokens([{ role: "developer", content: candidateText }])
-						: 0;
-					if (candidateTokens <= budget.hydrationBudgetMax) break;
-					const dropIndex = selectHydrationResultIndexToDrop(remaining, { recentWindowMs });
-					droppedDuringCap.push(remaining[dropIndex]);
-					remaining.splice(dropIndex, 1);
-				}
+				logger.debug("assembler:passive-hydration", {
+					resultCount: hydration.results.length,
+					cacheHit: hydration.cacheHit,
+					durationMs: Math.round(hydration.durationMs),
+				});
 
-				if (remaining.length < cappedResults.length) {
-					const droppedAt = Date.now();
-					logger.debug("assembler:hydration-cap-enforced", {
-						originalEntries: cappedResults.length,
-						survivingEntries: remaining.length,
-						hydrationBudgetMax: budget.hydrationBudgetMax,
-						droppedEntries: droppedDuringCap.map(entry => {
-							const ageMs = getRecallAgeMs(entry.timestamp, droppedAt);
-							return {
-								turn: entry.turn,
-								band: getRecallBand(ageMs, recentWindowMs),
-								age: formatRecallAge(ageMs),
-								session: entry.session_id === sessionId ? "current" : "other",
-								project: entry.project_cwd === cwd ? "current" : "other",
-							};
-						}),
-					});
-					droppedEntries = droppedDuringCap;
-					cappedResults = remaining;
-					hydratedText =
-						remaining.length > 0
-							? formatHydratedContext(remaining, {
-									currentSessionId: sessionId,
-									currentProjectCwd: cwd,
-									recentWindowMs,
-								})
-							: null;
-					hydratedTokens = hydratedText
-						? estimateMessageTokens([{ role: "developer", content: hydratedText }])
-						: 0;
-				}
-			}
+				// Step 3: Enforce hydration cap at entry level.
+				// When hydrated tokens exceed budget.hydrationBudgetMax, drop lower-priority
+				// temporal bands (durable → recent → live) until the formatted XML fits.
+				// Never truncate the XML blob.
+				cappedResults = hydration.results;
+				hydratedText = hydration.text;
+				hydratedTokens = hydratedText ? estimateMessageTokens([{ role: "developer", content: hydratedText }]) : 0;
+				droppedEntries = [];
 
-			let conceptGraphText: string | null = null;
-			let conceptGraphTokens = 0;
-			let conceptGraphFactCount = 0;
-			let conceptGraphLinkCount = 0;
-			if (conceptGraphStore) {
-				try {
-					const conceptGraphInjection = resolveConceptGraphInjection(conceptGraphStore, {
-						task: buildConceptGraphTask(messages),
-						maxFacts: settings.get("conceptGraph.maxContextFacts"),
-						maxLinks: settings.get("conceptGraph.maxContextLinks"),
-						maxTokens: settings.get("conceptGraph.maxContextTokens"),
-						includeCandidates: "relevant-uncertainty",
-					});
-					if (conceptGraphInjection) {
-						conceptGraphText = conceptGraphInjection.text;
-						conceptGraphTokens = conceptGraphInjection.tokenEstimate;
-						conceptGraphFactCount = conceptGraphInjection.factIds.length;
-						conceptGraphLinkCount = conceptGraphInjection.linkIds.length;
+				if (budget && hydratedTokens > budget.hydrationBudgetMax && cappedResults.length > 0) {
+					const remaining = [...cappedResults];
+					const droppedDuringCap: RecallSearchResult[] = [];
+					while (remaining.length > 0) {
+						const candidateText = formatHydratedContext(remaining, {
+							currentSessionId: sessionId,
+							currentProjectCwd: cwd,
+							recentWindowMs,
+						});
+						const candidateTokens = candidateText
+							? estimateMessageTokens([{ role: "developer", content: candidateText }])
+							: 0;
+						if (candidateTokens <= budget.hydrationBudgetMax) break;
+						const dropIndex = selectHydrationResultIndexToDrop(remaining, { recentWindowMs });
+						droppedDuringCap.push(remaining[dropIndex]);
+						remaining.splice(dropIndex, 1);
 					}
-				} catch (err) {
-					logger.debug("assembler:concept-graph-context-failed", {
-						error: err instanceof Error ? err.message : String(err),
-					});
+
+					if (remaining.length < cappedResults.length) {
+						const droppedAt = Date.now();
+						logger.debug("assembler:hydration-cap-enforced", {
+							originalEntries: cappedResults.length,
+							survivingEntries: remaining.length,
+							hydrationBudgetMax: budget.hydrationBudgetMax,
+							droppedEntries: droppedDuringCap.map(entry => {
+								const ageMs = getRecallAgeMs(entry.timestamp, droppedAt);
+								return {
+									turn: entry.turn,
+									band: getRecallBand(ageMs, recentWindowMs),
+									age: formatRecallAge(ageMs),
+									session: entry.session_id === sessionId ? "current" : "other",
+									project: entry.project_cwd === cwd ? "current" : "other",
+								};
+							}),
+						});
+						droppedEntries = droppedDuringCap;
+						cappedResults = remaining;
+						hydratedText =
+							remaining.length > 0
+								? formatHydratedContext(remaining, {
+										currentSessionId: sessionId,
+										currentProjectCwd: cwd,
+										recentWindowMs,
+									})
+								: null;
+						hydratedTokens = hydratedText
+							? estimateMessageTokens([{ role: "developer", content: hydratedText }])
+							: 0;
+					}
+				}
+
+				conceptGraphText = null;
+				conceptGraphTokens = 0;
+				conceptGraphFactCount = 0;
+				conceptGraphLinkCount = 0;
+				if (conceptGraphStore) {
+					try {
+						const conceptGraphInjection = resolveConceptGraphInjection(conceptGraphStore, {
+							task: buildConceptGraphTask(messages),
+							maxFacts: settings.get("conceptGraph.maxContextFacts"),
+							maxLinks: settings.get("conceptGraph.maxContextLinks"),
+							maxTokens: settings.get("conceptGraph.maxContextTokens"),
+							includeCandidates: "relevant-uncertainty",
+						});
+						if (conceptGraphInjection) {
+							conceptGraphText = conceptGraphInjection.text;
+							conceptGraphTokens = conceptGraphInjection.tokenEstimate;
+							conceptGraphFactCount = conceptGraphInjection.factIds.length;
+							conceptGraphLinkCount = conceptGraphInjection.linkIds.length;
+						}
+					} catch (err) {
+						logger.debug("assembler:concept-graph-context-failed", {
+							error: err instanceof Error ? err.message : String(err),
+						});
+					}
+				}
+
+				if (latestLiteralUserKey !== undefined && (!passiveHydrator || passiveHydrator.lastEmbedding !== null)) {
+					turnContextMemo = {
+						userKey: latestLiteralUserKey,
+						hydration,
+						cappedResults,
+						hydratedText,
+						hydratedTokens,
+						droppedEntries,
+						conceptGraphText,
+						conceptGraphTokens,
+						conceptGraphFactCount,
+						conceptGraphLinkCount,
+						finalizedTrace: null,
+					};
 				}
 			}
+
 			logger.debug("assembler:concept-graph-context", {
 				factCount: conceptGraphFactCount,
 				linkCount: conceptGraphLinkCount,
@@ -1999,42 +2076,14 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 						}
 
 						if (candidates.length > 0) {
-							// Search LanceDB with hot window embedding for this session
-							const sessionFilter = `session_id = '${sessionId.replace(/'/g, "''")}'`;
-							const searchResults = await recallStore.search(
-								Array.from(hotEmbedding),
-								Math.min(candidates.length * 3, 500),
-								sessionFilter,
-							);
+							const rows = await recallStore.getSessionConversationVectors(sessionId);
+							relevanceScores = buildRelevanceScores(candidates, rows, hotEmbedding);
 
-							if (searchResults.length > 0) {
-								// Build text → similarity lookup from search results.
-								// LanceDB _distance is L2 distance; convert to similarity
-								// score (lower distance = higher similarity).
-								const textSimilarity = new Map<string, number>();
-								for (const result of searchResults) {
-									if (!textSimilarity.has(result.text)) {
-										const sim = 1 / (1 + result._distance);
-										textSimilarity.set(result.text, sim);
-									}
-								}
-
-								// Match candidate turns to search results by text content
-								relevanceScores = new Map();
-								for (const candidate of candidates) {
-									const sim = textSimilarity.get(candidate.text);
-									if (sim !== undefined) {
-										relevanceScores.set(candidate.turnIdx, sim);
-									}
-									// Missing = no embedding found = defaults to keep (handled in transformMessages)
-								}
-
-								logger.debug("assembler:relevance-scores", {
-									candidates: candidates.length,
-									searchResults: searchResults.length,
-									scored: relevanceScores.size,
-								});
-							}
+							logger.debug("assembler:relevance-scores", {
+								candidateCount: candidates.length,
+								rowCount: rows.length,
+								scoredCount: relevanceScores.size,
+							});
 						}
 					} catch (err) {
 						logger.debug("assembler:relevance-scoring-failed", { error: String(err) });
@@ -2067,6 +2116,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 					codecs,
 					workingSet,
 					relevanceScores,
+					stickyCompressedKeys,
 				};
 				const boundedPass = transformMessages(messages, boundedOptions);
 				if (isValidBoundedTransform(messages, boundedPass)) {
@@ -2161,6 +2211,14 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				boundedMessages = transformedMessages;
 				finalTransformMetadata = firstPass.metadata;
 			}
+			// Ratchet only decisions from the normal bounded/first pass. Recovery
+			// retries run with sticky keys and scores cleared under an emergency
+			// budget; their one-off compressions must not become permanent.
+			if (!finalTransformMetadata.recovery) {
+				for (const key of finalTransformMetadata.conversationCompressedKeys) {
+					stickyCompressedKeys.add(key);
+				}
+			}
 
 			// Step 5: Budget debug logging — per-category allocation and actual usage.
 			if (budget) {
@@ -2234,7 +2292,9 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				effectiveContextWindow: assembledContextWindow,
 			});
 
-			if (hydration.trace) {
+			if (reusedRecallTrace) {
+				lastRecallTrace = reusedRecallTrace;
+			} else if (hydration.trace) {
 				const finalizedTrace = finalizeRecallDebugTrace(hydration.trace, {
 					turnId,
 					selected: cappedResults,
@@ -2249,6 +2309,9 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				recallTraceHistory.push(finalizedTrace);
 				if (recallTraceHistory.length > 20) {
 					recallTraceHistory.shift();
+				}
+				if (latestLiteralUserKey !== undefined && turnContextMemo?.userKey === latestLiteralUserKey) {
+					turnContextMemo.finalizedTrace = finalizedTrace;
 				}
 			}
 

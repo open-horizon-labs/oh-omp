@@ -70,6 +70,7 @@ describe("formatAssemblySummary", () => {
 			tokensBefore: 8000,
 			tokensAfter: 4600,
 			scoredCount: 0,
+			conversationCompressedKeys: [],
 		};
 		const result = formatAssemblySummary(makeSnapshot({ meta }));
 		expect(result).toContain("8 turns");
@@ -94,6 +95,7 @@ describe("formatAssemblySummary", () => {
 			tokensBefore: 4000,
 			tokensAfter: 3200,
 			scoredCount: 0,
+			conversationCompressedKeys: [],
 		};
 		const result = formatAssemblySummary(makeSnapshot({ meta }));
 		expect(result).toContain("1 pinned (working set)");
@@ -110,6 +112,7 @@ describe("formatAssemblySummary", () => {
 			tokensBefore: 1000,
 			tokensAfter: 1000,
 			scoredCount: 0,
+			conversationCompressedKeys: [],
 		};
 		const result = formatAssemblySummary(makeSnapshot({ meta }));
 		expect(result).not.toContain("pinned");
@@ -143,6 +146,7 @@ describe("formatAssemblySummary", () => {
 			tokensBefore: 1000,
 			tokensAfter: 1000,
 			scoredCount: 0,
+			conversationCompressedKeys: [],
 		};
 		const budget: EffectivePromptSnapshot["budget"] = {
 			contextWindow: 200_000,
@@ -171,6 +175,7 @@ describe("formatAssemblySummary", () => {
 			tokensBefore: 2000,
 			tokensAfter: 1200,
 			scoredCount: 0,
+			conversationCompressedKeys: [],
 		};
 		const result = formatAssemblySummary(makeSnapshot({ meta }))!;
 		expect(result).toContain("1 stubbed (turn 0)");
@@ -187,6 +192,7 @@ describe("formatAssemblySummary", () => {
 			tokensBefore: 2000,
 			tokensAfter: 2000,
 			scoredCount: 0,
+			conversationCompressedKeys: [],
 		};
 		const result = formatAssemblySummary(makeSnapshot({ meta }))!;
 		expect(result).not.toContain("stubbed");
@@ -203,6 +209,7 @@ describe("formatAssemblySummary", () => {
 			tokensBefore: 1000,
 			tokensAfter: 1000,
 			scoredCount: 0,
+			conversationCompressedKeys: [],
 		};
 		const result = formatAssemblySummary(makeSnapshot({ meta }))!;
 		expect(result).not.toContain("dropped");
@@ -257,6 +264,7 @@ describe("formatAssemblySummary", () => {
 			tokensBefore: 5000,
 			tokensAfter: 2400,
 			scoredCount: 0,
+			conversationCompressedKeys: [],
 		};
 		const result = formatAssemblySummary(makeSnapshot({ meta }))!;
 		expect(result).toContain("2 stubbed (turns 1-3)");
@@ -276,6 +284,7 @@ describe("formatAssemblySummary", () => {
 			tokensBefore: 2000,
 			tokensAfter: 1000,
 			scoredCount: 0,
+			conversationCompressedKeys: [],
 			recovery: {
 				trigger: "empty-selection",
 				outcome: "recovered",
@@ -316,6 +325,7 @@ describe("formatAssemblySummary", () => {
 			tokensBefore: 1000,
 			tokensAfter: 0,
 			scoredCount: 0,
+			conversationCompressedKeys: [],
 			recovery: {
 				trigger: "empty-selection",
 				outcome: "unrecoverable",
@@ -357,6 +367,7 @@ describe("formatAssemblySummary", () => {
 			tokensBefore: 3000,
 			tokensAfter: 1200,
 			scoredCount: 0,
+			conversationCompressedKeys: [],
 		};
 
 		const result = formatAssemblySummary(makeSnapshot({ meta }));

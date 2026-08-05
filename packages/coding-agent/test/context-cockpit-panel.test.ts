@@ -79,6 +79,7 @@ function makeTransformMetadata(overrides?: Partial<TransformMetadata>): Transfor
 		tokensBefore: 500,
 		tokensAfter: 120,
 		scoredCount: 0,
+		conversationCompressedKeys: [],
 		...overrides,
 	};
 }

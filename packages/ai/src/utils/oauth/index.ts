@@ -16,6 +16,7 @@ import type {
 	OAuthProviderInfo,
 	OAuthProviderInterface,
 } from "./types";
+import { refreshXAIOAuthToken } from "./xai-oauth";
 
 /**
  * OAuth credential management for AI providers.
@@ -117,6 +118,8 @@ export { loginVenice } from "./venice";
 export { loginVercelAiGateway } from "./vercel-ai-gateway";
 // vLLM (API key)
 export { loginVllm } from "./vllm";
+// xAI Grok (SuperGrok subscription)
+export { loginXAIOAuth, refreshXAIOAuthToken } from "./xai-oauth";
 // Xiaomi MiMo (API key)
 export { loginXiaomi } from "./xiaomi";
 // Z.AI (API key)
@@ -310,6 +313,11 @@ const builtInOAuthProviders: OAuthProviderInfo[] = [
 		name: "Vercel AI Gateway",
 		available: true,
 	},
+	{
+		id: "xai-oauth",
+		name: "xAI Grok OAuth (SuperGrok or X Premium+)",
+		available: true,
+	},
 ];
 
 const customOAuthProviders = new Map<string, OAuthProviderInterface>();
@@ -385,6 +393,9 @@ export async function refreshOAuthToken(
 			break;
 		case "cursor":
 			newCredentials = await refreshCursorToken(credentials.refresh);
+			break;
+		case "xai-oauth":
+			newCredentials = await refreshXAIOAuthToken(credentials.refresh);
 			break;
 		case "perplexity":
 		case "huggingface":

@@ -16,6 +16,7 @@ import { loginOpenAICodex } from "./utils/oauth/openai-codex";
 import { loginParallel } from "./utils/oauth/parallel";
 import { loginTavily } from "./utils/oauth/tavily";
 import type { OAuthCredentials, OAuthProvider } from "./utils/oauth/types";
+import { loginXAIOAuth } from "./utils/oauth/xai-oauth";
 import { loginZai } from "./utils/oauth/zai";
 import { loginZenMux } from "./utils/oauth/zenmux";
 
@@ -219,6 +220,19 @@ async function login(provider: OAuthProvider): Promise<void> {
 						console.log("Waiting for browser authentication...");
 					},
 				);
+				break;
+
+			case "xai-oauth":
+				credentials = await loginXAIOAuth({
+					onAuth(info) {
+						console.log(`\nOpen this URL in your browser:\n${info.url}`);
+						if (info.instructions) console.log(info.instructions);
+						console.log();
+					},
+					onProgress(message) {
+						console.log(message);
+					},
+				});
 				break;
 
 			case "zai": {

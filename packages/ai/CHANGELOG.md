@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added xAI Grok OAuth login for SuperGrok and X Premium+ subscriptions, including device authorization, token refresh, curated Grok models, and the xAI Responses transport.
 
 ### Fixed
 

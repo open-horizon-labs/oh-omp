@@ -101,6 +101,7 @@ export type KnownProvider =
 	| "gitlab-duo"
 	| "cursor"
 	| "xai"
+	| "xai-oauth"
 	| "groq"
 	| "cerebras"
 	| "openrouter"

@@ -22,6 +22,7 @@ import { streamOpenAICodexResponses } from "./providers/openai-codex-responses";
 import { type OpenAICompletionsOptions, streamOpenAICompletions } from "./providers/openai-completions";
 import { streamOpenAIResponses } from "./providers/openai-responses";
 import { isSyntheticModel, streamSynthetic } from "./providers/synthetic";
+import { streamXAIResponses } from "./providers/xai-responses";
 import type {
 	Api,
 	AssistantMessage,
@@ -67,6 +68,7 @@ const serviceProviderMap: Record<string, KeyResolver> = {
 	groq: "GROQ_API_KEY",
 	cerebras: "CEREBRAS_API_KEY",
 	xai: "XAI_API_KEY",
+	"xai-oauth": () => $pickenv("XAI_OAUTH_TOKEN", "XAI_API_KEY"),
 	openrouter: "OPENROUTER_API_KEY",
 	kilo: "KILO_API_KEY",
 	"vercel-ai-gateway": "AI_GATEWAY_API_KEY",
@@ -205,6 +207,9 @@ export function stream<TApi extends Api>(
 			return streamOpenAICompletions(model as Model<"openai-completions">, context, providerOptions as any);
 
 		case "openai-responses":
+			if (model.provider === "xai-oauth") {
+				return streamXAIResponses(model as Model<"openai-responses">, context, providerOptions as any);
+			}
 			return streamOpenAIResponses(model as Model<"openai-responses">, context, providerOptions as any);
 
 		case "azure-openai-responses":

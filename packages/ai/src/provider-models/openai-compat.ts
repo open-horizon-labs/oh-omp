@@ -523,6 +523,120 @@ export function xaiModelManagerOptions(config?: XaiModelManagerConfig): ModelMan
 	};
 }
 
+export interface XaiOAuthModelManagerConfig {
+	apiKey?: string;
+	baseUrl?: string;
+}
+
+interface XAICuratedModel {
+	id: string;
+	name: string;
+	contextWindow: number;
+	reasoning?: boolean;
+	input?: ("text" | "image")[];
+}
+
+export const XAI_OAUTH_CURATED_MODELS: readonly XAICuratedModel[] = [
+	{ id: "grok-build", name: "Grok Build", contextWindow: 512_000, input: ["text", "image"] },
+	{ id: "grok-build-0.1", name: "Grok Build 0.1", contextWindow: 256_000, input: ["text", "image"] },
+	{ id: "grok-4.3", name: "Grok 4.3", contextWindow: 1_000_000, input: ["text", "image"] },
+	{ id: "grok-4.5", name: "Grok 4.5", contextWindow: 500_000, input: ["text", "image"] },
+	{ id: "grok-4.20-multi-agent-0309", name: "Grok 4.20 (Multi-Agent)", contextWindow: 2_000_000 },
+	{
+		id: "grok-4.20-0309-reasoning",
+		name: "Grok 4.20 (Reasoning)",
+		contextWindow: 2_000_000,
+		input: ["text", "image"],
+	},
+	{
+		id: "grok-4.20-0309-non-reasoning",
+		name: "Grok 4.20 (Non-Reasoning)",
+		contextWindow: 2_000_000,
+		reasoning: false,
+		input: ["text", "image"],
+	},
+	{
+		id: "grok-composer-2.5-fast",
+		name: "Grok Composer 2.5 Fast",
+		contextWindow: 200_000,
+		reasoning: false,
+		input: ["text"],
+	},
+] as const;
+
+const XAI_NON_CHAT_PREFIXES = ["grok-imagine-", "grok-stt-", "grok-voice-"] as const;
+
+function mergeXAICuratedModel(base: Model<"openai-responses">, curated: XAICuratedModel): Model<"openai-responses"> {
+	return {
+		...base,
+		name: curated.name,
+		reasoning: curated.reasoning ?? true,
+		input: curated.input ?? ["text"],
+		contextWindow: curated.contextWindow,
+		maxTokens: curated.contextWindow,
+	};
+}
+
+export function buildXaiOAuthStaticSeed(baseUrl: string = "https://api.x.ai/v1"): Model<"openai-responses">[] {
+	return XAI_OAUTH_CURATED_MODELS.map(curated =>
+		mergeXAICuratedModel(
+			{
+				id: curated.id,
+				name: curated.id,
+				api: "openai-responses",
+				provider: "xai-oauth",
+				baseUrl,
+				reasoning: true,
+				input: ["text"],
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+				contextWindow: curated.contextWindow,
+				maxTokens: curated.contextWindow,
+			},
+			curated,
+		),
+	);
+}
+
+function applyXAIOAuthCuration(models: readonly Model<"openai-responses">[]): Model<"openai-responses">[] {
+	const filtered = models.filter(model => !XAI_NON_CHAT_PREFIXES.some(prefix => model.id.startsWith(prefix)));
+	const byId = new Map(filtered.map(model => [model.id, model]));
+	const template = filtered[0];
+	for (const curated of XAI_OAUTH_CURATED_MODELS) {
+		const existing = byId.get(curated.id);
+		if (existing) byId.set(curated.id, mergeXAICuratedModel(existing, curated));
+		else if (template) byId.set(curated.id, mergeXAICuratedModel({ ...template, id: curated.id }, curated));
+	}
+	const curatedIds = new Set(XAI_OAUTH_CURATED_MODELS.map(model => model.id));
+	return [
+		...XAI_OAUTH_CURATED_MODELS.map(model => byId.get(model.id)).filter(
+			(model): model is Model<"openai-responses"> => model !== undefined,
+		),
+		...filtered.filter(model => !curatedIds.has(model.id)),
+	];
+}
+
+export function xaiOAuthModelManagerOptions(
+	config?: XaiOAuthModelManagerConfig,
+): ModelManagerOptions<"openai-responses"> {
+	const apiKey = config?.apiKey;
+	const baseUrl = config?.baseUrl ?? "https://api.x.ai/v1";
+	return {
+		providerId: "xai-oauth",
+		staticModels: buildXaiOAuthStaticSeed(baseUrl),
+		...(apiKey && {
+			fetchDynamicModels: async () => {
+				const dynamic = await fetchOpenAICompatibleModels({
+					api: "openai-responses",
+					provider: "xai-oauth",
+					baseUrl,
+					apiKey,
+				});
+				return dynamic == null ? dynamic : applyXAIOAuthCuration(dynamic);
+			},
+		}),
+	};
+}
+
 // ---------------------------------------------------------------------------
 // 7. Mistral
 // ---------------------------------------------------------------------------

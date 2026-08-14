@@ -64,6 +64,7 @@ import type { OAuthController, OAuthCredentials, OAuthProvider, OAuthProviderId 
 import { loginVenice } from "./utils/oauth/venice";
 import { loginVercelAiGateway } from "./utils/oauth/vercel-ai-gateway";
 import { loginVllm } from "./utils/oauth/vllm";
+import { loginXAIOAuth } from "./utils/oauth/xai-oauth";
 import { loginXiaomi } from "./utils/oauth/xiaomi";
 import { loginZai } from "./utils/oauth/zai";
 import { loginZenMux } from "./utils/oauth/zenmux";
@@ -822,6 +823,9 @@ export class AuthStorage {
 					url => ctrl.onAuth({ url }),
 					ctrl.onProgress ? () => ctrl.onProgress?.("Waiting for browser authentication...") : undefined,
 				);
+				break;
+			case "xai-oauth":
+				credentials = await loginXAIOAuth(ctrl);
 				break;
 			case "perplexity":
 				credentials = await loginPerplexity(ctrl);

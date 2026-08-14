@@ -26,7 +26,11 @@ import {
 	isCatalogDescriptor,
 	PROVIDER_DESCRIPTORS,
 } from "../src/provider-models/descriptors";
-import { MODELS_DEV_PROVIDER_DESCRIPTORS, mapModelsDevToModels } from "../src/provider-models/openai-compat";
+import {
+	buildXaiOAuthStaticSeed,
+	MODELS_DEV_PROVIDER_DESCRIPTORS,
+	mapModelsDevToModels,
+} from "../src/provider-models/openai-compat";
 import { getGitLabDuoModels } from "../src/providers/gitlab-duo";
 import { JWT_CLAIM_PATH } from "../src/providers/openai-codex/constants";
 import type { Model } from "../src/types";
@@ -283,6 +287,9 @@ async function generateModels() {
 
 	if (!allModels.some(model => model.provider === "cloudflare-ai-gateway")) {
 		allModels.push(CLOUDFLARE_FALLBACK_MODEL);
+	}
+	if (!allModels.some(model => model.provider === "xai-oauth")) {
+		allModels.push(...buildXaiOAuthStaticSeed());
 	}
 
 	const specialDiscoverySources = [

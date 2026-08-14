@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.12.7] - 2026-08-14
+
+### Added
+
+- Added xAI Grok OAuth login for SuperGrok and X Premium+ subscriptions, including device authorization, token refresh, curated Grok models, and xAI-specific Responses compatibility.
+
 ## [0.12.6] - 2026-08-06
 
 ### Fixed

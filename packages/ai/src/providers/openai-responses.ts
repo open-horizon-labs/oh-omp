@@ -75,11 +75,21 @@ export interface OpenAIResponsesOptions extends StreamOptions {
 	reasoningSummary?: "auto" | "detailed" | "concise" | null;
 	serviceTier?: ServiceTier;
 	toolChoice?: ToolChoice;
+	includeEncryptedReasoning?: boolean;
+	filterReasoningHistory?: boolean;
+	omitReasoningEffort?: boolean;
+	extraBody?: Record<string, unknown>;
 	/**
 	 * Enforce strict tool call/result pairing when building Responses API inputs.
 	 * Azure OpenAI and GitHub Copilot Responses paths require tool results to match prior tool calls.
 	 */
 	strictResponsesPairing?: boolean;
+}
+
+export function getOpenAIResponsesCacheSessionId(
+	options: Pick<OpenAIResponsesOptions, "cacheRetention" | "sessionId"> | undefined,
+): string | undefined {
+	return resolveCacheRetention(options?.cacheRetention) === "none" ? undefined : options?.sessionId;
 }
 
 const OPENAI_RESPONSES_PROVIDER_SESSION_STATE_PREFIX = "openai-responses:";
@@ -317,6 +327,7 @@ function buildParams(
 		context,
 		strictResponsesPairing,
 		providerSessionState,
+		options,
 	);
 	const messages: ResponseInput = [...conversationMessages];
 
@@ -329,7 +340,7 @@ function buildParams(
 	}
 
 	const cacheRetention = resolveCacheRetention(options?.cacheRetention);
-	const promptCacheKey = cacheRetention === "none" ? undefined : options?.sessionId;
+	const promptCacheKey = getOpenAIResponsesCacheSessionId(options);
 	const params: OpenAIResponsesSamplingParams = {
 		model: model.id,
 		input: messages,
@@ -377,9 +388,11 @@ function buildParams(
 		// replayed in multi-turn conversations when store is false (items aren't
 		// persisted server-side, so we must include the full content).
 		// See: https://github.com/open-horizon-labs/oh-omp/issues/41
-		params.include = ["reasoning.encrypted_content"];
+		if (options?.includeEncryptedReasoning ?? true) {
+			params.include = ["reasoning.encrypted_content"];
+		}
 
-		if (options?.reasoning || options?.reasoningSummary) {
+		if ((options?.reasoning || options?.reasoningSummary) && !options?.omitReasoningEffort) {
 			params.reasoning = {
 				effort: options?.reasoning || "medium",
 				summary: options?.reasoningSummary || "auto",
@@ -396,6 +409,10 @@ function buildParams(
 				],
 			});
 		}
+	}
+
+	if (options?.extraBody) {
+		Object.assign(params, options.extraBody);
 	}
 
 	return { conversationMessages, params };
@@ -434,7 +451,12 @@ function convertConversationMessages(
 	context: Context,
 	strictResponsesPairing: boolean,
 	providerSessionState: OpenAIResponsesProviderSessionState | undefined,
+	options?: OpenAIResponsesOptions,
 ): ResponseInput {
+	const sanitizeHistory = (items: Array<Record<string, unknown>>): ResponseInput => {
+		const sanitized = sanitizeOpenAIResponsesHistoryItemsForReplay(items);
+		return options?.filterReasoningHistory ? sanitized.filter(item => item.type !== "reasoning") : sanitized;
+	};
 	const messages: ResponseInput = [];
 	let knownCallIds = new Set<string>();
 	const shouldReplayNativeHistory = canReplayOpenAIResponsesNativeHistory(providerSessionState);
@@ -454,7 +476,7 @@ function convertConversationMessages(
 				}) ??
 					false);
 			if (historyItems && shouldReplayPayloadItems) {
-				messages.push(...sanitizeOpenAIResponsesHistoryItemsForReplay(historyItems));
+				messages.push(...sanitizeHistory(historyItems));
 				knownCallIds = collectKnownCallIds(messages);
 				msgIndex++;
 				continue;
@@ -469,7 +491,7 @@ function convertConversationMessages(
 				: undefined;
 			const historyItems = providerPayload?.items;
 			if (historyItems) {
-				const sanitizedHistoryItems = sanitizeOpenAIResponsesHistoryItemsForReplay(historyItems);
+				const sanitizedHistoryItems = sanitizeHistory(historyItems);
 				if (providerPayload?.dt) {
 					messages.push(...sanitizedHistoryItems);
 				} else {

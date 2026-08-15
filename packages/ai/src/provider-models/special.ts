@@ -1,6 +1,10 @@
 import type { ModelManagerOptions } from "../model-manager";
+import { Effort } from "../model-thinking";
+import type { Model } from "../types";
 import { fetchCodexModels } from "../utils/discovery/codex";
 import { fetchCursorUsableModels } from "../utils/discovery/cursor";
+import { fetchOpenAICompatibleModels } from "../utils/discovery/openai-compatible";
+import { buildAnthropicDiscoveryHeaders, toAnthropicDiscoveryBaseUrl } from "./openai-compat";
 
 // ---------------------------------------------------------------------------
 // OpenAI Codex
@@ -99,8 +103,76 @@ export function minimaxCodeCnModelManagerOptions(
 // Zai
 // ---------------------------------------------------------------------------
 
-export interface ZaiModelManagerConfig {}
+const ZAI_DEFAULT_BASE_URL = "https://api.z.ai/api/anthropic";
+const ZAI_CONTEXT_WINDOW = 262_144;
+const ZAI_MAX_TOKENS = 131_072;
 
-export function zaiModelManagerOptions(_config: ZaiModelManagerConfig = {}): ModelManagerOptions<"anthropic-messages"> {
-	return { providerId: "zai" };
+export interface ZaiModelManagerConfig {
+	apiKey?: string;
+	baseUrl?: string;
+}
+
+function normalizeZaiBaseUrl(baseUrl: string | undefined): string {
+	const value = baseUrl?.trim();
+	if (!value) {
+		return ZAI_DEFAULT_BASE_URL;
+	}
+	return value.endsWith("/") ? value.slice(0, -1) : value;
+}
+
+export function zaiModelManagerOptions(config: ZaiModelManagerConfig = {}): ModelManagerOptions<"anthropic-messages"> {
+	const apiKey = config.apiKey?.trim();
+	const baseUrl = normalizeZaiBaseUrl(config.baseUrl);
+	return {
+		providerId: "zai",
+		...(apiKey
+			? {
+					fetchDynamicModels: () =>
+						fetchOpenAICompatibleModels({
+							api: "anthropic-messages",
+							provider: "zai",
+							baseUrl: toAnthropicDiscoveryBaseUrl(baseUrl),
+							headers: buildAnthropicDiscoveryHeaders(apiKey),
+							mapModel: (entry, defaults) => mapZaiDiscoveredModel(entry.name, defaults, baseUrl),
+						}),
+				}
+			: undefined),
+	};
+}
+
+function mapZaiDiscoveredModel(
+	providedName: unknown,
+	defaults: Model<"anthropic-messages">,
+	baseUrl: string,
+): Model<"anthropic-messages"> {
+	return {
+		id: defaults.id,
+		name: zaiDisplayName(defaults.id, providedName),
+		api: "anthropic-messages",
+		provider: "zai",
+		baseUrl,
+		reasoning: true,
+		input: ["text"],
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		contextWindow: ZAI_CONTEXT_WINDOW,
+		maxTokens: ZAI_MAX_TOKENS,
+		thinking: {
+			mode: "budget",
+			minLevel: Effort.Minimal,
+			maxLevel: Effort.XHigh,
+		},
+	};
+}
+
+function zaiDisplayName(id: string, providedName: unknown): string {
+	if (typeof providedName === "string") {
+		const trimmed = providedName.trim();
+		if (trimmed.length > 0) {
+			return trimmed;
+		}
+	}
+	if (id.length >= 4 && id.slice(0, 4).toLowerCase() === "glm-") {
+		return `GLM-${id.slice(4)}`;
+	}
+	return id;
 }

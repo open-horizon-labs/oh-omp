@@ -108,7 +108,7 @@ function mapAnthropicModelsDev(payload: unknown, baseUrl: string): Model<"anthro
 	return models;
 }
 
-function buildAnthropicDiscoveryHeaders(apiKey: string): Record<string, string> {
+export function buildAnthropicDiscoveryHeaders(apiKey: string): Record<string, string> {
 	const oauthToken = isAnthropicOAuthToken(apiKey);
 	const headers: Record<string, string> = {
 		"anthropic-version": "2023-06-01",
@@ -213,7 +213,7 @@ function normalizeAnthropicBaseUrl(baseUrl: string | undefined, fallback: string
 	return value.endsWith("/") ? value.slice(0, -1) : value;
 }
 
-function toAnthropicDiscoveryBaseUrl(baseUrl: string): string {
+export function toAnthropicDiscoveryBaseUrl(baseUrl: string): string {
 	return baseUrl.endsWith("/v1") ? baseUrl : `${baseUrl}/v1`;
 }
 

@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.12.8] - 2026-08-15
+
+### Added
+
+- Added authenticated Z.AI Coding Plan model discovery for `glm-5.2` and `glm-5.3`, with bundled fallbacks when the live catalog query is unavailable. Default remains `glm-5.1`. ([#94](https://github.com/open-horizon-labs/oh-omp/issues/94))
+
 ## [0.12.7] - 2026-08-14
 
 ### Added

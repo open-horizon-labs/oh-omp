@@ -5,6 +5,7 @@
 ### Added
 
 - Added xAI Grok OAuth login for SuperGrok and X Premium+ subscriptions, including device authorization, token refresh, curated Grok models, and the xAI Responses transport.
+- Added authenticated Z.AI Coding Plan model discovery for `glm-5.2` and `glm-5.3` ([#94](https://github.com/open-horizon-labs/oh-omp/issues/94))
 
 ### Fixed
 

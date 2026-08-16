@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.12.9] - 2026-08-16
+
+### Fixed
+
+- Scale the working-set token cap with the assembled context window (default 25%) instead of a fixed 16K ceiling, and skip oversized pin candidates instead of aborting the rest of the pass. ([#97](https://github.com/open-horizon-labs/oh-omp/pull/97))
+
 ## [0.12.8] - 2026-08-15
 
 ### Added

@@ -437,11 +437,23 @@ export const SETTINGS_SCHEMA = {
 	},
 	"assembler.workingSetTokenCap": {
 		type: "number",
-		default: 16000,
+		default: 0,
 		ui: {
 			tab: "agent",
 			label: "Working-set token cap",
-			description: "Max estimated tokens held verbatim by the pinned working set",
+			description:
+				"Absolute cap on tokens held verbatim by the pinned working set (0 scales the cap with the context budget)",
+			submenu: true,
+			condition: "isAssemblerMode",
+		},
+	},
+	"assembler.workingSetTokenCapFraction": {
+		type: "number",
+		default: 0.25,
+		ui: {
+			tab: "agent",
+			label: "Working-set cap fraction",
+			description: "Share of the assembled context budget available for working-set pins when the absolute cap is 0",
 			submenu: true,
 			condition: "isAssemblerMode",
 		},
@@ -2262,6 +2274,7 @@ export interface AssemblerSettings {
 	workingSetEnabled: boolean;
 	workingSetEvictTurns: number;
 	workingSetTokenCap: number;
+	workingSetTokenCapFraction: number;
 }
 
 /** Map group prefix -> typed settings interface */

@@ -100,7 +100,43 @@ const DEFAULT_HYDRATION_BUDGET_PERCENT = 50;
 const DEFAULT_TURN_BUFFER_PERCENT = 20;
 /** Working-set defaults: evict after N untouched turns; cap on pinned verbatim tokens. */
 const DEFAULT_WORKING_SET_EVICT_TURNS = 8;
+/** Fallback cap used only when no proportional budget can be derived. */
 const DEFAULT_WORKING_SET_TOKEN_CAP = 16_000;
+/**
+ * Default share of the assembled message budget available for working-set pins.
+ *
+ * The cap scales with the budget rather than being fixed, because a fixed ceiling
+ * under-serves large context windows: against a 260K budget the previous 16K
+ * ceiling admitted a median of one pinned turn, which is smaller than the working
+ * set of any cross-file change.
+ */
+export const DEFAULT_WORKING_SET_TOKEN_CAP_FRACTION = 0.25;
+
+/**
+ * Resolve the verbatim working-set budget for a transform.
+ *
+ * An explicit positive `tokenCap` always wins so deployments can pin an absolute
+ * ceiling. Otherwise the cap is a share of `maxTokens`, keeping retention
+ * proportional to the window the model actually has. Falls back to
+ * {@link DEFAULT_WORKING_SET_TOKEN_CAP} when no usable budget is available.
+ */
+export function resolveWorkingSetTokenCap(
+	options: WorkingSetOptions | undefined,
+	maxTokens: number | undefined,
+): number {
+	const explicit = options?.tokenCap;
+	if (typeof explicit === "number" && Number.isFinite(explicit) && explicit > 0) {
+		return Math.floor(explicit);
+	}
+
+	const fraction = options?.tokenCapFraction ?? DEFAULT_WORKING_SET_TOKEN_CAP_FRACTION;
+	const usableFraction = Number.isFinite(fraction) ? Math.min(Math.max(fraction, 0), 1) : 0;
+	if (usableFraction > 0 && typeof maxTokens === "number" && Number.isFinite(maxTokens) && maxTokens > 0) {
+		return Math.floor(maxTokens * usableFraction);
+	}
+
+	return DEFAULT_WORKING_SET_TOKEN_CAP;
+}
 
 export function deriveBudget(input: BudgetDerivationInput): MemoryAssemblyBudget {
 	const safetyPercent = input.safetyMarginPercent ?? DEFAULT_SAFETY_MARGIN_PERCENT;
@@ -214,8 +250,19 @@ export interface WorkingSetOptions {
 	enabled?: boolean;
 	/** Evict a path after this many turns without an unchanged re-read (default {@link DEFAULT_WORKING_SET_EVICT_TURNS}). */
 	evictAfterTurns?: number;
-	/** Max total estimated tokens held verbatim by pinned turns (default {@link DEFAULT_WORKING_SET_TOKEN_CAP}). */
+	/**
+	 * Absolute cap on estimated tokens held verbatim by pinned turns.
+	 *
+	 * A positive value always wins. Leave unset (or `0`) to derive the cap from
+	 * {@link WorkingSetOptions.tokenCapFraction} instead.
+	 */
 	tokenCap?: number;
+	/**
+	 * Share of the assembled message budget available for pinned turns when no
+	 * absolute {@link WorkingSetOptions.tokenCap} is given
+	 * (default {@link DEFAULT_WORKING_SET_TOKEN_CAP_FRACTION}).
+	 */
+	tokenCapFraction?: number;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1172,7 +1219,7 @@ export function transformMessages(messages: AgentMessage[], options: MessageTran
 					originalTurns,
 					hotWindowStart,
 					options.workingSet.evictAfterTurns ?? DEFAULT_WORKING_SET_EVICT_TURNS,
-					options.workingSet.tokenCap ?? DEFAULT_WORKING_SET_TOKEN_CAP,
+					resolveWorkingSetTokenCap(options.workingSet, options.maxTokens),
 				)
 			: undefined;
 	const workingSetPinnedTurns = workingSetExemptions ?? new Set<number>();

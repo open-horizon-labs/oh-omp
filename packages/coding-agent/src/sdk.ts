@@ -48,10 +48,12 @@ import {
 	isValidBoundedTransform,
 	type OverflowSummaryCheckpoint,
 	type OverflowSummaryModelCandidate,
+	resolveWorkingSetTokenCap,
 	segmentIntoTurns,
 	type TransformMetadata,
 	transformMessages,
 	transformMessagesWithRecovery,
+	type WorkingSetOptions,
 } from "./context/assembler";
 import { dedupCodec, readCodec, warmCodec } from "./context/assembler/codecs";
 import { contentHash } from "./context/assembler/codecs/shared";
@@ -1758,6 +1760,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			enabled: assemblerSettings.workingSetEnabled,
 			evictAfterTurns: assemblerSettings.workingSetEvictTurns,
 			tokenCap: assemblerSettings.workingSetTokenCap,
+			tokenCapFraction: assemblerSettings.workingSetTokenCapFraction,
 		};
 		const stickyCompressedKeys = new Set<number>();
 		let turnContextMemo:
@@ -1861,6 +1864,15 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				contextWindowCap,
 			});
 
+			// Resolve the working-set cap once, from the assembled context window rather
+			// than a per-pass message budget. Both transform passes below must agree on
+			// the cap: if the unbounded pass and the bounded pass pin different turns, the
+			// cached prefix churns between requests.
+			const resolvedWorkingSet: WorkingSetOptions = {
+				...workingSet,
+				tokenCap: resolveWorkingSetTokenCap(workingSet, assembledContextWindow),
+			};
+
 			// Step 1: Apply message transform (hot window + content replacement).
 			// This strips tool_result content from older turns before budget derivation
 			// so the budget reflects actual post-transform message costs.
@@ -1868,7 +1880,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				hotWindowTurns,
 				resolveToolResultStub,
 				codecs,
-				workingSet,
+				workingSet: resolvedWorkingSet,
 				stickyCompressedKeys,
 			});
 			const transformedMessages = firstPass.messages;
@@ -2114,7 +2126,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 					hotWindowTurns,
 					resolveToolResultStub,
 					codecs,
-					workingSet,
+					workingSet: resolvedWorkingSet,
 					relevanceScores,
 					stickyCompressedKeys,
 				};
@@ -2182,7 +2194,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 							{
 								...boundedOptions,
 								relevanceScores: undefined,
-								workingSet: overflow.fallbackMessages ? { enabled: false } : workingSet,
+								workingSet: overflow.fallbackMessages ? { enabled: false } : resolvedWorkingSet,
 							},
 							overflowSummaryFailureState?.nudgeSent
 								? {}

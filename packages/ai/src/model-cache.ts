@@ -95,3 +95,18 @@ export function writeModelCache<TApi extends Api>(
 		// Cache writes are best-effort; failures should not break model resolution.
 	}
 }
+
+/**
+ * Delete the cached model list for a provider. Called after login/logout changes
+ * the active credential, so the next ordinary model listing misses and refetches.
+ * Failures are ignored, mirroring `writeModelCache`: a stale row is safe to keep
+ * and must never fail an auth flow.
+ */
+export function deleteModelCache(providerId: string, dbPath?: string): void {
+	try {
+		const db = getDb(dbPath);
+		db.run("DELETE FROM model_cache WHERE provider_id = ?", [providerId]);
+	} catch {
+		// Best-effort: leave any stale row in place.
+	}
+}

@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.12.10] - 2026-08-16
+
+### Fixed
+
+- Peek unexpired OAuth siblings so a leftover expired Anthropic token no longer hides a valid login from `--list-models`, and drop that provider's model cache on login/logout. ([#99](https://github.com/open-horizon-labs/oh-omp/pull/99))
+
 ## [0.12.9] - 2026-08-16
 
 ### Fixed

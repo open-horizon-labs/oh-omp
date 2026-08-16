@@ -811,7 +811,12 @@ function computeWorkingSetExemptions(
 			continue;
 		}
 		const tokens = estimateTurnTokens(turns[track.canonicalTurn]);
-		if (pinnedTokens + tokens > tokenCap && exempt.size > 0) break;
+		// A single oversized candidate must not starve every smaller candidate
+		// behind it (this loop is sorted most-recent-first, so `continue` only ever
+		// skips a colder, lower-priority turn). This matters most at tight caps,
+		// which are now the common case for small-context-window models under the
+		// proportional default.
+		if (pinnedTokens + tokens > tokenCap && exempt.size > 0) continue;
 		pinnedTokens += tokens;
 		exempt.add(track.canonicalTurn);
 		pinnedPaths.add(track.path);

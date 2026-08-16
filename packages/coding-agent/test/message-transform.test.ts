@@ -1697,6 +1697,42 @@ describe("working-set retention", () => {
 		expect(pinCount(build(), { workingSet: { enabled: true }, maxTokens: 260_000 })).toBe(2);
 	});
 
+	test("an oversized candidate does not starve a smaller, lower-priority candidate behind it", () => {
+		// Sized against estimateTokensFromCharCount's 3.2 chars/token: ~500, ~20000,
+		// and ~5000 tokens respectively.
+		const smallOld = `A${"a ".repeat(800)}`;
+		const oversizedMid = `B${"b ".repeat(32_000)}`;
+		const recentFirst = `C${"c ".repeat(8_000)}`;
+		const build = (): AgentMessage[] => {
+			wsCall = 0;
+			return [
+				makeUser("start"),
+				...makeReadTurn("/a.ts", smallOld),
+				...makeReadTurn("/a.ts", smallOld),
+				...makeReadTurn("/a.ts", smallOld),
+				...makeReadTurn("/b.ts", oversizedMid),
+				...makeReadTurn("/b.ts", oversizedMid),
+				...makeReadTurn("/b.ts", oversizedMid),
+				makeUser("q"),
+				...makeReadTurn("/c.ts", recentFirst),
+				...makeReadTurn("/c.ts", recentFirst),
+				...makeReadTurn("/c.ts", recentFirst),
+				...fillerTurns(2),
+			];
+		};
+		// c.ts is the most-recently-touched path, so it pins unconditionally
+		// (~5000 tokens). b.ts is oversized and cannot fit in the remaining budget
+		// (~600 tokens): a candidate the cap must reject either way. a.ts is the
+		// oldest but small enough (~500 tokens) to fit in what b.ts left behind —
+		// reachable only if the oversized rejection does not abort the whole pass.
+		const decisions = transformMessages(build(), {
+			// evictAfterTurns is widened so age-out isn't the excluding factor here —
+			// this test isolates the cap-overflow behaviour specifically.
+			workingSet: { enabled: true, tokenCap: 5_600, evictAfterTurns: 20 },
+		}).metadata.decisions.filter(d => d.reason === "working-set");
+		expect(decisions.length).toBe(2);
+	});
+
 	test("an explicit token cap still overrides the proportional default", () => {
 		expect(resolveWorkingSetTokenCap({ enabled: true, tokenCap: 12_345 }, 260_000)).toBe(12_345);
 	});

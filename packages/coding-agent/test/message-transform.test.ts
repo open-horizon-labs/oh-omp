@@ -4,11 +4,13 @@ import type { AssistantMessage, DeveloperMessage, ToolResultMessage, UserMessage
 import {
 	computeTurnKey,
 	DEFAULT_HOT_WINDOW_TURNS,
+	DEFAULT_WORKING_SET_TOKEN_CAP_FRACTION,
 	dedupCodec,
 	deriveBudget,
 	formatStubText,
 	isValidBoundedTransform,
 	readCodec,
+	resolveWorkingSetTokenCap,
 	segmentIntoTurns,
 	TOOL_RESULT_STUB_TEXT,
 	type TransformResult,
@@ -1665,6 +1667,98 @@ describe("working-set retention", () => {
 		expect(pinnedTurns).toHaveLength(1);
 		// /b.ts touched later → wins the cap; /a.ts canonical stays compressed.
 		expect(resultTextById(result.messages, firstA)).not.toContain(bigA);
+	});
+
+	test("proportional cap admits a pin the fixed 16K ceiling would starve", () => {
+		// Each payload is ~10K tokens, so two pins exceed the legacy fixed 16K
+		// ceiling but fit comfortably in 25% of a 260K budget.
+		const bigPinA = `A${"a ".repeat(20_000)}`;
+		const bigPinB = `B${"b ".repeat(20_000)}`;
+		const build = (): AgentMessage[] => {
+			wsCall = 0;
+			return [
+				makeUser("start"),
+				...makeReadTurn("/a.ts", bigPinA),
+				...makeReadTurn("/a.ts", bigPinA),
+				...makeReadTurn("/a.ts", bigPinA),
+				...makeReadTurn("/b.ts", bigPinB),
+				...makeReadTurn("/b.ts", bigPinB),
+				makeUser("q"),
+				...makeReadTurn("/b.ts", bigPinB),
+				...fillerTurns(2),
+			];
+		};
+		const pinCount = (m: AgentMessage[], opts: Parameters<typeof transformMessages>[1]): number =>
+			transformMessages(m, opts).metadata.decisions.filter(d => d.reason === "working-set").length;
+
+		// A starved absolute cap only affords the most recently touched path.
+		expect(pinCount(build(), { workingSet: { enabled: true, tokenCap: 200 } })).toBe(1);
+		// Scaling with a large assembled budget affords both.
+		expect(pinCount(build(), { workingSet: { enabled: true }, maxTokens: 260_000 })).toBe(2);
+	});
+
+	test("an oversized candidate does not starve a smaller, lower-priority candidate behind it", () => {
+		// Sized against estimateTokensFromCharCount's 3.2 chars/token: ~500, ~20000,
+		// and ~5000 tokens respectively.
+		const smallOld = `A${"a ".repeat(800)}`;
+		const oversizedMid = `B${"b ".repeat(32_000)}`;
+		const recentFirst = `C${"c ".repeat(8_000)}`;
+		const build = (): AgentMessage[] => {
+			wsCall = 0;
+			return [
+				makeUser("start"),
+				...makeReadTurn("/a.ts", smallOld),
+				...makeReadTurn("/a.ts", smallOld),
+				...makeReadTurn("/a.ts", smallOld),
+				...makeReadTurn("/b.ts", oversizedMid),
+				...makeReadTurn("/b.ts", oversizedMid),
+				...makeReadTurn("/b.ts", oversizedMid),
+				makeUser("q"),
+				...makeReadTurn("/c.ts", recentFirst),
+				...makeReadTurn("/c.ts", recentFirst),
+				...makeReadTurn("/c.ts", recentFirst),
+				...fillerTurns(2),
+			];
+		};
+		// c.ts is the most-recently-touched path, so it pins unconditionally
+		// (~5000 tokens). b.ts is oversized and cannot fit in the remaining budget
+		// (~600 tokens): a candidate the cap must reject either way. a.ts is the
+		// oldest but small enough (~500 tokens) to fit in what b.ts left behind —
+		// reachable only if the oversized rejection does not abort the whole pass.
+		const decisions = transformMessages(build(), {
+			// evictAfterTurns is widened so age-out isn't the excluding factor here —
+			// this test isolates the cap-overflow behaviour specifically.
+			workingSet: { enabled: true, tokenCap: 5_600, evictAfterTurns: 20 },
+		}).metadata.decisions.filter(d => d.reason === "working-set");
+		expect(decisions.length).toBe(2);
+	});
+
+	test("an explicit token cap still overrides the proportional default", () => {
+		expect(resolveWorkingSetTokenCap({ enabled: true, tokenCap: 12_345 }, 260_000)).toBe(12_345);
+	});
+
+	test("cap scales with the assembled budget when no absolute cap is set", () => {
+		expect(resolveWorkingSetTokenCap({ enabled: true }, 260_000)).toBe(65_000);
+		// 0 is the "auto" sentinel, not a request for a zero-token cap.
+		expect(resolveWorkingSetTokenCap({ enabled: true, tokenCap: 0 }, 128_000)).toBe(32_000);
+	});
+
+	test("honours a custom cap fraction and clamps it to [0, 1]", () => {
+		expect(resolveWorkingSetTokenCap({ enabled: true, tokenCapFraction: 0.5 }, 100_000)).toBe(50_000);
+		expect(resolveWorkingSetTokenCap({ enabled: true, tokenCapFraction: 4 }, 100_000)).toBe(100_000);
+		// A non-positive fraction falls back rather than disabling retention outright.
+		expect(resolveWorkingSetTokenCap({ enabled: true, tokenCapFraction: -1 }, 100_000)).toBe(16_000);
+	});
+
+	test("falls back to the fixed default without a usable budget", () => {
+		expect(resolveWorkingSetTokenCap({ enabled: true }, undefined)).toBe(16_000);
+		expect(resolveWorkingSetTokenCap({ enabled: true }, 0)).toBe(16_000);
+		expect(resolveWorkingSetTokenCap(undefined, undefined)).toBe(16_000);
+		expect(resolveWorkingSetTokenCap({ enabled: true }, Number.NaN)).toBe(16_000);
+	});
+
+	test("default cap fraction is a quarter of the budget", () => {
+		expect(DEFAULT_WORKING_SET_TOKEN_CAP_FRACTION).toBe(0.25);
 	});
 });
 

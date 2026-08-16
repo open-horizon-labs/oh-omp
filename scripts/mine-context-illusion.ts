@@ -28,6 +28,7 @@ import { dedupCodec } from "../packages/coding-agent/src/context/assembler/codec
 import { readCodec } from "../packages/coding-agent/src/context/assembler/codecs/read-codec";
 import { warmCodec } from "../packages/coding-agent/src/context/assembler/codecs/warm-codec";
 import {
+	resolveWorkingSetTokenCap,
 	segmentIntoTurns,
 	transformMessages,
 } from "../packages/coding-agent/src/context/assembler/message-transform";
@@ -37,6 +38,12 @@ export const SESSIONS_ROOT = join(homedir(), ".oh-omp", "agent", "sessions");
 const CODECS = [dedupCodec, readCodec, warmCodec];
 /** Mirror production default: settings-schema assembler.hotWindowTurns = 4. */
 const HOT_WINDOW_TURNS = 4;
+/**
+ * Mirror production: sdk.ts resolves the working-set cap from the assembled
+ * context window, not from a per-pass message budget. Replay has no live model,
+ * so use a representative window for the models these sessions ran on.
+ */
+const WORKING_SET_CONTEXT_WINDOW = 260_000;
 export const FETCH_TOOLS = new Set(["read", "grep", "find", "bash"]);
 export const MUTATING_TOOLS = new Set(["edit", "write", "ast_edit", "notebook", "apply_patch"]);
 /** Cap replay invocations per session to bound runtime on pathological sessions. */
@@ -273,7 +280,12 @@ function classifyEarlierStatus(
 		const result = transformMessages(prefix, {
 			hotWindowTurns: HOT_WINDOW_TURNS,
 			codecs: CODECS,
-			workingSet: WORKING_SET_REPLAY.enabled ? { enabled: true } : undefined,
+			workingSet: WORKING_SET_REPLAY.enabled
+				? {
+						enabled: true,
+						tokenCap: resolveWorkingSetTokenCap(undefined, WORKING_SET_CONTEXT_WINDOW),
+					}
+				: undefined,
 		});
 		cache.value = {
 			assistantIdx,

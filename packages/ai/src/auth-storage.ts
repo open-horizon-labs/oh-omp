@@ -11,6 +11,7 @@ import { Database, type Statement } from "bun:sqlite";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { $env, getAgentDbPath, logger } from "@oh-my-pi/pi-utils";
+import { deleteModelCache } from "./model-cache";
 import { getEnvApiKey } from "./stream";
 import type { Provider } from "./types";
 import type {
@@ -690,6 +691,10 @@ export class AuthStorage {
 		this.#store.deleteAuthCredentialsForProvider(provider, "deleted by user");
 		this.#data.delete(provider);
 		this.#resetProviderAssignments(provider);
+		// Drop the provider's cached model list so the next ordinary `--list-models`
+		// refetches under whatever credential authenticates next, instead of
+		// reusing a snapshot fetched under the removed credential.
+		deleteModelCache(provider);
 	}
 
 	/**
@@ -766,6 +771,9 @@ export class AuthStorage {
 		const saveApiKeyCredential = async (apiKey: string): Promise<void> => {
 			const newCredential: ApiKeyCredential = { type: "api_key", key: apiKey };
 			await this.set(provider, newCredential);
+			// The active credential changed; drop the provider's cached model list so
+			// the next `--list-models` refetches under this credential.
+			deleteModelCache(provider);
 		};
 		const manualCodeInput = () => ctrl.onPrompt({ message: "Paste the authorization code (or full redirect URL):" });
 		switch (provider) {
@@ -981,6 +989,9 @@ export class AuthStorage {
 		}
 		const newCredential: OAuthCredential = { type: "oauth", ...credentials };
 		await this.#upsertOAuthCredential(provider, newCredential);
+		// The active credential changed; drop the provider's cached model list so
+		// the next `--list-models` refetches under this credential.
+		deleteModelCache(provider);
 	}
 
 	/**
@@ -1917,11 +1928,20 @@ export class AuthStorage {
 		}
 
 		// Return current OAuth access token only if it is not already expired.
+		// An expired selection must not hide unexpired siblings: fall back to the
+		// first unexpired OAuth credential for the provider. Peeking never refreshes.
 		const oauthSelection = this.#selectCredentialByType(provider, "oauth");
 		if (oauthSelection) {
-			const expiresAt = oauthSelection.credential.expires;
-			if (Number.isFinite(expiresAt) && expiresAt > Date.now()) {
-				return oauthSelection.credential.access;
+			const isUnexpired = (credential: AuthCredential): credential is OAuthCredential =>
+				credential.type === "oauth" && Number.isFinite(credential.expires) && credential.expires > Date.now();
+			const siblings = this.#getCredentialsForProvider(provider).filter(
+				(_credential, index) => index !== oauthSelection.index,
+			);
+			const unexpired = isUnexpired(oauthSelection.credential)
+				? oauthSelection.credential
+				: siblings.find(isUnexpired);
+			if (unexpired) {
+				return unexpired.access;
 			}
 		}
 

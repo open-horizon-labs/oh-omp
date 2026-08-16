@@ -10,6 +10,8 @@
 ### Fixed
 
 - Fixed Anthropic prompt-cache marker placement to use source-message eligibility before developer/tool-result messages are flattened into Anthropic user messages. Synthetic developer tail context no longer receives message cache markers, while stable user/tool-result transcript messages remain cache candidates.
+- Fixed OAuth credential peeking to skip expired siblings so a leftover expired token no longer hides a valid account from `--list-models` discovery ([#98](https://github.com/open-horizon-labs/oh-omp/issues/98))
+- Login, logout, and remove now drop that provider's cached model list so the next ordinary `--list-models` refetches under the active credential ([#98](https://github.com/open-horizon-labs/oh-omp/issues/98))
 ## [13.19.0] - 2026-04-05
 
 ### Fixed

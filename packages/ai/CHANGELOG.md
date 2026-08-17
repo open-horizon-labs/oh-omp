@@ -6,6 +6,7 @@
 
 - Added xAI Grok OAuth login for SuperGrok and X Premium+ subscriptions, including device authorization, token refresh, curated Grok models, and the xAI Responses transport.
 - Added authenticated Z.AI Coding Plan model discovery for `glm-5.2` and `glm-5.3` ([#94](https://github.com/open-horizon-labs/oh-omp/issues/94))
+- Added opt-in proactive OAuth refresh: `AuthStorage.refreshExpiring({ provider?, expiringWithinMs? })` rotates and persists credentials whose access tokens expire within a window (default ~20% of the token TTL), without disabling on failure — the reactive path still owns that decision. Rotated credentials now record `obtainedAt` to make the TTL-based default window exact ([#102](https://github.com/open-horizon-labs/oh-omp/issues/102))
 
 ### Fixed
 

@@ -1789,6 +1789,54 @@ export class AuthStorage {
 		}
 	}
 
+	async #attemptOAuthApiKey(
+		provider: Provider,
+		credential: OAuthCredential,
+	): Promise<{ newCredentials: OAuthCredentials; apiKey: string } | null> {
+		const customProvider = getOAuthProvider(provider);
+		if (customProvider) {
+			const refreshedCredentials = await this.#refreshOAuthCredential(provider, credential);
+			const apiKey = customProvider.getApiKey
+				? customProvider.getApiKey(refreshedCredentials)
+				: refreshedCredentials.access;
+			return { newCredentials: refreshedCredentials, apiKey };
+		}
+		return getOAuthApiKey(provider as OAuthProvider, { [provider]: credential });
+	}
+
+	/**
+	 * Refresh an OAuth credential with rotation-race recovery for invalid_grant failures.
+	 *
+	 * A stale copy of agent.db (e.g. an orchestrator-managed session snapshot) can lose a
+	 * concurrent refresh-token rotation: its refresh token was already consumed, so the
+	 * provider answers invalid_grant even though the canonical grant is still alive. Before
+	 * that failure reaches the permanent-disable path, reload the credential from the store —
+	 * another process may have already persisted a newer token — and retry exactly once.
+	 *
+	 * The retry's own error propagates to the caller's normal failure handling: a second
+	 * invalid_grant disables as before, while any other failure keeps the existing
+	 * non-invalid_grant behavior.
+	 */
+	async #refreshWithStoreRecovery(
+		provider: Provider,
+		selection: { credential: OAuthCredential; index: number },
+	): Promise<{ newCredentials: OAuthCredentials; apiKey: string } | null> {
+		try {
+			return await this.#attemptOAuthApiKey(provider, selection.credential);
+		} catch (error) {
+			if (!/invalid_grant/i.test(String(error))) throw error;
+			const target = this.#getStoredCredentials(provider)[selection.index];
+			const fresh = target ? this.#store.listAuthCredentials(provider).find(row => row.id === target.id) : undefined;
+			const freshCredential = fresh?.credential;
+			if (!freshCredential || freshCredential.type !== "oauth") throw error;
+			selection.credential = freshCredential;
+			logger.warn("OAuth refresh failed with invalid_grant; retrying once from freshly loaded store state", {
+				provider,
+			});
+			return this.#attemptOAuthApiKey(provider, freshCredential);
+		}
+	}
+
 	/** Attempts to use a single OAuth credential, checking usage and refreshing token. */
 	async #tryOAuthCredential(
 		provider: Provider,
@@ -1834,20 +1882,7 @@ export class AuthStorage {
 		}
 
 		try {
-			let result: { newCredentials: OAuthCredentials; apiKey: string } | null;
-			const customProvider = getOAuthProvider(provider);
-			if (customProvider) {
-				const refreshedCredentials = await this.#refreshOAuthCredential(provider, selection.credential);
-				const apiKey = customProvider.getApiKey
-					? customProvider.getApiKey(refreshedCredentials)
-					: refreshedCredentials.access;
-				result = { newCredentials: refreshedCredentials, apiKey };
-			} else {
-				const oauthCreds: Record<string, OAuthCredentials> = {
-					[provider]: selection.credential,
-				};
-				result = await getOAuthApiKey(provider as OAuthProvider, oauthCreds);
-			}
+			const result = await this.#refreshWithStoreRecovery(provider, selection);
 			if (!result) return undefined;
 			const updated: OAuthCredential = {
 				type: "oauth",

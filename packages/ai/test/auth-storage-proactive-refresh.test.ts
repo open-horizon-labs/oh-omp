@@ -254,4 +254,59 @@ describe("AuthStorage.refreshExpiring", () => {
 		const credential = store.listAuthCredentials(PROVIDER)[0]?.credential as OAuthCredential;
 		expect(credential.refresh).toBe("refresh-r2");
 	});
+
+	test("forces a token-endpoint call for an unexpired in-window credential", async () => {
+		if (!authStorage || !store) throw new Error("test setup failed");
+
+		const expires = Date.now() + 5 * MINUTE_MS;
+		await authStorage.set(PROVIDER, [createCredential({ refresh: "refresh-r1", expires })]);
+
+		const newExpiresIn = 3600;
+		const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+			new Response(
+				JSON.stringify({
+					access_token: "header.e30.sig",
+					refresh_token: "refresh-r2",
+					expires_in: newExpiresIn,
+				}),
+				{ status: 200, headers: { "Content-Type": "application/json" } },
+			),
+		);
+
+		const before = Date.now();
+		const outcomes = await authStorage.refreshExpiring({
+			provider: PROVIDER,
+			expiringWithinMs: 10 * MINUTE_MS,
+		});
+
+		expect(fetchSpy).toHaveBeenCalled();
+		expect(outcomes[0]?.status).toBe("rotated");
+		const credential = store.listAuthCredentials(PROVIDER)[0]?.credential as OAuthCredential;
+		expect(credential.refresh).toBe("refresh-r2");
+		expect(credential.expires).toBeGreaterThanOrEqual(before + newExpiresIn * 1000);
+		expect(credential.obtainedAt).toBeGreaterThanOrEqual(before);
+	});
+
+	test("reports fresh and leaves obtainedAt alone when the token endpoint returns the same credential", async () => {
+		if (!authStorage || !store) throw new Error("test setup failed");
+
+		const expires = Date.now() + 5 * MINUTE_MS;
+		await authStorage.set(PROVIDER, [createCredential({ refresh: "refresh-r1", expires })]);
+		vi.spyOn(oauthUtils, "getOAuthApiKey").mockImplementation(async (_provider, credentials) => {
+			const current = credentials[PROVIDER];
+			if (!current) throw new Error("missing credential");
+			return { apiKey: current.access, newCredentials: current };
+		});
+
+		const outcomes = await authStorage.refreshExpiring({
+			provider: PROVIDER,
+			expiringWithinMs: 10 * MINUTE_MS,
+		});
+
+		expect(outcomes[0]?.status).toBe("fresh");
+		const credential = store.listAuthCredentials(PROVIDER)[0]?.credential as OAuthCredential;
+		expect(credential.refresh).toBe("refresh-r1");
+		expect(credential.expires).toBe(expires);
+		expect(credential.obtainedAt).toBeUndefined();
+	});
 });

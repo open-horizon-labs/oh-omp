@@ -1784,8 +1784,12 @@ export class AuthStorage {
 		return undefined;
 	}
 
-	async #refreshOAuthCredential(provider: Provider, credential: OAuthCredential): Promise<OAuthCredentials> {
-		if (Date.now() < credential.expires) return credential;
+	async #refreshOAuthCredential(
+		provider: Provider,
+		credential: OAuthCredential,
+		options?: { force?: boolean },
+	): Promise<OAuthCredentials> {
+		if (!options?.force && Date.now() < credential.expires) return credential;
 		const customProvider = getOAuthProvider(provider);
 		let refreshPromise: Promise<OAuthCredentials>;
 		if (customProvider) {
@@ -1814,16 +1818,17 @@ export class AuthStorage {
 	async #attemptOAuthApiKey(
 		provider: Provider,
 		credential: OAuthCredential,
+		options?: { force?: boolean },
 	): Promise<{ newCredentials: OAuthCredentials; apiKey: string } | null> {
 		const customProvider = getOAuthProvider(provider);
 		if (customProvider) {
-			const refreshedCredentials = await this.#refreshOAuthCredential(provider, credential);
+			const refreshedCredentials = await this.#refreshOAuthCredential(provider, credential, options);
 			const apiKey = customProvider.getApiKey
 				? customProvider.getApiKey(refreshedCredentials)
 				: refreshedCredentials.access;
 			return { newCredentials: refreshedCredentials, apiKey };
 		}
-		return getOAuthApiKey(provider as OAuthProvider, { [provider]: credential });
+		return getOAuthApiKey(provider as OAuthProvider, { [provider]: credential }, options);
 	}
 
 	/**
@@ -1842,9 +1847,10 @@ export class AuthStorage {
 	async #refreshWithStoreRecovery(
 		provider: Provider,
 		selection: { credential: OAuthCredential; index: number },
+		options?: { force?: boolean },
 	): Promise<{ newCredentials: OAuthCredentials; apiKey: string } | null> {
 		try {
-			return await this.#attemptOAuthApiKey(provider, selection.credential);
+			return await this.#attemptOAuthApiKey(provider, selection.credential, options);
 		} catch (error) {
 			if (!/invalid_grant/i.test(String(error))) throw error;
 			const target = this.#getStoredCredentials(provider)[selection.index];
@@ -1855,7 +1861,7 @@ export class AuthStorage {
 			logger.warn("OAuth refresh failed with invalid_grant; retrying once from freshly loaded store state", {
 				provider,
 			});
-			return this.#attemptOAuthApiKey(provider, freshCredential);
+			return this.#attemptOAuthApiKey(provider, freshCredential, options);
 		}
 	}
 
@@ -1868,6 +1874,8 @@ export class AuthStorage {
 	 * Credentials outside the window are untouched — no provider call is made for them —
 	 * and a failed refresh records a "failed" outcome without disabling or blocking the
 	 * credential: the token may still be valid and the reactive path owns that decision.
+	 * Within-window credentials force a token-endpoint call even if still unexpired;
+	 * `rotated` is reported only when the persisted credential actually changed.
 	 *
 	 * @param options.provider Limit to a single provider; otherwise every provider with
 	 *   OAuth credentials is considered.
@@ -1898,7 +1906,7 @@ export class AuthStorage {
 				}
 				const selection = { credential, index };
 				try {
-					const result = await this.#refreshWithStoreRecovery(provider, selection);
+					const result = await this.#refreshWithStoreRecovery(provider, selection, { force: true });
 					if (!result) {
 						outcomes.push({
 							provider,
@@ -1907,6 +1915,14 @@ export class AuthStorage {
 							expires: credential.expires,
 							error: "no credentials returned",
 						});
+						continue;
+					}
+					const rotated =
+						result.newCredentials.access !== credential.access ||
+						result.newCredentials.refresh !== credential.refresh ||
+						result.newCredentials.expires !== credential.expires;
+					if (!rotated) {
+						outcomes.push({ provider, index, status: "fresh", expires: credential.expires });
 						continue;
 					}
 					const updated: OAuthCredential = {

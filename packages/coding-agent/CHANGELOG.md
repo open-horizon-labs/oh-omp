@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added `auth refresh` CLI command for single-writer credential maintenance: rotates OAuth credentials expiring within a window (default ~20% of TTL; `--expiring-within 12m`), persists rotations to the canonical store, and prints human or `--json` output that never includes token material. Exits 1 when any refresh fails ([#102](https://github.com/open-horizon-labs/oh-omp/issues/102))
+
 ## [0.12.10] - 2026-08-16
 
 ### Fixed

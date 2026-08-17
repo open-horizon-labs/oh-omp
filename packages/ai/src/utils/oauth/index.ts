@@ -456,6 +456,7 @@ function getPerplexityJwtExpiryMs(token: string): number | undefined {
 export async function getOAuthApiKey(
 	provider: OAuthProvider,
 	credentials: Record<string, OAuthCredentials>,
+	options?: { force?: boolean },
 ): Promise<{ newCredentials: OAuthCredentials; apiKey: string } | null> {
 	let creds = credentials[provider];
 	if (!creds) {
@@ -471,8 +472,8 @@ export async function getOAuthApiKey(
 			creds = { ...creds, expires };
 		}
 	}
-	// Refresh if expired
-	if (Date.now() >= creds.expires) {
+	// Refresh if expired, or when a caller (proactive refresh) forces rotation before expiry.
+	if (options?.force || Date.now() >= creds.expires) {
 		try {
 			creds = await refreshOAuthToken(provider, creds);
 		} catch (refreshError) {

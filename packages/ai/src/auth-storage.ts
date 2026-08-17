@@ -171,6 +171,28 @@ const USAGE_REPORT_TTL_MS = 30_000;
 const DEFAULT_USAGE_REQUEST_TIMEOUT_MS = 3_000;
 const DEFAULT_OAUTH_REFRESH_TIMEOUT_MS = 10_000;
 
+/** Default proactive refresh window: ~20% of the access-token TTL. */
+const PROACTIVE_REFRESH_TTL_FRACTION = 0.2;
+/** Fallback for credentials that predate `obtainedAt` bookkeeping (~20% of a 60m TTL). */
+const PROACTIVE_REFRESH_FALLBACK_WINDOW_MS = 12 * 60 * 1000;
+
+export type ProactiveRefreshStatus = "rotated" | "fresh" | "failed";
+
+export interface ProactiveRefreshOutcome {
+	provider: string;
+	index: number;
+	status: ProactiveRefreshStatus;
+	/** Epoch ms when the (possibly rotated) access token expires. */
+	expires: number;
+	/** Failure description for status "failed". Never contains tokens. */
+	error?: string;
+}
+
+function proactiveRefreshWindowMs(credential: OAuthCredential): number {
+	const ttl = credential.expires - (credential.obtainedAt ?? Number.NaN);
+	return Number.isFinite(ttl) && ttl > 0 ? ttl * PROACTIVE_REFRESH_TTL_FRACTION : PROACTIVE_REFRESH_FALLBACK_WINDOW_MS;
+}
+
 type UsageCacheEntry<T> = {
 	value: T;
 	expiresAt: number;
@@ -1762,8 +1784,12 @@ export class AuthStorage {
 		return undefined;
 	}
 
-	async #refreshOAuthCredential(provider: Provider, credential: OAuthCredential): Promise<OAuthCredentials> {
-		if (Date.now() < credential.expires) return credential;
+	async #refreshOAuthCredential(
+		provider: Provider,
+		credential: OAuthCredential,
+		options?: { force?: boolean },
+	): Promise<OAuthCredentials> {
+		if (!options?.force && Date.now() < credential.expires) return credential;
 		const customProvider = getOAuthProvider(provider);
 		let refreshPromise: Promise<OAuthCredentials>;
 		if (customProvider) {
@@ -1792,16 +1818,17 @@ export class AuthStorage {
 	async #attemptOAuthApiKey(
 		provider: Provider,
 		credential: OAuthCredential,
+		options?: { force?: boolean },
 	): Promise<{ newCredentials: OAuthCredentials; apiKey: string } | null> {
 		const customProvider = getOAuthProvider(provider);
 		if (customProvider) {
-			const refreshedCredentials = await this.#refreshOAuthCredential(provider, credential);
+			const refreshedCredentials = await this.#refreshOAuthCredential(provider, credential, options);
 			const apiKey = customProvider.getApiKey
 				? customProvider.getApiKey(refreshedCredentials)
 				: refreshedCredentials.access;
 			return { newCredentials: refreshedCredentials, apiKey };
 		}
-		return getOAuthApiKey(provider as OAuthProvider, { [provider]: credential });
+		return getOAuthApiKey(provider as OAuthProvider, { [provider]: credential }, options);
 	}
 
 	/**
@@ -1820,9 +1847,10 @@ export class AuthStorage {
 	async #refreshWithStoreRecovery(
 		provider: Provider,
 		selection: { credential: OAuthCredential; index: number },
+		options?: { force?: boolean },
 	): Promise<{ newCredentials: OAuthCredentials; apiKey: string } | null> {
 		try {
-			return await this.#attemptOAuthApiKey(provider, selection.credential);
+			return await this.#attemptOAuthApiKey(provider, selection.credential, options);
 		} catch (error) {
 			if (!/invalid_grant/i.test(String(error))) throw error;
 			const target = this.#getStoredCredentials(provider)[selection.index];
@@ -1833,8 +1861,90 @@ export class AuthStorage {
 			logger.warn("OAuth refresh failed with invalid_grant; retrying once from freshly loaded store state", {
 				provider,
 			});
-			return this.#attemptOAuthApiKey(provider, freshCredential);
+			return this.#attemptOAuthApiKey(provider, freshCredential, options);
 		}
+	}
+
+	/**
+	 * Proactively refresh OAuth credentials whose access tokens expire within a window,
+	 * persisting each rotation. Intended for a single-writer owner (e.g. an orchestrator
+	 * refresh loop) that keeps the canonical store fresh and projects short-lived access
+	 * tokens outward; the reactive path stays the only place that disables credentials.
+	 *
+	 * Credentials outside the window are untouched — no provider call is made for them —
+	 * and a failed refresh records a "failed" outcome without disabling or blocking the
+	 * credential: the token may still be valid and the reactive path owns that decision.
+	 * Within-window credentials force a token-endpoint call even if still unexpired;
+	 * `rotated` is reported only when the persisted credential actually changed.
+	 *
+	 * @param options.provider Limit to a single provider; otherwise every provider with
+	 *   OAuth credentials is considered.
+	 * @param options.expiringWithinMs Refresh when `expires - now` is within this window.
+	 *   Defaults to ~20% of the token's TTL (via `obtainedAt`), or 12 minutes for
+	 *   credentials that predate that bookkeeping.
+	 */
+	async refreshExpiring(
+		options: { provider?: string; expiringWithinMs?: number } = {},
+	): Promise<ProactiveRefreshOutcome[]> {
+		await this.reload();
+		const providers = options.provider
+			? [options.provider]
+			: [...this.#data.keys()].filter(provider =>
+					this.#getStoredCredentials(provider).some(entry => entry.credential.type === "oauth"),
+				);
+		const outcomes: ProactiveRefreshOutcome[] = [];
+		for (const provider of providers) {
+			const entries = this.#getStoredCredentials(provider);
+			for (let index = 0; index < entries.length; index++) {
+				const credential = entries[index].credential;
+				if (credential.type !== "oauth") continue;
+				const now = Date.now();
+				const window = options.expiringWithinMs ?? proactiveRefreshWindowMs(credential);
+				if (credential.expires - now > window) {
+					outcomes.push({ provider, index, status: "fresh", expires: credential.expires });
+					continue;
+				}
+				const selection = { credential, index };
+				try {
+					const result = await this.#refreshWithStoreRecovery(provider, selection, { force: true });
+					if (!result) {
+						outcomes.push({
+							provider,
+							index,
+							status: "failed",
+							expires: credential.expires,
+							error: "no credentials returned",
+						});
+						continue;
+					}
+					const rotated =
+						result.newCredentials.access !== credential.access ||
+						result.newCredentials.refresh !== credential.refresh ||
+						result.newCredentials.expires !== credential.expires;
+					if (!rotated) {
+						outcomes.push({ provider, index, status: "fresh", expires: credential.expires });
+						continue;
+					}
+					const updated: OAuthCredential = {
+						type: "oauth",
+						access: result.newCredentials.access,
+						refresh: result.newCredentials.refresh,
+						expires: result.newCredentials.expires,
+						obtainedAt: Date.now(),
+						accountId: result.newCredentials.accountId ?? selection.credential.accountId,
+						email: result.newCredentials.email ?? selection.credential.email,
+						projectId: result.newCredentials.projectId ?? selection.credential.projectId,
+						enterpriseUrl: result.newCredentials.enterpriseUrl ?? selection.credential.enterpriseUrl,
+					};
+					this.#replaceCredentialAt(provider, index, updated);
+					outcomes.push({ provider, index, status: "rotated", expires: updated.expires });
+				} catch (error) {
+					logger.warn("Proactive OAuth refresh failed", { provider, index });
+					outcomes.push({ provider, index, status: "failed", expires: credential.expires, error: String(error) });
+				}
+			}
+		}
+		return outcomes;
 	}
 
 	/** Attempts to use a single OAuth credential, checking usage and refreshing token. */
@@ -1889,6 +1999,7 @@ export class AuthStorage {
 				access: result.newCredentials.access,
 				refresh: result.newCredentials.refresh,
 				expires: result.newCredentials.expires,
+				obtainedAt: Date.now(),
 				accountId: result.newCredentials.accountId ?? selection.credential.accountId,
 				email: result.newCredentials.email ?? selection.credential.email,
 				projectId: result.newCredentials.projectId ?? selection.credential.projectId,

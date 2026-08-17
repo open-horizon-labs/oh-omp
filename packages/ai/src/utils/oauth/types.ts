@@ -2,6 +2,8 @@ export type OAuthCredentials = {
 	refresh: string;
 	access: string;
 	expires: number;
+	/** Epoch ms when this access token was obtained; enables TTL-fraction refresh windows. */
+	obtainedAt?: number;
 	enterpriseUrl?: string;
 	projectId?: string;
 	email?: string;

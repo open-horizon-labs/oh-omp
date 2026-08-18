@@ -2,9 +2,13 @@
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-08-18
+
 ### Added
 
+- Fixed permanent OAuth credential disable on `invalid_grant`: the refresh is retried once from freshly loaded store state first, so a stale snapshot copy that lost a refresh-token rotation race recovers silently instead of forcing a manual re-login. Only a retry that also returns `invalid_grant` disables the credential ([#101](https://github.com/open-horizon-labs/oh-omp/issues/101))
 - Added `auth refresh` CLI command for single-writer credential maintenance: rotates OAuth credentials expiring within a window (default ~20% of TTL; `--expiring-within 12m`), persists rotations to the canonical store, and prints human or `--json` output that never includes token material. Exits 1 when any refresh fails ([#102](https://github.com/open-horizon-labs/oh-omp/issues/102))
+- Single-flighted OAuth refresh across processes sharing one credential store: concurrent refreshers of the same credential now coordinate through a leased row (schema v5) instead of racing the provider's token endpoint, eliminating the refresh-token-reuse failure mode entirely ([#103](https://github.com/open-horizon-labs/oh-omp/issues/103))
 
 ## [0.12.10] - 2026-08-16
 

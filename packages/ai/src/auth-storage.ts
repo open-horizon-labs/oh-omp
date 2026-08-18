@@ -8,6 +8,7 @@
  * - `AuthCredentialStore`: concrete SQLite-backed implementation
  */
 import { Database, type Statement } from "bun:sqlite";
+import { randomUUID } from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { $env, getAgentDbPath, logger } from "@oh-my-pi/pi-utils";
@@ -170,6 +171,11 @@ const USAGE_CACHE_PREFIX = "usage_cache:";
 const USAGE_REPORT_TTL_MS = 30_000;
 const DEFAULT_USAGE_REQUEST_TIMEOUT_MS = 3_000;
 const DEFAULT_OAUTH_REFRESH_TIMEOUT_MS = 10_000;
+/** Lease TTL: longer than a single refresh so a live holder is not evicted mid-call. */
+const OAUTH_REFRESH_LEASE_TTL_MS = 30_000;
+/** How long a waiter polls for the holder to finish or the lease to expire. */
+const OAUTH_REFRESH_LEASE_WAIT_MS = 35_000;
+const OAUTH_REFRESH_LEASE_POLL_MS = 50;
 
 /** Default proactive refresh window: ~20% of the access-token TTL. */
 const PROACTIVE_REFRESH_TTL_FRACTION = 0.2;
@@ -333,6 +339,7 @@ export class AuthStorage {
 	#usageLogger?: UsageLogger;
 	#fallbackResolver?: (provider: string) => string | undefined;
 	#store: AuthCredentialStore;
+	#refreshLeaseHolderId = `${process.pid}:${randomUUID()}`;
 	#configValueResolver: (config: string) => Promise<string | undefined>;
 	#closed = false;
 
@@ -1849,6 +1856,93 @@ export class AuthStorage {
 		selection: { credential: OAuthCredential; index: number },
 		options?: { force?: boolean },
 	): Promise<{ newCredentials: OAuthCredentials; apiKey: string } | null> {
+		const target = this.#getStoredCredentials(provider)[selection.index];
+		if (!target) return this.#attemptOAuthRefreshWithRetry(provider, selection, options);
+
+		const acquired = this.#store.tryAcquireRefreshLease(
+			target.id,
+			this.#refreshLeaseHolderId,
+			OAUTH_REFRESH_LEASE_TTL_MS,
+		);
+		if (!acquired) {
+			const waited = await this.#waitForRefreshLease(provider, selection, target.id);
+			if (waited) return waited;
+			// Stale or vanished lease — try to take over once, then fall through to refresh.
+			this.#store.tryAcquireRefreshLease(target.id, this.#refreshLeaseHolderId, OAUTH_REFRESH_LEASE_TTL_MS);
+		}
+
+		try {
+			const result = await this.#attemptOAuthRefreshWithRetry(provider, selection, options);
+			if (result) {
+				const rotated =
+					result.newCredentials.access !== selection.credential.access ||
+					result.newCredentials.refresh !== selection.credential.refresh ||
+					result.newCredentials.expires !== selection.credential.expires;
+				if (rotated) {
+					const updated: OAuthCredential = {
+						type: "oauth",
+						access: result.newCredentials.access,
+						refresh: result.newCredentials.refresh,
+						expires: result.newCredentials.expires,
+						obtainedAt: Date.now(),
+						accountId: result.newCredentials.accountId ?? selection.credential.accountId,
+						email: result.newCredentials.email ?? selection.credential.email,
+						projectId: result.newCredentials.projectId ?? selection.credential.projectId,
+						enterpriseUrl: result.newCredentials.enterpriseUrl ?? selection.credential.enterpriseUrl,
+					};
+					this.#replaceCredentialAt(provider, selection.index, updated);
+					selection.credential = updated;
+				}
+			}
+			return result;
+		} finally {
+			this.#store.releaseRefreshLease(target.id, this.#refreshLeaseHolderId);
+		}
+	}
+
+	async #waitForRefreshLease(
+		provider: Provider,
+		selection: { credential: OAuthCredential; index: number },
+		credentialId: number,
+	): Promise<{ newCredentials: OAuthCredentials; apiKey: string } | null> {
+		const deadline = Date.now() + OAUTH_REFRESH_LEASE_WAIT_MS;
+		const originalRefresh = selection.credential.refresh;
+		const originalAccess = selection.credential.access;
+		const originalExpires = selection.credential.expires;
+		while (Date.now() < deadline) {
+			await Bun.sleep(OAUTH_REFRESH_LEASE_POLL_MS);
+			const fresh = this.#store.listAuthCredentials(provider).find(row => row.id === credentialId);
+			const freshCredential = fresh?.credential;
+			if (freshCredential && freshCredential.type === "oauth") {
+				const rotated =
+					freshCredential.refresh !== originalRefresh ||
+					freshCredential.access !== originalAccess ||
+					freshCredential.expires !== originalExpires;
+				if (rotated) {
+					selection.credential = freshCredential;
+					const apiKey = this.#oauthApiKeyFromCredential(provider, freshCredential);
+					return { newCredentials: freshCredential, apiKey };
+				}
+			}
+			if (!this.#store.hasActiveRefreshLease(credentialId)) break;
+		}
+		return null;
+	}
+
+	#oauthApiKeyFromCredential(provider: Provider, credential: OAuthCredential): string {
+		const customProvider = getOAuthProvider(provider);
+		if (customProvider?.getApiKey) return customProvider.getApiKey(credential);
+		const needsProjectId = provider === "google-gemini-cli" || provider === "google-antigravity";
+		return needsProjectId
+			? JSON.stringify({ token: credential.access, projectId: credential.projectId })
+			: credential.access;
+	}
+
+	async #attemptOAuthRefreshWithRetry(
+		provider: Provider,
+		selection: { credential: OAuthCredential; index: number },
+		options?: { force?: boolean },
+	): Promise<{ newCredentials: OAuthCredentials; apiKey: string } | null> {
 		try {
 			return await this.#attemptOAuthApiKey(provider, selection.credential, options);
 		} catch (error) {
@@ -2162,7 +2256,7 @@ type SerializedCredentialRecord = {
 	identityKey: string | null;
 };
 
-const AUTH_SCHEMA_VERSION = 4;
+const AUTH_SCHEMA_VERSION = 5;
 const SQLITE_NOW_EPOCH = "CAST(strftime('%s','now') AS INTEGER)";
 
 function normalizeStoredAccountId(accountId: string | null | undefined): string | null {
@@ -2418,8 +2512,8 @@ export class AuthCredentialStore {
 
 		if (!this.#authCredentialsTableExists()) {
 			this.#createAuthCredentialsTable();
+			this.#createRefreshLeaseTable();
 			this.#writeAuthSchemaVersion(AUTH_SCHEMA_VERSION);
-			return;
 		}
 
 		const schemaVersion = this.#readAuthSchemaVersion() ?? this.#inferAuthSchemaVersion();
@@ -2434,6 +2528,7 @@ export class AuthCredentialStore {
 		}
 
 		this.#createAuthCredentialIndexes();
+		this.#createRefreshLeaseTable();
 		this.#backfillCredentialIdentityKeys();
 		if (shouldWriteSchemaVersion) {
 			this.#writeAuthSchemaVersion(AUTH_SCHEMA_VERSION);
@@ -2493,6 +2588,16 @@ export class AuthCredentialStore {
 		`);
 	}
 
+	#createRefreshLeaseTable(): void {
+		this.#db.exec(`
+			CREATE TABLE IF NOT EXISTS auth_refresh_leases (
+				credential_id INTEGER PRIMARY KEY,
+				holder TEXT NOT NULL,
+				expires_at INTEGER NOT NULL
+			);
+		`);
+	}
+
 	#migrateAuthSchema(fromVersion: number): void {
 		if (fromVersion < 1) {
 			this.#migrateAuthSchemaV0ToV1();
@@ -2502,6 +2607,9 @@ export class AuthCredentialStore {
 		}
 		if (fromVersion < 4) {
 			this.#migrateAuthSchemaV3ToV4();
+		}
+		if (fromVersion < 5) {
+			this.#migrateAuthSchemaV4ToV5();
 		}
 	}
 
@@ -2583,6 +2691,10 @@ export class AuthCredentialStore {
 		migrate();
 	}
 
+	#migrateAuthSchemaV4ToV5(): void {
+		this.#createRefreshLeaseTable();
+	}
+
 	#backfillCredentialIdentityKeys(): void {
 		const rows = this.#db
 			.prepare(
@@ -2613,6 +2725,35 @@ export class AuthCredentialStore {
 			results.push(toStoredAuthCredential(row, credential));
 		}
 		return results;
+	}
+
+	tryAcquireRefreshLease(credentialId: number, holder: string, ttlMs: number): boolean {
+		const now = Date.now();
+		const expiresAt = now + ttlMs;
+		const result = this.#db
+			.prepare(
+				`INSERT INTO auth_refresh_leases (credential_id, holder, expires_at)
+				 VALUES (?, ?, ?)
+				 ON CONFLICT(credential_id) DO UPDATE SET
+				 	holder = excluded.holder,
+				 	expires_at = excluded.expires_at
+				 WHERE auth_refresh_leases.expires_at <= ? OR auth_refresh_leases.holder = excluded.holder`,
+			)
+			.run(credentialId, holder, expiresAt, now);
+		return result.changes > 0;
+	}
+
+	releaseRefreshLease(credentialId: number, holder: string): void {
+		this.#db
+			.prepare("DELETE FROM auth_refresh_leases WHERE credential_id = ? AND holder = ?")
+			.run(credentialId, holder);
+	}
+
+	hasActiveRefreshLease(credentialId: number): boolean {
+		const row = this.#db
+			.prepare("SELECT 1 AS ok FROM auth_refresh_leases WHERE credential_id = ? AND expires_at > ?")
+			.get(credentialId, Date.now()) as { ok?: number } | undefined;
+		return row?.ok === 1;
 	}
 
 	replaceAuthCredentialsForProvider(provider: string, credentials: AuthCredential[]): StoredAuthCredential[] {

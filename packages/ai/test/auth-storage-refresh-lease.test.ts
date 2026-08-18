@@ -34,26 +34,33 @@ describe("AuthStorage cross-process refresh lease", () => {
 	let dbPath = "";
 	let storeA: AuthCredentialStore | null = null;
 	let storeB: AuthCredentialStore | null = null;
+	let storeC: AuthCredentialStore | null = null;
 	let storageA: AuthStorage | null = null;
 	let storageB: AuthStorage | null = null;
+	let storageC: AuthStorage | null = null;
 
 	beforeEach(async () => {
 		tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "pi-ai-auth-lease-"));
 		dbPath = path.join(tempDir, "agent.db");
 		storeA = await AuthCredentialStore.open(dbPath);
 		storeB = await AuthCredentialStore.open(dbPath);
+		storeC = await AuthCredentialStore.open(dbPath);
 		storageA = new AuthStorage(storeA, { usageProviderResolver: () => undefined });
 		storageB = new AuthStorage(storeB, { usageProviderResolver: () => undefined });
+		storageC = new AuthStorage(storeC, { usageProviderResolver: () => undefined });
 	});
 
 	afterEach(async () => {
 		vi.restoreAllMocks();
 		storeA?.close();
 		storeB?.close();
+		storeC?.close();
 		storeA = null;
 		storeB = null;
+		storeC = null;
 		storageA = null;
 		storageB = null;
+		storageC = null;
 		if (tempDir) {
 			await fs.rm(tempDir, { recursive: true, force: true });
 			tempDir = "";
@@ -148,6 +155,35 @@ describe("AuthStorage cross-process refresh lease", () => {
 
 		expect(fetchSpy).toHaveBeenCalledTimes(1);
 		expect(outcomes[0]?.status).toBe("rotated");
+		const stored = storeA.listAuthCredentials(PROVIDER)[0]?.credential as OAuthCredential;
+		expect(stored.refresh).toBe("refresh-r2");
+	});
+
+	test("a failed holder does not stampede leftover waiters into an unleased refresh", async () => {
+		if (!storageA || !storageB || !storageC || !storeA) throw new Error("test setup failed");
+
+		const expires = Date.now() + 5 * MINUTE_MS;
+		await storageA.set(PROVIDER, [createCredential({ refresh: "refresh-r1", expires })]);
+
+		let calls = 0;
+		const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation((async () => {
+			calls += 1;
+			await Bun.sleep(80);
+			if (calls === 1) return new Response("upstream unavailable", { status: 503 });
+			return tokenResponse("refresh-r2");
+		}) as unknown as typeof fetch);
+
+		const [outcomesA, outcomesB, outcomesC] = await Promise.all([
+			storageA.refreshExpiring({ provider: PROVIDER, expiringWithinMs: 10 * MINUTE_MS }),
+			storageB.refreshExpiring({ provider: PROVIDER, expiringWithinMs: 10 * MINUTE_MS }),
+			storageC.refreshExpiring({ provider: PROVIDER, expiringWithinMs: 10 * MINUTE_MS }),
+		]);
+
+		expect(fetchSpy).toHaveBeenCalledTimes(2);
+		expect(calls).toBe(2);
+		const statuses = [outcomesA[0]?.status, outcomesB[0]?.status, outcomesC[0]?.status];
+		expect(statuses.filter(status => status === "rotated")).toHaveLength(2);
+		expect(statuses.filter(status => status === "failed")).toHaveLength(1);
 		const stored = storeA.listAuthCredentials(PROVIDER)[0]?.credential as OAuthCredential;
 		expect(stored.refresh).toBe("refresh-r2");
 	});

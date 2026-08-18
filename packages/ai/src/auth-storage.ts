@@ -1859,74 +1859,99 @@ export class AuthStorage {
 		const target = this.#getStoredCredentials(provider)[selection.index];
 		if (!target) return this.#attemptOAuthRefreshWithRetry(provider, selection, options);
 
-		const acquired = this.#store.tryAcquireRefreshLease(
-			target.id,
-			this.#refreshLeaseHolderId,
-			OAUTH_REFRESH_LEASE_TTL_MS,
-		);
-		if (!acquired) {
-			const waited = await this.#waitForRefreshLease(provider, selection, target.id);
-			if (waited) return waited;
-			// Stale or vanished lease — try to take over once, then fall through to refresh.
-			this.#store.tryAcquireRefreshLease(target.id, this.#refreshLeaseHolderId, OAUTH_REFRESH_LEASE_TTL_MS);
-		}
+		const original = {
+			refresh: selection.credential.refresh,
+			access: selection.credential.access,
+			expires: selection.credential.expires,
+		};
 
-		try {
-			const result = await this.#attemptOAuthRefreshWithRetry(provider, selection, options);
-			if (result) {
-				const rotated =
-					result.newCredentials.access !== selection.credential.access ||
-					result.newCredentials.refresh !== selection.credential.refresh ||
-					result.newCredentials.expires !== selection.credential.expires;
-				if (rotated) {
-					const updated: OAuthCredential = {
-						type: "oauth",
-						access: result.newCredentials.access,
-						refresh: result.newCredentials.refresh,
-						expires: result.newCredentials.expires,
-						obtainedAt: Date.now(),
-						accountId: result.newCredentials.accountId ?? selection.credential.accountId,
-						email: result.newCredentials.email ?? selection.credential.email,
-						projectId: result.newCredentials.projectId ?? selection.credential.projectId,
-						enterpriseUrl: result.newCredentials.enterpriseUrl ?? selection.credential.enterpriseUrl,
-					};
-					this.#replaceCredentialAt(provider, selection.index, updated);
-					selection.credential = updated;
+		for (let attempt = 0; attempt < 2; attempt++) {
+			if (this.#store.tryAcquireRefreshLease(target.id, this.#refreshLeaseHolderId, OAUTH_REFRESH_LEASE_TTL_MS)) {
+				try {
+					const adopted = this.#adoptRotatedCredential(provider, selection, target.id, original);
+					if (adopted) return adopted;
+					return await this.#refreshWhileHoldingLease(provider, selection, options);
+				} finally {
+					this.#store.releaseRefreshLease(target.id, this.#refreshLeaseHolderId);
 				}
 			}
-			return result;
-		} finally {
-			this.#store.releaseRefreshLease(target.id, this.#refreshLeaseHolderId);
+			const waited = await this.#waitForRefreshLease(provider, selection, target.id, original);
+			if (waited) return waited;
+			const adopted = this.#adoptRotatedCredential(provider, selection, target.id, original);
+			if (adopted) return adopted;
 		}
+		// Never present a refresh token without holding the lease — a leftover waiter
+		// after a failed holder would otherwise reuse a just-consumed token.
+		return null;
+	}
+
+	async #refreshWhileHoldingLease(
+		provider: Provider,
+		selection: { credential: OAuthCredential; index: number },
+		options?: { force?: boolean },
+	): Promise<{ newCredentials: OAuthCredentials; apiKey: string } | null> {
+		const result = await this.#attemptOAuthRefreshWithRetry(provider, selection, options);
+		if (result) {
+			const rotated =
+				result.newCredentials.access !== selection.credential.access ||
+				result.newCredentials.refresh !== selection.credential.refresh ||
+				result.newCredentials.expires !== selection.credential.expires;
+			if (rotated) {
+				const updated: OAuthCredential = {
+					type: "oauth",
+					access: result.newCredentials.access,
+					refresh: result.newCredentials.refresh,
+					expires: result.newCredentials.expires,
+					obtainedAt: Date.now(),
+					accountId: result.newCredentials.accountId ?? selection.credential.accountId,
+					email: result.newCredentials.email ?? selection.credential.email,
+					projectId: result.newCredentials.projectId ?? selection.credential.projectId,
+					enterpriseUrl: result.newCredentials.enterpriseUrl ?? selection.credential.enterpriseUrl,
+				};
+				this.#replaceCredentialAt(provider, selection.index, updated);
+				selection.credential = updated;
+			}
+		}
+		return result;
 	}
 
 	async #waitForRefreshLease(
 		provider: Provider,
 		selection: { credential: OAuthCredential; index: number },
 		credentialId: number,
+		original: { refresh: string; access: string; expires: number },
 	): Promise<{ newCredentials: OAuthCredentials; apiKey: string } | null> {
 		const deadline = Date.now() + OAUTH_REFRESH_LEASE_WAIT_MS;
-		const originalRefresh = selection.credential.refresh;
-		const originalAccess = selection.credential.access;
-		const originalExpires = selection.credential.expires;
 		while (Date.now() < deadline) {
 			await Bun.sleep(OAUTH_REFRESH_LEASE_POLL_MS);
-			const fresh = this.#store.listAuthCredentials(provider).find(row => row.id === credentialId);
-			const freshCredential = fresh?.credential;
-			if (freshCredential && freshCredential.type === "oauth") {
-				const rotated =
-					freshCredential.refresh !== originalRefresh ||
-					freshCredential.access !== originalAccess ||
-					freshCredential.expires !== originalExpires;
-				if (rotated) {
-					selection.credential = freshCredential;
-					const apiKey = this.#oauthApiKeyFromCredential(provider, freshCredential);
-					return { newCredentials: freshCredential, apiKey };
-				}
-			}
+			const adopted = this.#adoptRotatedCredential(provider, selection, credentialId, original);
+			if (adopted) return adopted;
 			if (!this.#store.hasActiveRefreshLease(credentialId)) break;
 		}
-		return null;
+		return this.#adoptRotatedCredential(provider, selection, credentialId, original);
+	}
+
+	#adoptRotatedCredential(
+		provider: Provider,
+		selection: { credential: OAuthCredential; index: number },
+		credentialId: number,
+		original: { refresh: string; access: string; expires: number },
+	): { newCredentials: OAuthCredentials; apiKey: string } | null {
+		const fresh = this.#store.listAuthCredentials(provider).find(row => row.id === credentialId);
+		const freshCredential = fresh?.credential;
+		if (!freshCredential || freshCredential.type !== "oauth") return null;
+		const rotated =
+			freshCredential.refresh !== original.refresh ||
+			freshCredential.access !== original.access ||
+			freshCredential.expires !== original.expires;
+		// A store write that is still expired is not a finished refresh. Leave it for the
+		// leased retry / invalid_grant path instead of presenting a dead access token.
+		if (!rotated || Date.now() >= freshCredential.expires) return null;
+		selection.credential = freshCredential;
+		return {
+			newCredentials: freshCredential,
+			apiKey: this.#oauthApiKeyFromCredential(provider, freshCredential),
+		};
 	}
 
 	#oauthApiKeyFromCredential(provider: Provider, credential: OAuthCredential): string {

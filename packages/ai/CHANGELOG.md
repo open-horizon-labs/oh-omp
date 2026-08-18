@@ -6,10 +6,12 @@
 
 - Added xAI Grok OAuth login for SuperGrok and X Premium+ subscriptions, including device authorization, token refresh, curated Grok models, and the xAI Responses transport.
 - Added authenticated Z.AI Coding Plan model discovery for `glm-5.2` and `glm-5.3` ([#94](https://github.com/open-horizon-labs/oh-omp/issues/94))
-- Added opt-in proactive OAuth refresh: `AuthStorage.refreshExpiring({ provider?, expiringWithinMs? })` forces a token-endpoint call for credentials expiring within a window (default ~20% of the token TTL) and persists only when the credential actually rotated. Failures never disable — the reactive path still owns that decision. Rotated credentials record `obtainedAt` to make the TTL-based default window exact ([#102](https://github.com/open-horizon-labs/oh-omp/issues/102))
+- Added opt-in proactive OAuth refresh: `AuthStorage.refreshExpiring({ provider?, expiringWithinMs? })` forces a token-endpoint call for credentials expiring within a window (default ~20% of the token TTL) and persists only when the credential actually changed. Failures never disable — the reactive path still owns that decision. Rotated credentials record `obtainedAt` to make the TTL-based default window exact ([#102](https://github.com/open-horizon-labs/oh-omp/issues/102))
+- Added a crash-safe per-credential refresh lease in `agent.db` so concurrent processes sharing one store produce a single token-endpoint call and waiters re-read the rotated credential ([#103](https://github.com/open-horizon-labs/oh-omp/issues/103))
 
 ### Fixed
 
+- Fixed OAuth refresh waiters so a failed holder cannot stampede leftover waiters into an unleased token-endpoint call ([#103](https://github.com/open-horizon-labs/oh-omp/issues/103))
 - Fixed Anthropic prompt-cache marker placement to use source-message eligibility before developer/tool-result messages are flattened into Anthropic user messages. Synthetic developer tail context no longer receives message cache markers, while stable user/tool-result transcript messages remain cache candidates.
 - Fixed OAuth credential peeking to skip expired siblings so a leftover expired token no longer hides a valid account from `--list-models` discovery ([#98](https://github.com/open-horizon-labs/oh-omp/issues/98))
 - Login, logout, and remove now drop that provider's cached model list so the next ordinary `--list-models` refetches under the active credential ([#98](https://github.com/open-horizon-labs/oh-omp/issues/98))

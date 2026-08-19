@@ -176,3 +176,102 @@ function zaiDisplayName(id: string, providedName: unknown): string {
 	}
 	return id;
 }
+
+const DEEPSEEK_DEFAULT_BASE_URL = "https://api.deepseek.com";
+
+export interface DeepseekModelManagerConfig {
+	apiKey?: string;
+	baseUrl?: string;
+}
+
+function normalizeDeepseekBaseUrl(baseUrl: string | undefined): string {
+	const value = baseUrl?.trim();
+	if (!value) return DEEPSEEK_DEFAULT_BASE_URL;
+	return value.replace(/\/+$/, "");
+}
+
+/** Ported from the fork point (upstream 84355ace); pricing kept current. See #107 — shipped
+ * as reasoning:true/thinking:effort per review, matching the known-working upstream config
+ * rather than an unrun reasoning:false combination; not yet live-verified (no credential). */
+const DEEPSEEK_COMPAT = {
+	supportsReasoningEffort: true,
+	reasoningEffortMap: { xhigh: "max" },
+	supportsToolChoice: false,
+	reasoningContentField: "reasoning_content",
+	requiresReasoningContentForToolCalls: true,
+} as const satisfies Model<"openai-completions">["compat"];
+
+const DEEPSEEK_THINKING = {
+	mode: "effort",
+	minLevel: Effort.Minimal,
+	maxLevel: Effort.XHigh,
+} as const satisfies Model<"openai-completions">["thinking"];
+
+const DEEPSEEK_MODEL_TEMPLATE = {
+	"deepseek-v4-flash": {
+		name: "DeepSeek V4 Flash",
+		contextWindow: 1_000_000,
+		maxTokens: 384_000,
+		cost: { input: 0.44, output: 1.32, cacheRead: 0.014, cacheWrite: 0 },
+	},
+	"deepseek-v4-pro": {
+		name: "DeepSeek V4 Pro",
+		contextWindow: 1_000_000,
+		maxTokens: 384_000,
+		cost: { input: 1.32, output: 3.96, cacheRead: 0.044, cacheWrite: 0 },
+	},
+} as const satisfies Record<
+	string,
+	{ name: string; contextWindow: number; maxTokens: number; cost: Model<"openai-completions">["cost"] }
+>;
+
+export function deepseekModelManagerOptions(
+	config: DeepseekModelManagerConfig = {},
+): ModelManagerOptions<"openai-completions"> {
+	const apiKey = config.apiKey?.trim();
+	// DeepSeek serves both model discovery and chat completions under /v1, unlike Z.AI's
+	// split Anthropic-compat discovery vs. its own runtime dialect — one base suffices here.
+	const baseUrl = `${normalizeDeepseekBaseUrl(config.baseUrl)}/v1`;
+	return {
+		providerId: "deepseek",
+		...(apiKey
+			? {
+					fetchDynamicModels: () =>
+						fetchOpenAICompatibleModels({
+							api: "openai-completions",
+							provider: "deepseek",
+							baseUrl,
+							apiKey,
+							mapModel: (_entry, defaults) => mapDeepseekDiscoveredModel(defaults, baseUrl),
+							// mapModel returning null falls back to raw defaults rather than skipping
+							// (see fetchOpenAICompatibleModels); filterModel is the actual drop gate.
+							filterModel: (_entry, model) => model.id in DEEPSEEK_MODEL_TEMPLATE,
+						}),
+				}
+			: undefined),
+	};
+}
+
+function mapDeepseekDiscoveredModel(
+	defaults: Model<"openai-completions">,
+	baseUrl: string,
+): Model<"openai-completions"> | null {
+	const template = DEEPSEEK_MODEL_TEMPLATE[defaults.id as keyof typeof DEEPSEEK_MODEL_TEMPLATE];
+	// Ids DeepSeek's catalog returns beyond the two known models (e.g. legacy deepseek-chat)
+	// have no verified pricing/thinking template; skip rather than guess.
+	if (!template) return null;
+	return {
+		id: defaults.id,
+		name: template.name,
+		api: "openai-completions",
+		provider: "deepseek",
+		baseUrl,
+		reasoning: true,
+		input: ["text"],
+		cost: template.cost,
+		contextWindow: template.contextWindow,
+		maxTokens: template.maxTokens,
+		compat: DEEPSEEK_COMPAT,
+		thinking: DEEPSEEK_THINKING,
+	};
+}

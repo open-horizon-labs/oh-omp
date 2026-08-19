@@ -108,6 +108,7 @@ export type KnownProvider =
 	| "kilo"
 	| "vercel-ai-gateway"
 	| "zai"
+	| "deepseek"
 	| "mistral"
 	| "minimax"
 	| "opencode-go"

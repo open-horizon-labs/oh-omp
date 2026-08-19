@@ -4559,7 +4559,7 @@
 			"api": "openai-completions",
 			"provider": "deepseek",
 			"baseUrl": "https://api.deepseek.com/v1",
-			"reasoning": false,
+			"reasoning": true,
 			"input": [
 				"text"
 			],
@@ -4572,7 +4572,18 @@
 			"contextWindow": 1000000,
 			"maxTokens": 384000,
 			"compat": {
-				"supportsToolChoice": false
+				"supportsReasoningEffort": true,
+				"reasoningEffortMap": {
+					"xhigh": "max"
+				},
+				"supportsToolChoice": false,
+				"reasoningContentField": "reasoning_content",
+				"requiresReasoningContentForToolCalls": true
+			},
+			"thinking": {
+				"mode": "effort",
+				"minLevel": "minimal",
+				"maxLevel": "xhigh"
 			}
 		},
 		"deepseek-v4-pro": {
@@ -4581,7 +4592,7 @@
 			"api": "openai-completions",
 			"provider": "deepseek",
 			"baseUrl": "https://api.deepseek.com/v1",
-			"reasoning": false,
+			"reasoning": true,
 			"input": [
 				"text"
 			],
@@ -4594,7 +4605,18 @@
 			"contextWindow": 1000000,
 			"maxTokens": 384000,
 			"compat": {
-				"supportsToolChoice": false
+				"supportsReasoningEffort": true,
+				"reasoningEffortMap": {
+					"xhigh": "max"
+				},
+				"supportsToolChoice": false,
+				"reasoningContentField": "reasoning_content",
+				"requiresReasoningContentForToolCalls": true
+			},
+			"thinking": {
+				"mode": "effort",
+				"minLevel": "minimal",
+				"maxLevel": "xhigh"
 			}
 		}
 	},

@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test, vi } from "bun:test";
+import { Effort } from "../src/model-thinking";
 import { getBundledModel } from "../src/models";
 import { DEFAULT_MODEL_PER_PROVIDER, PROVIDER_DESCRIPTORS } from "../src/provider-models/descriptors";
 import { deepseekModelManagerOptions } from "../src/provider-models/special";
@@ -31,19 +32,33 @@ describe("deepseek provider registration", () => {
 		expect(getEnvApiKey("deepseek")).toBe("deepseek-test-key");
 	});
 
-	test("bundled entries carry current pricing, no thinking config, and a functional v1 base URL", () => {
+	test("bundled entries carry current pricing, the fork-point thinking/compat block, and a functional v1 base URL", () => {
 		const flash = getBundledModel("deepseek", "deepseek-v4-flash");
 		expect(flash).toBeDefined();
 		expect(flash?.baseUrl).toBe("https://api.deepseek.com/v1");
-		expect(flash?.reasoning).toBe(false);
-		expect(flash?.thinking).toBeUndefined();
+		expect(flash?.reasoning).toBe(true);
+		expect(flash?.thinking).toEqual({ mode: "effort", minLevel: Effort.Minimal, maxLevel: Effort.XHigh });
+		expect(flash?.compat).toEqual({
+			supportsReasoningEffort: true,
+			reasoningEffortMap: { xhigh: "max" },
+			supportsToolChoice: false,
+			reasoningContentField: "reasoning_content",
+			requiresReasoningContentForToolCalls: true,
+		});
 		expect(flash?.cost).toEqual({ input: 0.44, output: 1.32, cacheRead: 0.014, cacheWrite: 0 });
 
 		const pro = getBundledModel("deepseek", "deepseek-v4-pro");
 		expect(pro).toBeDefined();
 		expect(pro?.baseUrl).toBe("https://api.deepseek.com/v1");
-		expect(pro?.reasoning).toBe(false);
-		expect(pro?.thinking).toBeUndefined();
+		expect(pro?.reasoning).toBe(true);
+		expect(pro?.thinking).toEqual({ mode: "effort", minLevel: Effort.Minimal, maxLevel: Effort.XHigh });
+		expect(pro?.compat).toEqual({
+			supportsReasoningEffort: true,
+			reasoningEffortMap: { xhigh: "max" },
+			supportsToolChoice: false,
+			reasoningContentField: "reasoning_content",
+			requiresReasoningContentForToolCalls: true,
+		});
 		expect(pro?.cost).toEqual({ input: 1.32, output: 3.96, cacheRead: 0.044, cacheWrite: 0 });
 	});
 });
@@ -108,7 +123,8 @@ describe("deepseekModelManagerOptions", () => {
 		expect(pro?.id).toBe("deepseek-v4-pro");
 		expect(pro?.baseUrl).toBe("https://api.deepseek.com/v1");
 		expect(pro?.cost).toEqual({ input: 1.32, output: 3.96, cacheRead: 0.044, cacheWrite: 0 });
-		expect(pro?.reasoning).toBe(false);
+		expect(pro?.reasoning).toBe(true);
+		expect(pro?.thinking).toEqual({ mode: "effort", minLevel: Effort.Minimal, maxLevel: Effort.XHigh });
 	});
 
 	test("respects a custom base URL for both discovery and the mapped model baseUrl", async () => {

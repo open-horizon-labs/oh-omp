@@ -190,7 +190,23 @@ function normalizeDeepseekBaseUrl(baseUrl: string | undefined): string {
 	return value.replace(/\/+$/, "");
 }
 
-/** Ported from the fork point (upstream 84355ace); pricing kept current, no dialect port. See #107. */
+/** Ported from the fork point (upstream 84355ace); pricing kept current. See #107 — shipped
+ * as reasoning:true/thinking:effort per review, matching the known-working upstream config
+ * rather than an unrun reasoning:false combination; not yet live-verified (no credential). */
+const DEEPSEEK_COMPAT = {
+	supportsReasoningEffort: true,
+	reasoningEffortMap: { xhigh: "max" },
+	supportsToolChoice: false,
+	reasoningContentField: "reasoning_content",
+	requiresReasoningContentForToolCalls: true,
+} as const satisfies Model<"openai-completions">["compat"];
+
+const DEEPSEEK_THINKING = {
+	mode: "effort",
+	minLevel: Effort.Minimal,
+	maxLevel: Effort.XHigh,
+} as const satisfies Model<"openai-completions">["thinking"];
+
 const DEEPSEEK_MODEL_TEMPLATE = {
 	"deepseek-v4-flash": {
 		name: "DeepSeek V4 Flash",
@@ -250,11 +266,12 @@ function mapDeepseekDiscoveredModel(
 		api: "openai-completions",
 		provider: "deepseek",
 		baseUrl,
-		reasoning: false,
+		reasoning: true,
 		input: ["text"],
 		cost: template.cost,
 		contextWindow: template.contextWindow,
 		maxTokens: template.maxTokens,
-		compat: { supportsToolChoice: false },
+		compat: DEEPSEEK_COMPAT,
+		thinking: DEEPSEEK_THINKING,
 	};
 }

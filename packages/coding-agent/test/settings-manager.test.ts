@@ -132,6 +132,33 @@ describe("Settings", () => {
 		});
 	});
 
+	describe("compaction model overrides", () => {
+		it("deep-merges global and project rules in declaration order and defaults to an empty map", async () => {
+			await writeSettings({
+				compaction: {
+					thresholdPercent: 70,
+					modelOverrides: {
+						"openai-codex/*": { thresholdTokens: 200_000 },
+					},
+				},
+			});
+			await writeProjectSettings({
+				compaction: {
+					modelOverrides: {
+						"openai-codex/gpt-5.6-terra": { thresholdTokens: 225_000 },
+					},
+				},
+			});
+
+			const layered = await Settings.init({ cwd: projectDir, agentDir });
+			expect(layered.getGroup("compaction").modelOverrides).toEqual({
+				"openai-codex/*": { thresholdTokens: 200_000 },
+				"openai-codex/gpt-5.6-terra": { thresholdTokens: 225_000 },
+			});
+			expect(Settings.isolated().getGroup("compaction").modelOverrides).toEqual({});
+		});
+	});
+
 	describe("profiles", () => {
 		it("applies profile defaults before explicit overrides", () => {
 			const settings = Settings.isolated({

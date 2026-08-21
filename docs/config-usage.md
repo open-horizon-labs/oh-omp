@@ -156,6 +156,31 @@ Write behavior:
 - `settings.set(...)` writes to the **global** layer (`config.yml`) and queues background save.
 - Project settings are read-only from capability discovery.
 
+## Per-model compaction policies
+
+`compaction.modelOverrides` is an optional ordered map in the normal YAML settings surface. Each rule overlays only the scalar fields it declares; omitted fields inherit the global `compaction` values.
+
+```yaml
+compaction:
+  thresholdPercent: 70
+  modelOverrides:
+    "openai-codex/gpt-5.6-terra":
+      thresholdTokens: 225000
+      strategy: handoff
+    "openai-codex/*":
+      thresholdTokens: 200000
+      idleEnabled: true
+      idleThresholdTokens: 180000
+```
+
+OMP compares the active conversation model case-insensitively. A case-insensitive exact key wins first; otherwise the first case-insensitive `Bun.Glob` match in the final merged declaration order wins. The resolver uses global scalar settings when the map is absent, empty, invalid, or unmatched. Global and project maps use normal deep-merge behavior, so project rules extend or replace global rules.
+
+Each rule may set `enabled`, `strategy`, `thresholdPercent`, `thresholdTokens`, `handoffSaveToDisk`, `remoteEnabled`, `reserveTokens`, `keepRecentTokens`, `autoContinue`, `remoteEndpoint`, `idleEnabled`, `idleThresholdTokens`, or `idleTimeoutSeconds`. Rules cannot nest `modelOverrides`. Invalid rules are diagnosed and skipped; unknown model keys are valid and remain inert until a matching model is active.
+
+The selected policy applies consistently to manual compaction, post-turn threshold checks, overflow recovery, auto-handoff artifact saving, and idle scheduling and firing. No map leaves existing compaction behavior unchanged.
+
+---
+
 ## Migration behavior still active
 
 On startup, if `config.yml` is missing:

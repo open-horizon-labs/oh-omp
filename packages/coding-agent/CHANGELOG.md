@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added opt-in `compaction.modelOverrides` YAML policies for per-active-model compaction settings. Exact keys take precedence over ordered glob rules, partial rules inherit global settings, and configurations without a matching rule retain existing behavior. ([#110](https://github.com/open-horizon-labs/oh-omp/issues/110))
+
 ## [0.13.0] - 2026-08-18
 
 ### Added

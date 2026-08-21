@@ -2,6 +2,7 @@ import { INTENT_FIELD } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage, ImageContent } from "@oh-my-pi/pi-ai";
 import { Loader, TERMINAL, Text } from "@oh-my-pi/pi-tui";
 import { logger } from "@oh-my-pi/pi-utils";
+import { resolveCompactionSettingsForModel } from "../../config/compaction-policy";
 import { settings } from "../../config/settings";
 import { AssistantMessageComponent } from "../../modes/components/assistant-message";
 import { ReadToolGroupComponent } from "../../modes/components/read-tool-group";
@@ -600,7 +601,7 @@ export class EventController {
 		// here would fire after the session resets, trying to handoff an empty session.
 		if (this.ctx.session.isCompacting) return;
 
-		const idleSettings = settings.getGroup("compaction");
+		const idleSettings = resolveCompactionSettingsForModel(settings.getGroup("compaction"), this.ctx.session.model);
 		if (!idleSettings.idleEnabled) return;
 
 		// Only if input is empty
@@ -611,16 +612,33 @@ export class EventController {
 		if (this.#currentContextTokens() < threshold) return;
 
 		const timeoutMs = Math.max(60, Math.min(3600, idleSettings.idleTimeoutSeconds)) * 1000;
-		this.#idleCompactionTimer = setTimeout(() => {
+		const armedAt = Date.now();
+		const onIdleTimer = () => {
 			this.#idleCompactionTimer = undefined;
+			const idleSettings = resolveCompactionSettingsForModel(
+				settings.getGroup("compaction"),
+				this.ctx.session.model,
+			);
+			if (!idleSettings.idleEnabled) return;
+			if (idleSettings.idleThresholdTokens <= 0) return;
+
+			const activeTimeoutMs = Math.max(60, Math.min(3600, idleSettings.idleTimeoutSeconds)) * 1000;
+			const remainingMs = activeTimeoutMs - (Date.now() - armedAt);
+			if (remainingMs > 0) {
+				this.#idleCompactionTimer = setTimeout(onIdleTimer, remainingMs);
+				this.#idleCompactionTimer.unref?.();
+				return;
+			}
+
 			// Re-check conditions before firing. Pruning may have run between arming
 			// the timer and now, dropping usage back below the idle threshold.
 			if (this.ctx.session.isStreaming) return;
 			if (this.ctx.session.isCompacting) return;
 			if (this.ctx.editor.getText().trim()) return;
-			if (this.#currentContextTokens() < threshold) return;
+			if (this.#currentContextTokens() < idleSettings.idleThresholdTokens) return;
 			void this.ctx.session.runIdleCompaction();
-		}, timeoutMs);
+		};
+		this.#idleCompactionTimer = setTimeout(onIdleTimer, timeoutMs);
 		this.#idleCompactionTimer.unref?.();
 	}
 

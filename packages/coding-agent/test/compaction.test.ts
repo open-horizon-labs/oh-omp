@@ -6,6 +6,10 @@ import { getBundledModel } from "@oh-my-pi/pi-ai/models";
 import { encodeTextSignatureV1 } from "@oh-my-pi/pi-ai/providers/openai-responses-shared";
 import type { AssistantMessage, Model, ProviderPayload, Usage } from "@oh-my-pi/pi-ai/types";
 import { hookFetch } from "@oh-my-pi/pi-utils";
+import {
+	getInvalidCompactionModelOverrideEntries,
+	resolveCompactionSettingsForModel,
+} from "../src/config/compaction-policy";
 
 import {
 	calculateContextTokens,
@@ -172,6 +176,106 @@ function createThinkingLevelEntry(thinkingLevel: string): ThinkingLevelChangeEnt
 // ============================================================================
 // Unit tests
 // ============================================================================
+
+describe("per-model compaction settings", () => {
+	const model = (provider: string, id: string) => ({ provider, id }) as Model;
+
+	it("prefers a case-insensitive exact override and inherits every omitted scalar setting", () => {
+		const globalSettings = {
+			...DEFAULT_COMPACTION_SETTINGS,
+			thresholdPercent: 70,
+			thresholdTokens: -1,
+			remoteEndpoint: "https://global.example/compact",
+			modelOverrides: {
+				"OPENAI-CODEX/GPT-5.6-TERRA": {
+					enabled: false,
+					strategy: "handoff",
+					thresholdPercent: 65,
+					thresholdTokens: 225_000,
+					handoffSaveToDisk: true,
+					remoteEnabled: false,
+					reserveTokens: 12_000,
+					keepRecentTokens: 8_000,
+					autoContinue: false,
+					remoteEndpoint: "https://model.example/compact",
+					idleEnabled: true,
+					idleThresholdTokens: 180_000,
+					idleTimeoutSeconds: 120,
+				},
+				"openai-codex/*": { thresholdTokens: 200_000 },
+			},
+		};
+
+		const { modelOverrides: _modelOverrides, ...globalScalars } = globalSettings;
+		expect(resolveCompactionSettingsForModel(globalSettings, model("openai-codex", "gpt-5.6-terra"))).toEqual({
+			...globalScalars,
+			enabled: false,
+			strategy: "handoff",
+			thresholdPercent: 65,
+			thresholdTokens: 225_000,
+			handoffSaveToDisk: true,
+			remoteEnabled: false,
+			reserveTokens: 12_000,
+			keepRecentTokens: 8_000,
+			autoContinue: false,
+			remoteEndpoint: "https://model.example/compact",
+			idleEnabled: true,
+			idleThresholdTokens: 180_000,
+			idleTimeoutSeconds: 120,
+		});
+	});
+
+	it("uses the first case-insensitive matching glob after exact keys", () => {
+		const settings = {
+			...DEFAULT_COMPACTION_SETTINGS,
+			thresholdTokens: -1,
+			thresholdPercent: 70,
+			modelOverrides: {
+				"openai-codex/*": { thresholdTokens: 200_000 },
+				"*/gpt-*": { thresholdTokens: 180_000 },
+				"OPENAI-CODEX/GPT-5.6-TERRA": { thresholdTokens: 225_000 },
+			},
+		};
+
+		expect(resolveCompactionSettingsForModel(settings, model("openai-codex", "gpt-5.6-terra")).thresholdTokens).toBe(
+			225_000,
+		);
+		expect(resolveCompactionSettingsForModel(settings, model("OPENAI-CODEX", "GPT-5.5")).thresholdTokens).toBe(
+			200_000,
+		);
+		expect(resolveCompactionSettingsForModel(settings, model("anthropic", "claude")).thresholdTokens).toBe(-1);
+	});
+
+	it("ignores malformed matching entries and returns a fresh global scalar policy without a valid map", () => {
+		const settings = {
+			...DEFAULT_COMPACTION_SETTINGS,
+			thresholdPercent: 70,
+			modelOverrides: {
+				"TEST/MODEL": { thresholdTokens: "invalid" },
+				"test/*": null,
+			},
+		};
+
+		const noModel = resolveCompactionSettingsForModel(settings, undefined);
+		const unmatched = resolveCompactionSettingsForModel(settings, model("test", "model"));
+		const empty = resolveCompactionSettingsForModel({ ...settings, modelOverrides: {} }, model("test", "model"));
+
+		const { modelOverrides: _modelOverrides, ...globalScalars } = settings;
+		const absent = resolveCompactionSettingsForModel(
+			globalScalars as Parameters<typeof resolveCompactionSettingsForModel>[0],
+			model("test", "model"),
+		);
+		expect(noModel).toEqual(globalScalars);
+		expect(unmatched).toEqual(noModel);
+		expect(empty).toEqual(noModel);
+		expect(absent).toEqual(noModel);
+		expect(getInvalidCompactionModelOverrideEntries(settings.modelOverrides)).toEqual([
+			"compaction.modelOverrides.TEST/MODEL",
+			"compaction.modelOverrides.test/*",
+		]);
+		expect(noModel).not.toBe(settings);
+	});
+});
 
 describe("Token calculation", () => {
 	it("should calculate total context tokens from usage", () => {

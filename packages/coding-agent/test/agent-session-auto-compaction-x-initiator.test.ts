@@ -80,7 +80,7 @@ describe("AgentSession compaction Copilot initiator attribution", () => {
 		tempDir.removeSync();
 	});
 
-	async function createSession(taskDepth: number, marker: string) {
+	async function createSession(taskDepth: number, marker: string, useModelOverride = false) {
 		const model = ai.getBundledModel("github-copilot", "gpt-4o");
 		if (!model) {
 			throw new Error("Expected github-copilot/gpt-4o model to exist");
@@ -126,11 +126,25 @@ describe("AgentSession compaction Copilot initiator attribution", () => {
 			authStorage,
 			model,
 			sessionManager,
-			settings: Settings.isolated({
-				"compaction.autoContinue": false,
-				"compaction.keepRecentTokens": 1,
-			}),
-			disableExtensionDiscovery: true,
+			settings: Settings.isolated(
+				useModelOverride
+					? {
+							"compaction.enabled": false,
+							"compaction.autoContinue": false,
+							"compaction.keepRecentTokens": Number.MAX_SAFE_INTEGER,
+							"compaction.modelOverrides": {
+								"github-copilot/gpt-4o": {
+									enabled: true,
+									thresholdPercent: 1,
+									keepRecentTokens: 1,
+								},
+							},
+						}
+					: {
+							"compaction.autoContinue": false,
+							"compaction.keepRecentTokens": 1,
+						},
+			),
 			skills: [],
 			contextFiles: [],
 			promptTemplates: [],
@@ -216,6 +230,26 @@ describe("AgentSession compaction Copilot initiator attribution", () => {
 		expect(model.provider).toBe("github-copilot");
 		expect(model.id).toBe("gpt-4o");
 		expectNoForcedCopilotHeader(model);
+		expectInitiatorOverride(capturedOptions, "agent");
+	});
+
+	it("uses the active model policy for manual compaction", async () => {
+		const marker = `main-manual-override-${Date.now()}`;
+		const capturedOptions = captureCompactionCalls(marker);
+		const { session } = await createSession(0, marker, true);
+
+		await session.compact();
+
+		expectInitiatorOverride(capturedOptions, undefined);
+	});
+
+	it("uses the active model policy for threshold auto-compaction", async () => {
+		const marker = `main-auto-override-${Date.now()}`;
+		const capturedOptions = captureCompactionCalls(marker);
+		const { model, session } = await createSession(0, marker, true);
+
+		await triggerAutoCompaction(session, model);
+
 		expectInitiatorOverride(capturedOptions, "agent");
 	});
 

@@ -30,9 +30,19 @@ describe("EventController idle compaction teardown", () => {
 		await Settings.init({
 			inMemory: true,
 			overrides: {
-				"compaction.idleEnabled": true,
-				"compaction.idleThresholdTokens": 100,
-				"compaction.idleTimeoutSeconds": 60,
+				"compaction.idleEnabled": false,
+				"compaction.modelOverrides": {
+					"anthropic/claude-sonnet-4-5": {
+						idleEnabled: true,
+						idleThresholdTokens: 100,
+						idleTimeoutSeconds: 60,
+					},
+					"anthropic/claude-opus-4-5": {
+						idleEnabled: true,
+						idleThresholdTokens: 100,
+						idleTimeoutSeconds: 300,
+					},
+				},
 			},
 		});
 		vi.useFakeTimers();
@@ -64,6 +74,7 @@ describe("EventController idle compaction teardown", () => {
 			session: {
 				isCompacting: false,
 				isStreaming: false,
+				model: { provider: "anthropic", id: "claude-sonnet-4-5" },
 				runIdleCompaction,
 				agent: { state: { messages: [createAssistantMessage()] } },
 			},
@@ -75,5 +86,79 @@ describe("EventController idle compaction teardown", () => {
 		vi.advanceTimersByTime(60_000);
 
 		expect(runIdleCompaction).not.toHaveBeenCalled();
+	});
+
+	it("uses the active model policy when scheduling idle compaction", async () => {
+		const runIdleCompaction = vi.fn();
+		const context = {
+			isInitialized: true,
+			isBackgrounded: false,
+			loadingAnimation: undefined,
+			streamingComponent: undefined,
+			streamingMessage: undefined,
+			pendingTools: new Map<string, unknown>(),
+			flushPendingModelSwitch: async () => {},
+			ui: { requestRender: vi.fn() },
+			chatContainer: { removeChild: vi.fn() },
+			statusContainer: { clear: vi.fn() },
+			statusLine: { invalidate: vi.fn() },
+			updateEditorTopBorder: vi.fn(),
+			editor: { getText: () => "" },
+			sessionManager: { getSessionName: () => undefined },
+			session: {
+				isCompacting: false,
+				isStreaming: false,
+				model: { provider: "anthropic", id: "claude-sonnet-4-5" },
+				runIdleCompaction,
+				agent: { state: { messages: [createAssistantMessage()] } },
+			},
+		} as unknown as InteractiveModeContext;
+
+		const controller = new EventController(context);
+		await controller.handleEvent({ type: "agent_end", messages: [createAssistantMessage()] });
+		vi.advanceTimersByTime(60_000);
+
+		expect(runIdleCompaction).toHaveBeenCalledTimes(1);
+	});
+
+	it("defers idle compaction to the active model timeout from the original arm time", async () => {
+		const runIdleCompaction = vi.fn();
+		const session = {
+			isCompacting: false,
+			isStreaming: false,
+			model: { provider: "anthropic", id: "claude-sonnet-4-5" },
+			runIdleCompaction,
+			agent: { state: { messages: [createAssistantMessage()] } },
+		};
+		const context = {
+			isInitialized: true,
+			isBackgrounded: false,
+			loadingAnimation: undefined,
+			streamingComponent: undefined,
+			streamingMessage: undefined,
+			pendingTools: new Map<string, unknown>(),
+			flushPendingModelSwitch: async () => {},
+			ui: { requestRender: vi.fn() },
+			chatContainer: { removeChild: vi.fn() },
+			statusContainer: { clear: vi.fn() },
+			statusLine: { invalidate: vi.fn() },
+			updateEditorTopBorder: vi.fn(),
+			editor: { getText: () => "" },
+			sessionManager: { getSessionName: () => undefined },
+			session,
+		} as unknown as InteractiveModeContext;
+
+		const controller = new EventController(context);
+		await controller.handleEvent({ type: "agent_end", messages: [createAssistantMessage()] });
+		session.model = { provider: "anthropic", id: "claude-opus-4-5" };
+		vi.advanceTimersByTime(60_000);
+
+		expect(runIdleCompaction).not.toHaveBeenCalled();
+
+		vi.advanceTimersByTime(239_000);
+		expect(runIdleCompaction).not.toHaveBeenCalled();
+
+		vi.advanceTimersByTime(1_000);
+		expect(runIdleCompaction).toHaveBeenCalledTimes(1);
 	});
 });

@@ -27,6 +27,7 @@ import {
 	normalizeResponsesToolCallId,
 } from "@oh-my-pi/pi-ai/utils";
 import { logger } from "@oh-my-pi/pi-utils";
+import type { CompactionSettings, ResolvedCompactionSettings } from "../../config/compaction-policy";
 import { renderPromptTemplate } from "../../config/prompt-templates";
 import compactionShortSummaryPrompt from "../../prompts/compaction/compaction-short-summary.md" with { type: "text" };
 import compactionSummaryPrompt from "../../prompts/compaction/compaction-summary.md" with { type: "text" };
@@ -132,27 +133,23 @@ export interface CompactionResult<T = unknown> {
 // Types
 // ============================================================================
 
-export interface CompactionSettings {
-	enabled: boolean;
-	strategy?: "context-full" | "handoff" | "off";
-	thresholdPercent?: number;
-	thresholdTokens?: number;
-	reserveTokens: number;
-	keepRecentTokens: number;
-	autoContinue?: boolean;
-	remoteEnabled?: boolean;
-	remoteEndpoint?: string;
-}
+export type { CompactionSettings } from "../../config/compaction-policy";
 
 export const DEFAULT_COMPACTION_SETTINGS: CompactionSettings = {
 	enabled: true,
 	strategy: "context-full",
 	thresholdPercent: -1,
 	thresholdTokens: -1,
+	handoffSaveToDisk: false,
+	remoteEnabled: true,
 	reserveTokens: 16384,
 	keepRecentTokens: 20000,
 	autoContinue: true,
-	remoteEnabled: true,
+	remoteEndpoint: undefined,
+	idleEnabled: false,
+	idleThresholdTokens: 200000,
+	idleTimeoutSeconds: 300,
+	modelOverrides: {},
 };
 
 // ============================================================================
@@ -206,20 +203,24 @@ export function getLastAssistantUsage(entries: SessionEntry[]): Usage | undefine
 /**
  * Effective reserve: at least 15% of context window or the configured floor, whichever is larger.
  */
-export function effectiveReserveTokens(contextWindow: number, settings: CompactionSettings): number {
+export function effectiveReserveTokens(contextWindow: number, settings: ResolvedCompactionSettings): number {
 	return Math.max(Math.floor(contextWindow * 0.15), settings.reserveTokens);
 }
 
 /**
  * Check if compaction should trigger based on context usage.
  */
-export function shouldCompact(contextTokens: number, contextWindow: number, settings: CompactionSettings): boolean {
+export function shouldCompact(
+	contextTokens: number,
+	contextWindow: number,
+	settings: ResolvedCompactionSettings,
+): boolean {
 	if (!settings.enabled || settings.strategy === "off" || contextWindow <= 0) return false;
 	const thresholdTokens = resolveThresholdTokens(contextWindow, settings);
 	return contextTokens > thresholdTokens;
 }
 
-function resolveThresholdTokens(contextWindow: number, settings: CompactionSettings): number {
+function resolveThresholdTokens(contextWindow: number, settings: ResolvedCompactionSettings): number {
 	// Fixed token limit takes priority over percentage
 	const thresholdTokens = settings.thresholdTokens;
 	if (typeof thresholdTokens === "number" && Number.isFinite(thresholdTokens) && thresholdTokens > 0) {
@@ -1093,12 +1094,12 @@ export interface CompactionPreparation {
 	/** File operations extracted from messagesToSummarize */
 	fileOps: FileOperations;
 	/** Compaction settions from settings.jsonl	*/
-	settings: CompactionSettings;
+	settings: ResolvedCompactionSettings;
 }
 
 export function prepareCompaction(
 	pathEntries: SessionEntry[],
-	settings: CompactionSettings,
+	settings: ResolvedCompactionSettings,
 ): CompactionPreparation | undefined {
 	if (pathEntries.length > 0 && pathEntries[pathEntries.length - 1].type === "compaction") {
 		return undefined;

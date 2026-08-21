@@ -1,5 +1,8 @@
 import { THINKING_EFFORTS } from "@oh-my-pi/pi-ai";
+import type { CompactionModelOverride, CompactionSettings } from "./compaction-policy";
 import { CONFIG_PROFILE_IDS } from "./profiles";
+
+export type { CompactionSettings } from "./compaction-policy";
 
 /** Unified settings schema - single source of truth for all settings.
  * Unified settings schema - single source of truth for all settings.
@@ -1040,6 +1043,11 @@ export const SETTINGS_SCHEMA = {
 	"compaction.autoContinue": { type: "boolean", default: true },
 
 	"compaction.remoteEndpoint": { type: "string", default: undefined },
+
+	"compaction.modelOverrides": {
+		type: "record",
+		default: {} as Record<string, CompactionModelOverride>,
+	},
 
 	// Idle compaction
 	"compaction.idleEnabled": {
@@ -2123,22 +2131,6 @@ export type TreeFilterMode = SettingValue<"treeFilterMode">;
 // ═══════════════════════════════════════════════════════════════════════════
 // Typed Group Definitions
 // ═══════════════════════════════════════════════════════════════════════════
-
-export interface CompactionSettings {
-	enabled: boolean;
-	strategy: "context-full" | "handoff" | "off";
-	thresholdPercent: number;
-	thresholdTokens: number;
-	reserveTokens: number;
-	keepRecentTokens: number;
-	handoffSaveToDisk: boolean;
-	autoContinue: boolean;
-	remoteEnabled: boolean;
-	remoteEndpoint: string | undefined;
-	idleEnabled: boolean;
-	idleThresholdTokens: number;
-	idleTimeoutSeconds: number;
-}
 
 export interface ContextPromotionSettings {
 	enabled: boolean;

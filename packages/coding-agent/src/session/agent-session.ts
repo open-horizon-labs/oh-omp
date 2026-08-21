@@ -54,6 +54,7 @@ import type { SearchDb } from "@oh-my-pi/pi-natives";
 import { abortableSleep, getAgentDbPath, isEnoent, logger } from "@oh-my-pi/pi-utils";
 import type { AsyncJob, AsyncJobManager } from "../async";
 import type { Rule } from "../capability/rule";
+import { type ResolvedCompactionSettings, resolveCompactionSettingsForModel } from "../config/compaction-policy";
 import { MODEL_ROLE_IDS, type ModelRegistry } from "../config/model-registry";
 import {
 	extractExplicitThinkingSelector,
@@ -324,6 +325,7 @@ export interface HandoffResult {
 interface HandoffOptions {
 	autoTriggered?: boolean;
 	signal?: AbortSignal;
+	compactionSettings?: ResolvedCompactionSettings;
 }
 
 /** Internal marker for hook messages queued through the agent loop */
@@ -3550,6 +3552,9 @@ export class AgentSession {
 	// =========================================================================
 	// Compaction
 	// =========================================================================
+	#getCompactionSettings() {
+		return resolveCompactionSettingsForModel(this.settings.getGroup("compaction"), this.model);
+	}
 
 	async #pruneToolOutputs(): Promise<{ prunedCount: number; tokensSaved: number } | undefined> {
 		const branchEntries = this.sessionManager.getBranch();
@@ -3582,7 +3587,7 @@ export class AgentSession {
 				throw new Error("No model selected");
 			}
 
-			const compactionSettings = this.settings.getGroup("compaction");
+			const compactionSettings = this.#getCompactionSettings();
 			const compactionModel = this.model;
 			const apiKey = await this.#modelRegistry.getApiKey(compactionModel, this.sessionId);
 			if (!apiKey) {
@@ -3886,7 +3891,10 @@ export class AgentSession {
 			const handoffContent = `<handoff-context>\n${handoffText}\n</handoff-context>\n\nThe above is a handoff document from a previous session. Use this context to continue the work seamlessly.`;
 			this.sessionManager.appendCustomMessageEntry("handoff", handoffContent, true, undefined, "agent");
 			let savedPath: string | undefined;
-			if (options?.autoTriggered && this.settings.get("compaction.handoffSaveToDisk")) {
+			if (
+				options?.autoTriggered &&
+				(options.compactionSettings ?? this.#getCompactionSettings()).handoffSaveToDisk
+			) {
 				const artifactsDir = this.sessionManager.getArtifactsDir();
 				if (artifactsDir) {
 					const fileTimestamp = new Date().toISOString().replace(/[:.]/g, "-");
@@ -3967,13 +3975,13 @@ export class AgentSession {
 			}
 
 			// No promotion target available fall through to compaction
-			const compactionSettings = this.settings.getGroup("compaction");
+			const compactionSettings = this.#getCompactionSettings();
 			if (compactionSettings.enabled && compactionSettings.strategy !== "off") {
 				await this.#runAutoCompaction("overflow", true);
 			}
 			return;
 		}
-		const compactionSettings = this.settings.getGroup("compaction");
+		const compactionSettings = this.#getCompactionSettings();
 		if (!compactionSettings.enabled || compactionSettings.strategy === "off") return;
 
 		// Case 2: Threshold - turn succeeded but context is getting large
@@ -4516,7 +4524,7 @@ export class AgentSession {
 		willRetry: boolean,
 		deferred = false,
 	): Promise<void> {
-		const compactionSettings = this.settings.getGroup("compaction");
+		const compactionSettings = this.#getCompactionSettings();
 		if (compactionSettings.strategy === "off") return;
 		if (reason !== "idle" && !compactionSettings.enabled) return;
 		const generation = this.#promptGeneration;
@@ -4547,6 +4555,7 @@ export class AgentSession {
 				const handoffResult = await this.handoff(handoffFocus, {
 					autoTriggered: true,
 					signal: this.#autoCompactionAbortController.signal,
+					compactionSettings,
 				});
 				if (!handoffResult) {
 					const aborted = autoCompactionSignal.aborted;
@@ -4905,7 +4914,8 @@ export class AgentSession {
 
 	/** Whether auto-compaction is enabled */
 	get autoCompactionEnabled(): boolean {
-		return this.settings.get("compaction.enabled") && this.settings.get("compaction.strategy") !== "off";
+		const compactionSettings = this.#getCompactionSettings();
+		return compactionSettings.enabled && compactionSettings.strategy !== "off";
 	}
 
 	// =========================================================================

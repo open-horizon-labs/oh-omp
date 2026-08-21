@@ -29,6 +29,7 @@ import { loadCapability } from "../discovery";
 import { isLightTheme, setAutoThemeMapping, setColorBlindMode, setSymbolPreset } from "../modes/theme/theme";
 import { type EditMode, normalizeEditMode } from "../patch";
 import { AgentStorage } from "../session/agent-storage";
+import { getInvalidCompactionModelOverrideEntries } from "./compaction-policy";
 import { withFileLock } from "./file-lock";
 import { getConfigProfileSettings, resolveConfigProfileId } from "./profiles";
 import {
@@ -623,6 +624,17 @@ export class Settings {
 		this.#merged = this.#deepMerge(this.#merged, this.#project);
 		this.#merged = this.#deepMerge(this.#merged, this.#overrides);
 		this.#merged.profile = activeProfile;
+		const compaction = this.#merged.compaction;
+		if (
+			compaction &&
+			typeof compaction === "object" &&
+			!Array.isArray(compaction) &&
+			"modelOverrides" in compaction
+		) {
+			for (const entry of getInvalidCompactionModelOverrideEntries((compaction as RawSettings).modelOverrides)) {
+				logger.warn("Settings: ignoring invalid compaction model override", { entry });
+			}
+		}
 	}
 
 	#fireAllHooks(): void {

@@ -29,16 +29,6 @@ function createAbortedSignal(): AbortSignal {
 	return controller.signal;
 }
 
-function mockModelsResponse(models: unknown): typeof fetch {
-	async function mockFetch(_input: string | URL | Request, _init?: RequestInit): Promise<Response> {
-		return new Response(JSON.stringify(models), {
-			status: 200,
-			headers: { "content-type": "application/json" },
-		});
-	}
-	return Object.assign(mockFetch, { preconnect: originalFetch.preconnect });
-}
-
 function baseContext(): Context {
 	return {
 		messages: [
@@ -78,56 +68,12 @@ describe("runpod bundled catalog entry", () => {
 	});
 });
 
-describe("runpodModelManagerOptions discovery gating", () => {
-	test("installs no discovery without both a key and an endpoint URL", () => {
-		expect(runpodModelManagerOptions({}).fetchDynamicModels).toBeUndefined();
-		expect(runpodModelManagerOptions({ apiKey: "sk-runpod" }).fetchDynamicModels).toBeUndefined();
-		expect(
-			runpodModelManagerOptions({ baseUrl: "https://api.runpod.ai/v2/ep/openai/v1" }).fetchDynamicModels,
-		).toBeUndefined();
-	});
-
-	test("discovery requests the configured endpoint's models route with bearer auth", async () => {
-		const capture: { url?: string; auth?: string | null } = {};
-		vi.spyOn(globalThis, "fetch").mockImplementation((async (
-			input: string | URL | Request,
-			init?: RequestInit,
-		): Promise<Response> => {
-			capture.url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
-			const headers = new Headers(init?.headers);
-			capture.auth = headers.get("authorization");
-			return new Response(JSON.stringify({ data: [{ id: "qwen/qwen3.8-27b" }] }), {
-				status: 200,
-				headers: { "content-type": "application/json" },
-			});
-		}) as typeof fetch);
-		const models = await runpodModelManagerOptions({
-			apiKey: "sk-runpod-secret",
-			baseUrl: "https://api.runpod.ai/v2/ep/openai/v1/",
-		}).fetchDynamicModels?.();
-		// The configured URL is the full /openai/v1 route; only /models is appended and
-		// the trailing slash must not produce a double slash.
-		expect(capture.url).toBe("https://api.runpod.ai/v2/ep/openai/v1/models");
-		expect(capture.auth).toBe("Bearer sk-runpod-secret");
-		expect(capture.url?.includes("sk-runpod-secret")).toBe(false);
-		expect(models).toHaveLength(1);
-		expect(models?.[0].id).toBe("qwen/qwen3.8-27b");
-		expect(models?.[0].baseUrl).toBe("https://api.runpod.ai/v2/ep/openai/v1");
-	});
-
-	test("maps case-insensitive served aliases onto the template and drops unknown ids", async () => {
-		vi.spyOn(globalThis, "fetch").mockImplementation(
-			mockModelsResponse({ data: [{ id: "Qwen/Qwen3.8-27B" }, { id: "meta-llama/Llama-4-405B" }] }),
-		);
-		const models = await runpodModelManagerOptions({
-			apiKey: "sk-runpod-secret",
-			baseUrl: "https://api.runpod.ai/v2/ep/openai/v1",
-		}).fetchDynamicModels?.();
-		expect(models).toHaveLength(1);
-		// Served casing is preserved as the request id; metadata comes from the template.
-		expect(models?.[0].id).toBe("Qwen/Qwen3.8-27B");
-		expect(models?.[0].contextWindow).toBe(131_072);
-		expect(models?.[0].compat?.thinkingFormat).toBe("qwen-chat-template");
+describe("runpodModelManagerOptions discovery", () => {
+	test("never installs dynamic discovery, even with a key and endpoint URL configured", () => {
+		// A cold RunPod worker takes minutes to answer GET <baseUrl>/models, and refresh(\"online\")
+		// (e.g. --list-models) awaits that path. The bundled entry is the source of truth;
+		// no refresh may wake the worker (#114).
+		expect(runpodModelManagerOptions().fetchDynamicModels).toBeUndefined();
 	});
 });
 

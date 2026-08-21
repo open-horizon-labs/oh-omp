@@ -279,7 +279,9 @@ export const PROVIDER_DESCRIPTORS: readonly ProviderDescriptor[] = [
 	catalogDescriptor(
 		"runpod",
 		"qwen/qwen3.8-27b",
-		config => runpodModelManagerOptions(config),
+		// No dynamic discovery: the bundled entry plus a local baseUrl override is the
+		// whole product (see #114) — never request <baseUrl>/models for this provider.
+		runpodModelManagerOptions,
 		catalog("RunPod", ["RUNPOD_API_KEY"]),
 	),
 	descriptor("github-copilot", "gpt-4o", config => githubCopilotModelManagerOptions(config)),

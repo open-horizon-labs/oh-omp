@@ -275,3 +275,96 @@ function mapDeepseekDiscoveredModel(
 		thinking: DEEPSEEK_THINKING,
 	};
 }
+
+export interface RunpodModelManagerConfig {
+	apiKey?: string;
+	baseUrl?: string;
+}
+
+function normalizeRunpodBaseUrl(baseUrl: string | undefined): string | undefined {
+	const value = baseUrl?.trim().replace(/\/+$/, "");
+	return value ? value : undefined;
+}
+
+// Verified against the RunPod worker-vllm OpenAI route (see #112): thinking toggles via
+// chat_template_kwargs and Qwen3.8 additionally accepts reasoning_effort there, but its
+// chat template only allows low/medium/xhigh — fold minimal/high into the nearest level.
+const RUNPOD_QWEN_COMPAT = {
+	thinkingFormat: "qwen-chat-template",
+	supportsReasoningEffort: false,
+	reasoningEffortMap: { minimal: "low", high: "xhigh" },
+} as const satisfies Model<"openai-completions">["compat"];
+
+const RUNPOD_QWEN_THINKING = {
+	mode: "effort",
+	minLevel: Effort.Minimal,
+	maxLevel: Effort.XHigh,
+} as const satisfies Model<"openai-completions">["thinking"];
+
+// Keys are lowercase; discovered ids are matched case-insensitively (vLLM serves
+// "qwen/qwen3.8-27b" but hosts may report "Qwen/Qwen3.8-27B"). The served casing is
+// preserved as the request id.
+const RUNPOD_QWEN_TEMPLATE = {
+	"qwen/qwen3.8-27b": {
+		name: "Qwen3.8 27B",
+		contextWindow: 131_072,
+		maxTokens: 32_768,
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+	},
+} as const satisfies Record<
+	string,
+	{ name: string; contextWindow: number; maxTokens: number; cost: Model<"openai-completions">["cost"] }
+>;
+
+// RunPod endpoints are deployment-specific: no default base URL exists, and the bundled
+// catalog entry omits baseUrl on purpose. Discovery requires a locally configured
+// endpoint, and only template-known models are surfaced — unknown served ids must not
+// inherit guessed context/thinking/tool metadata.
+export function runpodModelManagerOptions(
+	config: RunpodModelManagerConfig = {},
+): ModelManagerOptions<"openai-completions"> {
+	const apiKey = config.apiKey?.trim();
+	const baseUrl = normalizeRunpodBaseUrl(config.baseUrl);
+	return {
+		providerId: "runpod",
+		...(apiKey && baseUrl
+			? {
+					fetchDynamicModels: () =>
+						fetchOpenAICompatibleModels({
+							api: "openai-completions",
+							provider: "runpod",
+							baseUrl,
+							apiKey,
+							// baseUrl is the full https://api.runpod.ai/v2/<endpoint>/openai/v1 route —
+							// no further path segments are appended.
+							mapModel: (_entry, defaults) => mapRunpodDiscoveredModel(defaults, baseUrl),
+							// mapModel returning null falls back to raw defaults rather than skipping;
+							// filterModel is the drop gate for non-template ids.
+							filterModel: (_entry, model) => model.id.toLowerCase() in RUNPOD_QWEN_TEMPLATE,
+						}),
+				}
+			: undefined),
+	};
+}
+
+function mapRunpodDiscoveredModel(
+	defaults: Model<"openai-completions">,
+	baseUrl: string,
+): Model<"openai-completions"> | null {
+	const template = RUNPOD_QWEN_TEMPLATE[defaults.id.toLowerCase() as keyof typeof RUNPOD_QWEN_TEMPLATE];
+	if (!template) return null;
+	return {
+		id: defaults.id,
+		name: template.name,
+		api: "openai-completions",
+		provider: "runpod",
+		baseUrl,
+		reasoning: true,
+		input: ["text"],
+		cost: template.cost,
+		contextWindow: template.contextWindow,
+		maxTokens: template.maxTokens,
+		compat: RUNPOD_QWEN_COMPAT,
+		thinking: RUNPOD_QWEN_THINKING,
+	};
+}

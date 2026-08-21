@@ -375,6 +375,25 @@ providers:
         input: [text, image]
 ```
 
+### RunPod vLLM endpoint
+
+RunPod endpoints are deployment-specific, so the bundled `runpod/qwen/qwen3.8-27b` entry has no default `baseUrl`. Point it at your worker with a provider override:
+
+```yaml
+providers:
+  runpod:
+    baseUrl: https://api.runpod.ai/v2/<ENDPOINT_ID>/openai/v1
+    apiKey: RUNPOD_API_KEY
+```
+
+The URL must include `/openai/v1`. `apiKey: RUNPOD_API_KEY` is treated as an environment-variable name first; if that env var is unset, the literal string is used as the token. Then select the model as usual:
+
+```text
+runpod/qwen/qwen3.8-27b
+runpod/qwen/qwen3.8-27b:medium
+runpod/qwen/qwen3.8-27b:xhigh
+```
+
 ### Override built-in provider route + model metadata
 
 ```yaml

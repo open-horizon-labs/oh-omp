@@ -123,6 +123,7 @@ export type KnownProvider =
 	| "ollama"
 	| "qianfan"
 	| "qwen-portal"
+	| "runpod"
 	| "together"
 	| "venice"
 	| "vllm"

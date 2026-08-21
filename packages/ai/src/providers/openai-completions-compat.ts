@@ -47,7 +47,9 @@ function detectStrictModeSupport(provider: string, baseUrl: string): boolean {
 export function detectOpenAICompat(model: Model<"openai-completions">, resolvedBaseUrl?: string): ResolvedOpenAICompat {
 	const provider = model.provider;
 	// Use resolvedBaseUrl if provided (e.g., after GitHub Copilot proxy-ep resolution)
-	const baseUrl = resolvedBaseUrl ?? model.baseUrl;
+	// Bundled catalog entries may omit baseUrl (deployment-specific providers such as runpod);
+	// only provider/baseUrl heuristics depend on it, so an empty string disables those signals.
+	const baseUrl = resolvedBaseUrl ?? model.baseUrl ?? "";
 
 	const isCerebras = provider === "cerebras" || baseUrl.includes("cerebras.ai");
 	const isZai = provider === "zai" || baseUrl.includes("api.z.ai");

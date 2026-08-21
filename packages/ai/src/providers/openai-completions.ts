@@ -735,7 +735,16 @@ function buildParams(
 		// Qwen uses top-level enable_thinking: boolean
 		Reflect.set(params, "enable_thinking", !!options?.reasoning);
 	} else if (compat.thinkingFormat === "qwen-chat-template" && model.reasoning) {
-		Reflect.set(params, "chat_template_kwargs", { enable_thinking: !!options?.reasoning });
+		// vLLM-served Qwen toggles thinking via chat_template_kwargs; Qwen3.8 additionally
+		// accepts an effort level there. Its chat template only allows low/medium/xhigh, so
+		// models use reasoningEffortMap (e.g. minimal→low, high→xhigh) to stay in range.
+		// This branch precedes the generic supportsReasoningEffort arm, so no top-level
+		// reasoning_effort is emitted for this format.
+		const chatTemplateKwargs: Record<string, unknown> = { enable_thinking: !!options?.reasoning };
+		if (options?.reasoning) {
+			chatTemplateKwargs.reasoning_effort = mapReasoningEffort(options.reasoning, compat.reasoningEffortMap);
+		}
+		Reflect.set(params, "chat_template_kwargs", chatTemplateKwargs);
 	} else if (compat.thinkingFormat === "openrouter" && options?.reasoning && model.reasoning) {
 		// OpenRouter normalizes reasoning across providers via a nested reasoning object.
 		const openRouterParams = params as typeof params & { reasoning?: { effort?: string } };

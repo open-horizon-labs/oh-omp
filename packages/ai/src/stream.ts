@@ -67,6 +67,7 @@ const serviceProviderMap: Record<string, KeyResolver> = {
 	google: "GEMINI_API_KEY",
 	groq: "GROQ_API_KEY",
 	deepseek: "DEEPSEEK_API_KEY",
+	runpod: "RUNPOD_API_KEY",
 	cerebras: "CEREBRAS_API_KEY",
 	xai: "XAI_API_KEY",
 	"xai-oauth": () => $pickenv("XAI_OAUTH_TOKEN", "XAI_API_KEY"),

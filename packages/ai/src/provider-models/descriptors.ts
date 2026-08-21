@@ -40,7 +40,12 @@ import {
 	xiaomiModelManagerOptions,
 	zenmuxModelManagerOptions,
 } from "./openai-compat";
-import { cursorModelManagerOptions, deepseekModelManagerOptions, zaiModelManagerOptions } from "./special";
+import {
+	cursorModelManagerOptions,
+	deepseekModelManagerOptions,
+	runpodModelManagerOptions,
+	zaiModelManagerOptions,
+} from "./special";
 
 /** Catalog discovery configuration for providers that support endpoint-based model listing. */
 export interface CatalogDiscoveryConfig {
@@ -270,6 +275,12 @@ export const PROVIDER_DESCRIPTORS: readonly ProviderDescriptor[] = [
 		"deepseek-v4-flash",
 		config => deepseekModelManagerOptions(config),
 		catalog("DeepSeek", ["DEEPSEEK_API_KEY"]),
+	),
+	catalogDescriptor(
+		"runpod",
+		"qwen/qwen3.8-27b",
+		config => runpodModelManagerOptions(config),
+		catalog("RunPod", ["RUNPOD_API_KEY"]),
 	),
 	descriptor("github-copilot", "gpt-4o", config => githubCopilotModelManagerOptions(config)),
 	descriptor("google", "gemini-2.5-pro", config => googleModelManagerOptions(config)),

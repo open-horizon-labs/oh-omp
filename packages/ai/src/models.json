@@ -39830,6 +39830,39 @@
 			"maxTokens": 8192
 		}
 	},
+	"runpod": {
+		"qwen/qwen3.8-27b": {
+			"id": "qwen/qwen3.8-27b",
+			"name": "Qwen3.8 27B",
+			"api": "openai-completions",
+			"provider": "runpod",
+			"reasoning": true,
+			"input": [
+				"text"
+			],
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 131072,
+			"maxTokens": 32768,
+			"compat": {
+				"thinkingFormat": "qwen-chat-template",
+				"supportsReasoningEffort": false,
+				"reasoningEffortMap": {
+					"minimal": "low",
+					"high": "xhigh"
+				}
+			},
+			"thinking": {
+				"mode": "effort",
+				"minLevel": "minimal",
+				"maxLevel": "xhigh"
+			}
+		}
+		},
 	"synthetic": {
 		"hf:deepseek-ai/DeepSeek-R1-0528": {
 			"id": "hf:deepseek-ai/DeepSeek-R1-0528",

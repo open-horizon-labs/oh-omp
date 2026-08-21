@@ -32,6 +32,13 @@ function getNestedBoolean(value: unknown, key: string): boolean | undefined {
 	return typeof property === "boolean" ? property : undefined;
 }
 
+function getNestedString(value: unknown, key: string): string | null {
+	const obj = toObject(value);
+	if (!obj) return null;
+	const property = Reflect.get(obj, key);
+	return typeof property === "string" ? property : null;
+}
+
 function createSseResponse(events: unknown[]): Response {
 	const payload = `${events.map(event => `data: ${typeof event === "string" ? event : JSON.stringify(event)}`).join("\n\n")}\n\n`;
 	return new Response(payload, {
@@ -178,6 +185,9 @@ describe("openai-completions compatibility", () => {
 		const payload = await promise;
 		const chatTemplateArgs = getNestedObject(payload, "chat_template_kwargs");
 		expect(getNestedBoolean(chatTemplateArgs, "enable_thinking")).toBe(true);
+		// Effort rides inside chat_template_kwargs (unmapped levels pass through as-is).
+		expect(getNestedString(chatTemplateArgs, "reasoning_effort")).toBe("high");
+		expect(getNestedString(payload, "reasoning_effort")).toBeNull();
 	});
 
 	it("treats finish_reason end as stop", async () => {

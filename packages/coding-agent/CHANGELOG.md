@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Stopped published binaries from crashing when an extension or SDK tool defines `renderCall` / `renderResult`. `RegisteredToolAdapter` now reserves writable renderer slots before `applyToolProxy`, instead of depending on compiler-emitted class fields ([#118](https://github.com/open-horizon-labs/oh-omp/issues/118))
+
 ## [0.15.0] - 2026-08-22
 
 ### Added

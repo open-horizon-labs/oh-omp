@@ -5,7 +5,7 @@ import type { AgentTool, AgentToolContext, AgentToolUpdateCallback } from "@oh-m
 import type { ImageContent, TextContent } from "@oh-my-pi/pi-ai";
 import type { Static, TSchema } from "@sinclair/typebox";
 import type { Theme } from "../../modes/theme/theme";
-import { applyToolProxy } from "../tool-proxy";
+import { applyToolProxy, reserveOwnWritableProperties } from "../tool-proxy";
 import type { ExtensionRunner } from "./runner";
 import type { RegisteredTool, ToolCallEventResult } from "./types";
 
@@ -26,7 +26,9 @@ export class RegisteredToolAdapter implements AgentTool<any, any, any> {
 		private registeredTool: RegisteredTool,
 		private runner: ExtensionRunner,
 	) {
-		applyToolProxy(registeredTool.definition, this);
+		const { definition } = registeredTool;
+		reserveOwnWritableProperties(this, definition, ["renderCall", "renderResult"]);
+		applyToolProxy(definition, this);
 
 		// Only define render methods when the underlying definition provides them.
 		// If these exist unconditionally on the prototype, ToolExecutionComponent

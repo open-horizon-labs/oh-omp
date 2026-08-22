@@ -4,7 +4,7 @@
 import type { AgentTool, AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
 import type { Static, TSchema } from "@sinclair/typebox";
 import type { Theme } from "../../modes/theme/theme";
-import { applyToolProxy } from "../tool-proxy";
+import { applyToolProxy, reserveOwnWritableProperties } from "../tool-proxy";
 import type { CustomTool, CustomToolContext } from "./types";
 
 export class CustomToolAdapter<TParams extends TSchema = TSchema, TDetails = any, TTheme extends Theme = Theme>
@@ -20,6 +20,7 @@ export class CustomToolAdapter<TParams extends TSchema = TSchema, TDetails = any
 		private tool: CustomTool<TParams, TDetails>,
 		private getContext: () => CustomToolContext,
 	) {
+		reserveOwnWritableProperties(this, tool, ["renderCall", "renderResult"]);
 		applyToolProxy(tool, this);
 	}
 

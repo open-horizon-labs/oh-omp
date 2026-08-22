@@ -1,6 +1,21 @@
 /**
  * Defines lazy proxy properties on a wrapper so it forwards to the underlying tool.
  */
+export function reserveOwnWritableProperties(target: object, source: object, keys: readonly PropertyKey[]): void {
+	const record = source as Record<PropertyKey, unknown>;
+	for (const key of keys) {
+		if (record[key] === undefined || key in target) {
+			continue;
+		}
+		Object.defineProperty(target, key, {
+			value: undefined,
+			writable: true,
+			configurable: true,
+			enumerable: true,
+		});
+	}
+}
+
 export function applyToolProxy<TTool extends object>(tool: TTool, wrapper: object): void {
 	const visited = new Set<PropertyKey>();
 	let current: object | null = tool;

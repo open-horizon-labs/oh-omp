@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-08-22
+
+### Added
+
+- Added a first-party RunPod provider with a bundled `qwen/qwen3.8-27b` model. Point it at your worker with `providers.runpod.baseUrl` and `RUNPOD_API_KEY` in `models.yml`. Effort (`:medium`, `:xhigh`) is sent through Qwen's chat-template kwargs. Listing models does not call the worker's `/models` route, so a cold endpoint will not wake just to confirm an id the catalog already ships. ([#112](https://github.com/open-horizon-labs/oh-omp/issues/112), [#114](https://github.com/open-horizon-labs/oh-omp/issues/114))
+
 ## [0.13.0] - 2026-08-18
 
 ### Added

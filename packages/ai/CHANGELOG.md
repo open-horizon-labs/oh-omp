@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Raised the spoofed Claude Code user-agent from `2.1.63` to `2.1.257` so Anthropic models that require Claude Code 2.1.251+ no longer fail with `claude_code_version_too_old`.
+
 ### Added
 
 - Added xAI Grok OAuth login for SuperGrok and X Premium+ subscriptions, including device authorization, token refresh, curated Grok models, and the xAI Responses transport.

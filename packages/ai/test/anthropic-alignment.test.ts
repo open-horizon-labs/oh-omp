@@ -93,7 +93,7 @@ describe("Anthropic request fingerprint alignment", () => {
 		expect(headers["Anthropic-Beta"]).toContain("context-management-2025-06-27");
 		expect(headers["Anthropic-Beta"]).toContain("prompt-caching-scope-2026-01-05");
 		expect(headers["Anthropic-Beta"]).not.toContain("fine-grained-tool-streaming-2025-05-14");
-		expect(headers["User-Agent"]).toBe(`claude-cli/${claudeCodeVersion} (external, cli)`);
+		expect(headers["User-Agent"]).toBe("claude-cli/2.1.257 (external, cli)");
 		expect(claudeCodeHeaders["X-Stainless-Package-Version"]).toBe("0.74.0");
 		expect("X-Stainless-Helper-Method" in claudeCodeHeaders).toBe(false);
 	});

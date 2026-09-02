@@ -2,9 +2,11 @@
 
 ## [Unreleased]
 
+## [0.15.2] - 2026-09-02
+
 ### Fixed
 
-- Raised the spoofed Claude Code user-agent from `2.1.63` to `2.1.257` so Anthropic models that require Claude Code 2.1.251+ no longer fail with `claude_code_version_too_old`.
+- Raised the spoofed Claude Code user-agent from `2.1.63` to `2.1.257` so Anthropic models that require Claude Code 2.1.251+ no longer fail with `claude_code_version_too_old`. ([#122](https://github.com/open-horizon-labs/oh-omp/issues/122))
 
 ## [0.15.1] - 2026-08-22
 

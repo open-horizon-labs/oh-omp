@@ -41,7 +41,6 @@ import todoWriteDescription from "../tools/todo-write.md" with { type: "text" };
 import todosDescription from "../tools/todos.md" with { type: "text" };
 import webSearchDescription from "../tools/web-search.md" with { type: "text" };
 import writeDescription from "../tools/write.md" with { type: "text" };
-import coreContractGuidance from "./core-contract.md" with { type: "text" };
 import runtimeSurfacesGuidance from "./runtime-surfaces.md" with { type: "text" };
 
 export interface GuidanceLibrary {
@@ -119,7 +118,6 @@ export function collectGuidanceLibrary(options: CollectGuidanceLibraryOptions): 
 		toolDocs,
 		editModeGuidance: editModeContent ? `### Edit Mode: ${options.editMode}\n\n${editModeContent}` : "",
 		additionalGuidance: [
-			coreContractGuidance.trim(),
 			runtimeSurfacesGuidance.trim(),
 			...(includeSelfImprovement ? [selfImprovementImperative.trim()] : []),
 		].join("\n\n"),

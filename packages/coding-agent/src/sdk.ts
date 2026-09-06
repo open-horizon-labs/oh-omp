@@ -137,7 +137,7 @@ import {
 } from "./mcp/discoverable-tool-metadata";
 import { getMemoryRoot } from "./memories";
 import { compileSystemPrompt } from "./prompts/composer/compile";
-import composerInvariants from "./prompts/composer/invariants.md" with { type: "text" };
+import operatingContract from "./prompts/operating-contract.md" with { type: "text" };
 import contextRecoveryPrompt from "./prompts/system/context-recovery.md" with { type: "text" };
 import contextRecoveryTruncatedPrompt from "./prompts/system/context-recovery-truncated.md" with { type: "text" };
 import asyncResultTemplate from "./prompts/tools/async-result.md" with { type: "text" };
@@ -1523,7 +1523,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 						cwd,
 					},
 					contextFiles: contextFiles.map(f => `## ${f.path}\n${f.content}`).join("\n\n"),
-					invariants: composerInvariants,
+					invariants: operatingContract,
 					tokenBudget: Number(settings.get("composer.tokenBudget") ?? 24000),
 				});
 

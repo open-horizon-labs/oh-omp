@@ -245,7 +245,7 @@ function buildCompilationMessage(input: {
 	}
 
 	if (input.additionalGuidance) {
-		sections.push("\n## Guidance Library — Additional Imperatives\n", input.additionalGuidance);
+		sections.push("\n## Guidance Library — Working Guidance\n", input.additionalGuidance);
 	}
 
 	sections.push("\n## Invariants (MUST include verbatim)\n", input.invariants);

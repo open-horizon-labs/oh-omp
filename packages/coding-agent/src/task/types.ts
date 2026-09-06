@@ -67,7 +67,7 @@ export const taskItemSchema = Type.Object({
 	}),
 	assignment: Type.String({
 		description:
-			"Complete per-task instructions the subagent executes. Must follow the Target/Change/Edge Cases/Acceptance structure. Only include per-task deltas — shared background belongs in `context`.",
+			"Per-task instructions with a clear objective, scope, relevant constraints, and expected result. No fixed template is required; shared background belongs in `context`.",
 	}),
 });
 export type TaskItem = Static<typeof taskItemSchema>;
@@ -89,7 +89,7 @@ const createTaskSchema = (options: { isolationEnabled: boolean }) => {
 		),
 		tasks: Type.Array(taskItemSchema, {
 			description:
-				"Tasks to execute in parallel. Each must be small-scoped (3-5 files max) and self-contained given context + assignment.",
+				"Tasks to execute in parallel. Each needs a bounded, coherent scope and must be self-contained given context + assignment.",
 		}),
 	};
 

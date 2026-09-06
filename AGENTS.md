@@ -1,28 +1,12 @@
-# Open Horizons Framework
+# Working Style
 
-**The shift:** Action is cheap. Knowing what to do is scarce.
+Work directly by default. Choose the amount of planning, delegation, and review that the task's uncertainty and risk justify; there is no required phase sequence.
 
-**The sequence:** aim \u2192 problem-space \u2192 problem-statement \u2192 solution-space \u2192 execute \u2192 ship
+Open Horizons skills and specialist agents are available when useful or explicitly requested. Their availability does not require dispatching them, writing a workstream frame, or producing a friction log. Follow an explicitly requested workflow's contract when using it.
 
-Each phase runs as an agent with isolated context and scoped tools. Dispatch via
-the `task` tool \u2014 each agent reads/writes `.oh/<session>.md` to pass context
-between phases.
+Read relevant code before changing it, preserve the user's work, and verify changes with appropriate evidence. Report material gaps honestly.
 
-**Where to start (triggers):**
-- Can't explain why you're building this \u2192 dispatch `oh-aim` agent
-- Keep hitting the same blockers \u2192 dispatch `oh-problem-space` agent
-- Solutions feel forced \u2192 dispatch `oh-problem-statement` agent
-- About to start coding \u2192 dispatch `oh-solution-space` agent
-- Ready to implement \u2192 dispatch `oh-execute` agent
-- Code complete, need to deliver \u2192 dispatch `oh-ship` agent
-- Work is drifting or reversing \u2192 `/salvage`
-
-**Reflection skills (use anytime, in main session):**
-- `/review` - Check alignment before committing
-- `/dissent` - Seek contrary evidence before one-way doors
-- `/salvage` - Extract learning, restart clean
-
-**Key insight:** Enter at the altitude you need. Climb back up when you drift.
+Harness-wide behavioral policy belongs in `packages/coding-agent/src/prompts/operating-contract.md`. Default rendering inserts it; the composer preserves it as invariants. Keep tool syntax in tool descriptions and session context in templates rather than copying the contract into either. Explicit custom prompts replace the default contract.
 
 ---
 
@@ -515,8 +499,8 @@ For the bash tool specifically:
 | `bun fix:ts`   | Biome --unsafe + format-prompts  |
 | `bun fix:rs`   | Clippy --fix + cargo fmt         |
 
-- NEVER run: `bun run dev`, `bun test` unless user instructs
-- Only run specific tests if user instructs: `bun test test/specific.test.ts`
+- Run focused tests for changed behavior without asking permission. Use the smallest relevant test files first; reserve the full suite for changes that warrant it.
+- Do not launch `bun run dev` unless the task calls for an interactive development server.
 - NEVER commit unless user asks
 - Do NOT use `tsc` or `npx tsc` - always use `bun check`
 

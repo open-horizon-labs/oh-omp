@@ -3,8 +3,9 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { renderPromptTemplate, type TemplateContext } from "@oh-my-pi/pi-coding-agent/config/prompt-templates";
-import { buildSystemPrompt } from "@oh-my-pi/pi-coding-agent/system-prompt";
+import { type BuildSystemPromptOptions, buildSystemPrompt } from "@oh-my-pi/pi-coding-agent/system-prompt";
 import Handlebars from "handlebars";
+import operatingContract from "../src/prompts/operating-contract.md" with { type: "text" };
 
 const baseGitContext = {
 	isRepo: true,
@@ -42,6 +43,7 @@ const baseRenderContext: TemplateContext = {
 	maxRetries: 3,
 	modifiedFiles: ["packages/coding-agent/src/config/prompt-templates.ts"],
 	name: "rs-no-unwrap",
+	operatingContract,
 	path: "packages/coding-agent/src/config/prompt-templates.ts",
 	planContent: "1. Read code\n2. Add tests",
 	planExists: true,
@@ -159,6 +161,33 @@ describe("system Handlebars prompt templates", () => {
 		expect(rendered).toContain("Discoverable MCP servers in this session: github (2 tools), slack (1 tool).");
 		expect(rendered).not.toContain("Example discoverable MCP tools:");
 		expect(rendered).toContain("call `search_tool_bm25` before concluding no such tool exists");
+	});
+
+	test("default prompts include the shared contract once while custom prompts replace it", async () => {
+		await withTempDir(async cwd => {
+			const options: BuildSystemPromptOptions = {
+				cwd,
+				contextFiles: [{ path: "AGENTS.md", content: "Project-specific guidance" }],
+				skills: [],
+				rules: [],
+				appendSystemPrompt: "Additional session guidance",
+			};
+			for (const toolNames of [[], ["read", "edit", "ask"]]) {
+				const prompt = await buildSystemPrompt({ ...options, toolNames });
+				expect(countOccurrences(prompt, operatingContract.trim())).toBe(1);
+				expect(prompt.startsWith(operatingContract.trim())).toBe(true);
+				expect(prompt).toContain("Project-specific guidance");
+				expect(prompt).toContain("Additional session guidance");
+				expect(prompt.includes("Use `edit` for targeted text changes")).toBe(toolNames.includes("edit"));
+			}
+
+			const customPrompt = "You are a writing assistant, not a coding agent.";
+			const custom = await buildSystemPrompt({ ...options, toolNames: ["read"], customPrompt });
+			expect(custom).toContain(customPrompt);
+			expect(custom).not.toContain(operatingContract.trim());
+			expect(custom).toContain("Project-specific guidance");
+			expect(custom).toContain("Additional session guidance");
+		});
 	});
 
 	test("buildSystemPrompt deduplicates always-apply rules already present in SYSTEM.md", async () => {

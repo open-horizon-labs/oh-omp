@@ -29,9 +29,7 @@ Main branch: {{git.mainBranch}}
 </project>
 {{/ifAny}}
 {{#if skills.length}}
-Skills are specialized knowledge.
-You **MUST** scan descriptions for your task domain.
-If a skill covers your output, you **MUST** read `skill://<name>` before proceeding.
+Skills provide specialized guidance. Read `skill://<name>` when its guidance is useful for the task or the user requests it; a domain match alone does not require loading it.
 <skills>
 {{#list skills join="\n"}}
 <skill name="{{name}}">

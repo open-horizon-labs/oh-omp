@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+## [0.15.3] - 2026-09-06
+
+### Changed
+
+- Made planning, task tracking, skills, delegation, specialist review, and harness reflection optional by default in built-in and composed prompts; removed fixed delegation templates, file-count quotas, and per-step TODO bookkeeping. Explicitly requested workflows and safety/verification requirements remain supported.
+- Consolidated default and composed behavioral policy in `prompts/operating-contract.md`, removed the duplicate composer contract/invariants, and shortened the default template to session context and tool routing. Custom prompt replacement semantics are unchanged.
+- Repository guidance now permits focused regression tests without a separate approval request.
+
+### Fixed
+
+- Removed prompt guidance claiming XML in user content is system-authoritative; source provenance, not embedded markup, determines authority.
+
 ## [0.15.2] - 2026-09-02
 
 ### Fixed

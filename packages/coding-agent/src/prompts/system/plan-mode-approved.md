@@ -9,12 +9,9 @@ Finalized plan artifact: `{{finalPlanFilePath}}`
 {{planContent}}
 
 <instruction>
-You **MUST** execute this plan step by step from `{{finalPlanFilePath}}`. You have full tool access.
-You **MUST** verify each step before proceeding to the next.
+Implement the approved plan from `{{finalPlanFilePath}}`. You have full tool access. Respect its scope and dependencies, and verify the result with checks appropriate to the changes.
 {{#has tools "todo_write"}}
-Before execution, you **MUST** initialize todo tracking for this plan with `todo_write`.
-After each completed step, you **MUST** immediately update `todo_write` so progress stays visible.
-If a `todo_write` call fails, you **MUST** fix the todo payload and retry before continuing silently.
+Use `todo_write` if tracking helps maintain continuity or the user requested it. Update at meaningful milestones and batch related changes; plan approval alone does not require a task list.
 {{/has}}
 </instruction>
 

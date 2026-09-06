@@ -8,9 +8,9 @@ import { getBundledModel } from "@oh-my-pi/pi-ai";
 import { ModelRegistry } from "../src/config/model-registry";
 import { Settings } from "../src/config/settings";
 import * as composerModule from "../src/prompts/composer/compile";
-import composerInvariants from "../src/prompts/composer/invariants.md" with { type: "text" };
 import { buildInventory } from "../src/prompts/composer/inventory";
 import { collectGuidanceLibrary } from "../src/prompts/composer/library";
+import operatingContract from "../src/prompts/operating-contract.md" with { type: "text" };
 import { createAgentSession } from "../src/sdk";
 import { AuthStorage } from "../src/session/auth-storage";
 import { SessionManager } from "../src/session/session-manager";
@@ -98,7 +98,7 @@ describe("dynamic composer system prompt", () => {
 			.spyOn(ai, "completeSimple")
 			.mockResolvedValue(
 				createAssistantMessage(
-					`<compiled-system-prompt>\nCompiled prompt\n\n${composerInvariants.trim()}\n\nDone\n</compiled-system-prompt>`,
+					`<compiled-system-prompt>\nCompiled prompt\n\n${operatingContract.trim()}\n\nDone\n</compiled-system-prompt>`,
 				),
 			);
 
@@ -116,7 +116,7 @@ describe("dynamic composer system prompt", () => {
 				cwd: tempDir,
 			},
 			contextFiles: "## AGENTS.md\nFollow the local rules.",
-			invariants: composerInvariants,
+			invariants: operatingContract,
 			tokenBudget: 2048,
 			noCache: true,
 		});
@@ -132,12 +132,13 @@ describe("dynamic composer system prompt", () => {
 		expect(userMessage).toContain("## Guidance Library — Active Edit Mode");
 		expect(userMessage).not.toContain("Current System Prompt Template");
 		expect(request?.systemPrompt).not.toContain("Current System Prompt Template");
-		expect(result.systemPrompt).toBe(`Compiled prompt\n\n${composerInvariants.trim()}\n\nDone`);
+		expect(userMessage.split(operatingContract.trim())).toHaveLength(2);
+		expect(result.systemPrompt).toBe(`Compiled prompt\n\n${operatingContract.trim()}\n\nDone`);
 	});
 
 	it("rejects compiled output without the required wrapper", () => {
 		vi.spyOn(ai, "completeSimple").mockResolvedValue(
-			createAssistantMessage(`Compiled prompt\n\n${composerInvariants.trim()}`),
+			createAssistantMessage(`Compiled prompt\n\n${operatingContract.trim()}`),
 		);
 
 		return expect(
@@ -152,7 +153,7 @@ describe("dynamic composer system prompt", () => {
 					cwd: tempDir,
 				},
 				contextFiles: "",
-				invariants: composerInvariants,
+				invariants: operatingContract,
 				tokenBudget: 2048,
 				noCache: true,
 			}),
@@ -178,16 +179,15 @@ describe("dynamic composer system prompt", () => {
 				cwd: tempDir,
 			},
 			contextFiles: "",
-			invariants: composerInvariants,
+			invariants: operatingContract,
 			tokenBudget: 2048,
 			noCache: true,
 		});
 
-		expect(result.systemPrompt).toContain("Compiled prompt only");
-		expect(result.systemPrompt).toContain(composerInvariants.trim());
+		expect(result.systemPrompt).toBe(`Compiled prompt only\n\n${operatingContract}`);
 	});
 
-	it("uses canonical composer invariants and still applies prompt overrides", async () => {
+	it("uses the shared operating contract and still applies prompt overrides", async () => {
 		const model = createModel();
 		const authStorage = await AuthStorage.create(path.join(tempDir, "auth.db"));
 		authStorage.setRuntimeApiKey("anthropic", "test-key");
@@ -220,7 +220,7 @@ describe("dynamic composer system prompt", () => {
 
 		try {
 			expect(compileSpy).toHaveBeenCalledTimes(1);
-			expect(compileSpy.mock.calls[0]?.[0].invariants.trim()).toBe(composerInvariants.trim());
+			expect(compileSpy.mock.calls[0]?.[0].invariants.trim()).toBe(operatingContract.trim());
 			expect(session.systemPrompt).toContain("COMPILED PROMPT");
 			expect(session.systemPrompt).toContain("OVERRIDE");
 		} finally {

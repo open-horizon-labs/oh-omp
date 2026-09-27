@@ -45,11 +45,15 @@ Allowed in the fork:
 - Token/latency budget enforcement around context injection.
 - Observability hooks needed to evaluate continuity quality.
 
+- The bounded, opt-in, compatibility-preserving remote projection/interaction experiment authorized by ADR 0007 for `open-horizon-labs/oh-kernel#776`, limited to additive harness integration that reuses existing runtime seams and leaves terminal/headless behavior unchanged.
+
 Out of scope for bootstrap:
 
 - Broad runtime rewrites.
 - Renaming/redefining core event protocol.
 - Replacing terminal interaction model before bootstrap loop is proven.
+
+- Generic remote-UI infrastructure, a second agent/session or memory runtime, a browser-dependent critical path, a fixed widget catalog, indiscriminate transport of tool details, and arbitrary privileged generated code.
 
 ### 3) Upstream sync is policy, not best-effort
 
@@ -84,4 +88,4 @@ If patch surface grows beyond a maintainable threshold (for example recurring de
 1. Keep this fork compatible by default.
 2. Add context injection as an additive layer, not a protocol replacement.
 3. Instrument continuity metrics early (re-brief time, context correction rate, continuity success).
-4. Only expand scope after measured bootstrap adoption is achieved.
+4. Outside the bounded ADR 0007 experiment, only expand scope after measured bootstrap adoption is achieved.

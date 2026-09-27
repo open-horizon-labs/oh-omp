@@ -71,7 +71,11 @@ export type RpcCommand =
 	// Prompt snapshot inspection
 	| { id?: string; type: "get_prompt_snapshot" }
 	| { id?: string; type: "inspect_prompt_section"; section: RpcPromptSnapshotSectionName }
-	| { id?: string; type: "inspect_prompt_decisions"; filter?: RpcPromptDecisionFilter };
+	| { id?: string; type: "inspect_prompt_decisions"; filter?: RpcPromptDecisionFilter }
+
+	// Bounded projection experiment (#776)
+	| { id?: string; type: "publish_projection"; snapshot: unknown }
+	| { id?: string; type: "submit_projection_intervention"; intervention: unknown };
 
 // ============================================================================
 // RPC State
@@ -97,6 +101,19 @@ export interface RpcSessionState {
 // ============================================================================
 
 // Success responses with data
+export type RpcProjectionCommandStatus =
+	| { status: "accepted"; projectionId: string; revision: number }
+	| { status: "duplicate"; projectionId: string; revision: number }
+	| { status: "conflict"; reason: string }
+	| { status: "invalid"; reason: string };
+
+export interface RpcProjectionPublishedEvent {
+	type: "projection_published";
+	projectionId: string;
+	revision: number;
+	operationCount: number;
+}
+
 export type RpcResponse =
 	// Prompting (async - events follow)
 	| { id?: string; type: "response"; command: "prompt"; success: true }
@@ -212,6 +229,22 @@ export type RpcResponse =
 			command: "inspect_prompt_decisions";
 			success: true;
 			data: RpcPromptDecisionReport;
+	  }
+
+	// Bounded projection experiment (#776)
+	| {
+			id?: string;
+			type: "response";
+			command: "publish_projection";
+			success: true;
+			data: RpcProjectionCommandStatus;
+	  }
+	| {
+			id?: string;
+			type: "response";
+			command: "submit_projection_intervention";
+			success: true;
+			data: RpcProjectionCommandStatus;
 	  }
 
 	// Error response (any command can fail)

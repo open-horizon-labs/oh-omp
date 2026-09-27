@@ -31,7 +31,7 @@ Success = assembler mode is the default, sessions maintain context continuity wi
 
 - **Protocol compatibility is hard**: Preserve event names, lifecycle semantics, and completion signaling (ADR 0001). Downstream orchestrators in ai-omnibus consume these contracts.
 - **RPC contract is locked**: Event protocol and RPC/SSE contract must not break without an explicit migration plan (ADR 0002).
-- **Patch scope is narrow and additive**: Only context-assembly hooks, observability, provenance metadata, and token/latency budget enforcement. No broad runtime rewrites, no renaming core events, no replacing the terminal interaction model.
+- **Patch scope is narrow and additive**: Only context-assembly hooks, observability, provenance metadata, and token/latency budget enforcement, plus the bounded, opt-in, compatibility-preserving remote projection/interaction experiment authorized by ADR 0007 for `open-horizon-labs/oh-kernel#776`. That exception must not change existing terminal/headless behavior. No broad runtime rewrites, no renaming core events, no replacing the terminal interaction model.
 - **Upstream sync is active**: Merge upstream regularly. Keep the patch queue small and explicit. Gate syncs with compatibility tests.
 
 ## Patterns to Follow
@@ -44,7 +44,7 @@ Success = assembler mode is the default, sessions maintain context continuity wi
 
 ## Anti-Patterns to Avoid
 
-- **Expanding patch scope**: Don't touch core runtime beyond what the assembler needs. If a change would require deep edits across many core files, stop and re-evaluate (ADR 0001 re-evaluation trigger).
+- **Expanding patch scope**: Don't touch core runtime beyond what the assembler needs, except for the bounded additive harness support explicitly permitted by ADR 0007 for `open-horizon-labs/oh-kernel#776`. If a change would require deep edits across many core files, a new runtime, a browser-dependent critical path, or generic remote-UI infrastructure, stop and re-evaluate (ADR 0001 re-evaluation trigger).
 - **Breaking protocol compat**: Don't change event names, lifecycle semantics, or completion signaling without an explicit migration plan.
 - **Running dual context managers**: Don't run assembler assembly and legacy compaction simultaneously. If configuration would activate both, runtime must fail closed.
 - **Payload retention in memory**: Don't store full tool outputs in memory tiers. Store locator entries (address + retrieval recipe) and hydrate on demand.

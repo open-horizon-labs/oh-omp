@@ -1,9 +1,40 @@
 import type { ProjectionRuntime } from "./projection-runtime";
-import type { RpcProjectionCommandStatus, RpcProjectionPublishedEvent } from "./rpc-types";
+import type { ProjectionSnapshot } from "./projection-types";
+import type { RpcCommand, RpcProjectionCommandStatus, RpcProjectionPublishedEvent, RpcResponse } from "./rpc-types";
 
 export const PROJECTION_INTERVENTION_CUSTOM_TYPE = "projection_intervention" as const;
 
 export type ProjectionCommandStatus = RpcProjectionCommandStatus;
+
+const MAX_PROJECTION_ID_BYTES = 128;
+const textEncoder = new TextEncoder();
+
+function hasUnpairedSurrogate(value: string): boolean {
+	for (let index = 0; index < value.length; index++) {
+		const code = value.charCodeAt(index);
+		if (code >= 0xd800 && code <= 0xdbff) {
+			const next = value.charCodeAt(index + 1);
+			if (!(next >= 0xdc00 && next <= 0xdfff)) return true;
+			index++;
+		} else if (code >= 0xdc00 && code <= 0xdfff) {
+			return true;
+		}
+	}
+	return false;
+}
+
+function parseProjectionId(value: unknown): string {
+	if (typeof value !== "string" || value.length === 0) {
+		throw new Error("projectionId must be a non-empty string");
+	}
+	if (hasUnpairedSurrogate(value)) {
+		throw new Error("projectionId must not contain unpaired surrogates");
+	}
+	if (textEncoder.encode(value).byteLength > MAX_PROJECTION_ID_BYTES) {
+		throw new Error(`projectionId exceeds ${MAX_PROJECTION_ID_BYTES} bytes`);
+	}
+	return value;
+}
 
 export interface ProjectionInterventionMessage {
 	customType: typeof PROJECTION_INTERVENTION_CUSTOM_TYPE;
@@ -59,6 +90,15 @@ export function handlePublishProjection(
 	return { data: result };
 }
 
+export function handleGetProjection(
+	runtime: ProjectionRuntime,
+	command: { projectionId?: unknown },
+): { data: ProjectionSnapshot | null } {
+	const projectionId = parseProjectionId(command.projectionId);
+	const snapshot = runtime.get(projectionId);
+	return { data: snapshot === undefined ? null : structuredClone(snapshot) };
+}
+
 export async function handleSubmitProjectionIntervention(
 	runtime: ProjectionRuntime,
 	command: { intervention?: unknown },
@@ -103,4 +143,21 @@ export async function handleSubmitProjectionIntervention(
 		};
 	}
 	return { data: result };
+}
+
+const PROJECTION_RPC_COMMANDS = new Set(["publish_projection", "get_projection", "submit_projection_intervention"]);
+
+export function getProjectionRpcDisabledResponse(
+	command: Pick<RpcCommand, "id" | "type">,
+	experimentalProjections: boolean,
+): RpcResponse | undefined {
+	if (experimentalProjections || !PROJECTION_RPC_COMMANDS.has(command.type)) return undefined;
+
+	return {
+		id: command.id,
+		type: "response",
+		command: command.type,
+		success: false,
+		error: "Projection RPC commands are disabled; pass --experimental-projections to enable them",
+	};
 }

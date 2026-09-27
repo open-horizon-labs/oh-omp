@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test";
+import { parseArgs } from "../src/cli/args";
 import {
+	getProjectionRpcDisabledResponse,
+	handleGetProjection,
 	handlePublishProjection,
 	handleSubmitProjectionIntervention,
 	PROJECTION_INTERVENTION_CUSTOM_TYPE,
@@ -50,6 +53,38 @@ function recordingSink() {
 	return { sink, messages, options };
 }
 
+describe("projection RPC gate", () => {
+	test("is default-off at the real CLI parser boundary and correlates disabled commands", () => {
+		const disabledArgs = parseArgs(["--mode", "rpc"]);
+		expect(disabledArgs.experimentalProjections).toBeUndefined();
+		expect(disabledArgs.unknownFlags.has("experimental-projections")).toBe(false);
+
+		for (const type of ["publish_projection", "get_projection", "submit_projection_intervention"] as const) {
+			const response = getProjectionRpcDisabledResponse(
+				{ id: `request-${type}`, type },
+				disabledArgs.experimentalProjections === true,
+			);
+
+			expect(response).toEqual({
+				id: `request-${type}`,
+				type: "response",
+				command: type,
+				success: false,
+				error: "Projection RPC commands are disabled; pass --experimental-projections to enable them",
+			});
+		}
+
+		const enabledArgs = parseArgs(["--mode", "rpc", "--experimental-projections"]);
+		expect(enabledArgs.experimentalProjections).toBe(true);
+		expect(
+			getProjectionRpcDisabledResponse(
+				{ id: "enabled", type: "get_projection" },
+				enabledArgs.experimentalProjections === true,
+			),
+		).toBeUndefined();
+	});
+});
+
 describe("handlePublishProjection", () => {
 	test("emits metadata-only projection_published on accept and does not put view bytes on the event", () => {
 		const runtime = new ProjectionRuntime();
@@ -85,6 +120,39 @@ describe("handlePublishProjection", () => {
 		const invalid = handlePublishProjection(runtime, { snapshot: { version: 2 } });
 		expect(invalid.data.status).toBe("invalid");
 		expect(invalid.event).toBeUndefined();
+	});
+});
+
+describe("handleGetProjection", () => {
+	test("returns null when the projection has not been published", () => {
+		const runtime = new ProjectionRuntime();
+		const result = handleGetProjection(runtime, { projectionId: "missing" });
+		expect(result).toEqual({ data: null });
+	});
+
+	test("rejects malformed projection IDs using the projection contract", () => {
+		const runtime = new ProjectionRuntime();
+		const malformedIds: unknown[] = [undefined, 42, "", "x".repeat(129), "\ud800"];
+
+		for (const projectionId of malformedIds) {
+			expect(() => handleGetProjection(runtime, { projectionId })).toThrow();
+		}
+	});
+
+	test("returns a copied published snapshot", () => {
+		const runtime = new ProjectionRuntime();
+		handlePublishProjection(runtime, { snapshot: snapshot() });
+
+		const result = handleGetProjection(runtime, { projectionId: "board-1" });
+		const stored = runtime.get("board-1");
+		if (result.data === null || stored === undefined) throw new Error("expected published snapshot");
+
+		expect(result.data).toEqual(stored);
+		expect(result.data).not.toBe(stored);
+
+		result.data.view.html = "<p>mutated</p>";
+		expect(stored.view.html).toBe("<p>secret</p>");
+		expect(runtime.get("board-1")?.view.html).toBe("<p>secret</p>");
 	});
 });
 

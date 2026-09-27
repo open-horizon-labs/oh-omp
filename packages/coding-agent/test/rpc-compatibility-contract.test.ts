@@ -40,6 +40,7 @@ describe("RPC compatibility contract", () => {
 		const nonContractEventTypes: unknown[] = [
 			"extension_ui_request",
 			"extension_ui_response",
+			"projection_published",
 			"ready",
 			"response",
 			"unknown",
@@ -51,5 +52,11 @@ describe("RPC compatibility contract", () => {
 		for (const eventType of nonContractEventTypes) {
 			expect(isRpcCompatibilityAgentEventType(eventType)).toBe(false);
 		}
+	});
+
+	test("projection_published is additive and does not bump the compatibility version", () => {
+		expect(RPC_COMPATIBILITY_VERSION).toBe(1);
+		expect(RPC_COMPATIBILITY_AGENT_EVENT_TYPES).not.toContain("projection_published");
+		expect(isRpcCompatibilityAgentEventType("projection_published")).toBe(false);
 	});
 });

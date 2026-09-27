@@ -18,6 +18,8 @@ import type {
 } from "../../extensibility/extensions";
 import { type Theme, theme } from "../../modes/theme/theme";
 import type { AgentSession } from "../../session/agent-session";
+import { handlePublishProjection, handleSubmitProjectionIntervention } from "./projection-rpc";
+import { ProjectionRuntime } from "./projection-runtime";
 import {
 	buildPromptDecisionReport,
 	buildPromptSectionDetail,
@@ -133,6 +135,7 @@ export async function runRpcMode(session: AgentSession): Promise<never> {
 	};
 
 	const pendingExtensionRequests = new Map<string, PendingExtensionRequest>();
+	const projectionRuntime = new ProjectionRuntime();
 
 	// Shutdown request flag (wrapped in object to allow mutation with const)
 	const shutdownState = { requested: false };
@@ -737,6 +740,19 @@ export async function runRpcMode(session: AgentSession): Promise<never> {
 			case "inspect_prompt_decisions": {
 				const report = buildPromptDecisionReport(session.getLastPromptSnapshot(), command.filter);
 				return success(id, "inspect_prompt_decisions", report);
+			}
+
+			case "publish_projection": {
+				const result = handlePublishProjection(projectionRuntime, command);
+				if (result.event) {
+					output(result.event);
+				}
+				return success(id, "publish_projection", result.data);
+			}
+
+			case "submit_projection_intervention": {
+				const result = await handleSubmitProjectionIntervention(projectionRuntime, command, session);
+				return success(id, "submit_projection_intervention", result.data);
 			}
 
 			default: {

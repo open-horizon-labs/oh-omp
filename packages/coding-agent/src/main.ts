@@ -786,7 +786,7 @@ export async function runRootCommand(parsed: Args, rawArgs: string[]): Promise<v
 	}
 
 	if (mode === "rpc") {
-		await runRpcMode(session);
+		await runRpcMode(session, { experimentalProjections: parsedArgs.experimentalProjections === true });
 	} else if (mode === "acp") {
 		await runAcpMode(session);
 	} else if (isInteractive) {

@@ -11,6 +11,7 @@ import type { ContextManagerMode } from "../../context-manager";
 import type { BashResult } from "../../exec/bash-executor";
 import type { SessionStats } from "../../session/agent-session";
 import type { CompactionResult } from "../../session/compaction";
+import type { ProjectionSnapshot } from "./projection-types";
 
 // ============================================================================
 // RPC Commands (stdin)
@@ -75,6 +76,7 @@ export type RpcCommand =
 
 	// Bounded projection experiment (#776)
 	| { id?: string; type: "publish_projection"; snapshot: unknown }
+	| { id?: string; type: "get_projection"; projectionId: string }
 	| { id?: string; type: "submit_projection_intervention"; intervention: unknown };
 
 // ============================================================================
@@ -245,6 +247,13 @@ export type RpcResponse =
 			command: "submit_projection_intervention";
 			success: true;
 			data: RpcProjectionCommandStatus;
+	  }
+	| {
+			id?: string;
+			type: "response";
+			command: "get_projection";
+			success: true;
+			data: ProjectionSnapshot | null;
 	  }
 
 	// Error response (any command can fail)

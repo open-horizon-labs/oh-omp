@@ -44,6 +44,8 @@ export interface Args {
 	skills?: string[];
 	noRules?: boolean;
 	listModels?: string | true;
+	// Projection RPC commands are an explicit opt-in for headless clients.
+	experimentalProjections?: boolean;
 	noTitle?: boolean;
 	messages: string[];
 	fileArgs: string[];
@@ -139,6 +141,8 @@ export function parseArgs(args: string[], extensionFlags?: Map<string, { type: "
 					validThinkingLevels: THINKING_EFFORTS,
 				});
 			}
+		} else if (arg === "--experimental-projections") {
+			result.experimentalProjections = true;
 		} else if (arg === "--print" || arg === "-p") {
 			result.print = true;
 		} else if (arg === "--export" && i + 1 < args.length) {
@@ -193,7 +197,10 @@ export function parseArgs(args: string[], extensionFlags?: Map<string, { type: "
 }
 
 export function getExtraHelpText(): string {
-	return `${chalk.bold("Environment Variables:")}
+	return `${chalk.bold("Experimental options:")}
+	  --experimental-projections  Enable experimental projection RPC commands (opt-in)
+
+${chalk.bold("Environment Variables:")}
   ${chalk.dim("# Core Providers")}
   ANTHROPIC_API_KEY          - Anthropic Claude models
   ANTHROPIC_OAUTH_TOKEN      - Anthropic OAuth (takes precedence over API key)

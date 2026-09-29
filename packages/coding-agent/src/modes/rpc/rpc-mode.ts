@@ -18,7 +18,12 @@ import type {
 } from "../../extensibility/extensions";
 import { type Theme, theme } from "../../modes/theme/theme";
 import type { AgentSession } from "../../session/agent-session";
-import { handlePublishProjection, handleSubmitProjectionIntervention } from "./projection-rpc";
+import {
+	getProjectionRpcDisabledResponse,
+	handleGetProjection,
+	handlePublishProjection,
+	handleSubmitProjectionIntervention,
+} from "./projection-rpc";
 import { ProjectionRuntime } from "./projection-runtime";
 import {
 	buildPromptDecisionReport,
@@ -112,7 +117,10 @@ export function requestRpcEditor(
  * Run in RPC mode.
  * Listens for JSON commands on stdin, outputs events and responses on stdout.
  */
-export async function runRpcMode(session: AgentSession): Promise<never> {
+export async function runRpcMode(
+	session: AgentSession,
+	options: { experimentalProjections?: boolean } = {},
+): Promise<never> {
 	// Signal to RPC clients that the server is ready to accept commands
 	process.stdout.write(`${JSON.stringify({ type: "ready" })}\n`);
 	const output = (obj: RpcResponse | RpcExtensionUIRequest | object) => {
@@ -485,6 +493,8 @@ export async function runRpcMode(session: AgentSession): Promise<never> {
 
 	// Handle a single command
 	const handleCommand = async (command: RpcCommand): Promise<RpcResponse> => {
+		const projectionError = getProjectionRpcDisabledResponse(command, options.experimentalProjections === true);
+		if (projectionError) return projectionError;
 		const id = command.id;
 
 		switch (command.type) {
@@ -750,14 +760,18 @@ export async function runRpcMode(session: AgentSession): Promise<never> {
 				return success(id, "publish_projection", result.data);
 			}
 
+			case "get_projection": {
+				const result = handleGetProjection(projectionRuntime, command);
+				return success(id, "get_projection", result.data);
+			}
 			case "submit_projection_intervention": {
 				const result = await handleSubmitProjectionIntervention(projectionRuntime, command, session);
 				return success(id, "submit_projection_intervention", result.data);
 			}
 
 			default: {
-				const unknownCommand = command as { type: string };
-				return error(undefined, unknownCommand.type, `Unknown command: ${unknownCommand.type}`);
+				const unknownCommand = command as { id?: string; type: string };
+				return error(id, unknownCommand.type, `Unknown command: ${unknownCommand.type}`);
 			}
 		}
 	};

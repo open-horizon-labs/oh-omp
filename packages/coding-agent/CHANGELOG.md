@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.15.4] - 2026-09-29
+
+### Added
+
+- Gated projection RPC commands behind default-off `--experimental-projections` and implemented `get_projection` against the current in-process projection runtime, so a kernel image can retrieve snapshots and submit revision-bound interventions. ([#125](https://github.com/open-horizon-labs/oh-omp/pull/125), [oh-kernel#776](https://github.com/open-horizon-labs/oh-kernel/issues/776))
+
 ## [0.15.3] - 2026-09-06
 
 ### Changed

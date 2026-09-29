@@ -16,6 +16,8 @@ import { loadCapability, type SourceMeta } from "../../discovery";
 import { getExtensionNameFromPath } from "../../discovery/helpers";
 import type { ExecOptions } from "../../exec/exec";
 import { execCommand } from "../../exec/exec";
+import type { ProjectionSnapshot } from "../../modes/rpc/projection-types";
+import type { RpcProjectionCommandStatus } from "../../modes/rpc/rpc-types";
 import { assertCodeLoadAllowed } from "../../security/access";
 import type { CustomMessage } from "../../session/messages";
 import { EventBus } from "../../utils/event-bus";
@@ -117,6 +119,14 @@ class ConcreteExtensionAPI implements ExtensionAPI, IExtensionRuntime {
 		private readonly cwd: string,
 		public readonly events: EventBus,
 	) {}
+
+	publishProjection(snapshot: ProjectionSnapshot): RpcProjectionCommandStatus {
+		const handler = this.runtime.publishProjection;
+		if (!handler) {
+			throw new Error("Extension projection publication is unavailable outside opted-in RPC mode.");
+		}
+		return handler(snapshot);
+	}
 
 	on<F extends HandlerFn>(event: string, handler: F): void {
 		const list = this.extension.handlers.get(event) ?? [];

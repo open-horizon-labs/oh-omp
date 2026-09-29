@@ -87,10 +87,13 @@ describe("ProjectionRuntime intervene", () => {
 		expect(result.snapshot.revision).toBe(1);
 	});
 
-	test("returns duplicate for the same key and payload without replacing the snapshot", () => {
+	test("returns duplicate for the same confirmed key and payload without replacing the snapshot", () => {
 		const runtime = new ProjectionRuntime();
 		expect(runtime.publish(snapshot()).status).toBe("accepted");
-		expect(runtime.intervene(intervention()).status).toBe("accepted");
+		const first = runtime.intervene(intervention());
+		expect(first.status).toBe("accepted");
+		if (first.status !== "accepted") return;
+		expect(runtime.confirmIntervention(first.intervention).status).toBe("accepted");
 		const again = runtime.intervene(intervention());
 		expect(again.status).toBe("duplicate");
 		if (again.status !== "duplicate") return;
@@ -145,15 +148,70 @@ describe("ProjectionRuntime intervene", () => {
 		});
 	});
 
-	test("keeps idempotency keys across a later publish", () => {
+	test("keeps confirmed idempotency keys across a later publish", () => {
 		const runtime = new ProjectionRuntime();
 		expect(runtime.publish(snapshot()).status).toBe("accepted");
-		expect(runtime.intervene(intervention()).status).toBe("accepted");
+		const first = runtime.intervene(intervention());
+		expect(first.status).toBe("accepted");
+		if (first.status !== "accepted") return;
+		expect(runtime.confirmIntervention(first.intervention).status).toBe("accepted");
 		expect(
-			runtime.publish(snapshot({ revision: 2, view: { kind: "isolated-html", html: "<p>two</p>" } })).status,
+			runtime.publish(
+				snapshot({
+					revision: 2,
+					view: { kind: "isolated-html", html: "<p>two</p>" },
+				}),
+			).status,
 		).toBe("accepted");
 		const again = runtime.intervene(intervention());
 		expect(again.status).toBe("duplicate");
+		if (again.status !== "duplicate") return;
+		expect(again.snapshot.revision).toBe(1);
+	});
+
+	test("keeps a pending key unknown until explicitly confirmed or failed", () => {
+		const runtime = new ProjectionRuntime();
+		expect(runtime.publish(snapshot()).status).toBe("accepted");
+		const first = runtime.intervene(intervention());
+		expect(first.status).toBe("accepted");
+		if (first.status !== "accepted") return;
+		expect(runtime.intervene(intervention())).toEqual({
+			status: "unknown",
+			reason: "intervention-delivery-pending",
+		});
+		expect(runtime.failIntervention(first.intervention)).toEqual({
+			status: "unknown",
+			reason: "intervention-delivery-unknown",
+		});
+		expect(runtime.intervene(intervention())).toEqual({
+			status: "unknown",
+			reason: "intervention-delivery-unknown",
+		});
+		expect(runtime.confirmIntervention(first.intervention)).toEqual({
+			status: "unknown",
+			reason: "intervention-delivery-unknown",
+		});
+	});
+	test("does not confirm or fail a mismatched intervention key", () => {
+		const runtime = new ProjectionRuntime();
+		expect(runtime.publish(snapshot()).status).toBe("accepted");
+		const first = runtime.intervene(intervention());
+		expect(first.status).toBe("accepted");
+		if (first.status !== "accepted") return;
+		const mismatched = { ...first.intervention, input: { changed: true } };
+		expect(runtime.confirmIntervention(mismatched)).toEqual({
+			status: "unknown",
+			reason: "intervention-delivery-confirmation-mismatch",
+		});
+		expect(runtime.failIntervention(mismatched)).toEqual({
+			status: "unknown",
+			reason: "intervention-delivery-confirmation-mismatch",
+		});
+		expect(runtime.intervene(intervention())).toEqual({
+			status: "unknown",
+			reason: "intervention-delivery-pending",
+		});
+		expect(runtime.confirmIntervention(first.intervention).status).toBe("accepted");
 	});
 
 	test("returns invalid for an unparsable intervention", () => {

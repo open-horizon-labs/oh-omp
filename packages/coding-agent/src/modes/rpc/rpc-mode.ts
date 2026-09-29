@@ -389,6 +389,13 @@ export async function runRpcMode(
 		extensionRunner.initialize(
 			// ExtensionActions
 			{
+				publishProjection: options.experimentalProjections
+					? snapshot => {
+							const result = handlePublishProjection(projectionRuntime, { snapshot });
+							if (result.event) output(result.event);
+							return result.data;
+						}
+					: undefined,
 				sendMessage: (message, options) => {
 					session.sendCustomMessage(message, options).catch(e => {
 						output(error(undefined, "extension_send", e.message));

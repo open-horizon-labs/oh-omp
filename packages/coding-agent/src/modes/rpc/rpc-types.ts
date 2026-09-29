@@ -106,6 +106,7 @@ export interface RpcSessionState {
 export type RpcProjectionCommandStatus =
 	| { status: "accepted"; projectionId: string; revision: number }
 	| { status: "duplicate"; projectionId: string; revision: number }
+	| { status: "unknown"; reason: string }
 	| { status: "conflict"; reason: string }
 	| { status: "invalid"; reason: string };
 

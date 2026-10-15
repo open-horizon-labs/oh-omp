@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.15.5] - 2026-10-15
+
+### Fixed
+
+- Updated the Claude subscription compatibility version to `2.1.280` for model requests and usage checks, fixing `claude_code_version_too_old` errors for models that require the newer client version.
+
 ## [0.15.4] - 2026-09-29
 
 ### Added

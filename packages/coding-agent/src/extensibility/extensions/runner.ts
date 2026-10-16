@@ -204,6 +204,8 @@ export class ExtensionRunner {
 		this.runtime.setModel = actions.setModel;
 		this.runtime.getThinkingLevel = actions.getThinkingLevel;
 		this.runtime.setThinkingLevel = actions.setThinkingLevel;
+		// This is intentionally assigned on every initialization so an opted-in RPC callback cannot leak.
+		this.runtime.publishProjection = actions.publishProjection;
 
 		// Context actions (required)
 		this.#getModel = contextActions.getModel;

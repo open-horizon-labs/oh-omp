@@ -1,4 +1,4 @@
-import type { ProjectionRuntime } from "./projection-runtime";
+import type { ProjectionInterveneResult, ProjectionRuntime } from "./projection-runtime";
 import type { ProjectionSnapshot } from "./projection-types";
 import type { RpcCommand, RpcProjectionCommandStatus, RpcProjectionPublishedEvent, RpcResponse } from "./rpc-types";
 
@@ -99,50 +99,62 @@ export function handleGetProjection(
 	return { data: snapshot === undefined ? null : structuredClone(snapshot) };
 }
 
+function interventionStatus(result: ProjectionInterveneResult): ProjectionCommandStatus {
+	if (result.status === "accepted") {
+		return {
+			status: "accepted",
+			projectionId: result.intervention.projectionId,
+			revision: result.snapshot.revision,
+		};
+	}
+	if (result.status === "duplicate") {
+		return {
+			status: "duplicate",
+			projectionId: result.intervention.projectionId,
+			revision: result.snapshot.revision,
+		};
+	}
+	return result;
+}
+
 export async function handleSubmitProjectionIntervention(
 	runtime: ProjectionRuntime,
 	command: { intervention?: unknown },
 	sink?: ProjectionContextSink,
 ): Promise<{ data: ProjectionCommandStatus }> {
 	const result = runtime.intervene(command.intervention);
-	if (result.status === "accepted") {
-		if (sink) {
-			try {
-				const details: ProjectionInterventionMessage["details"] = {
-					projectionId: result.intervention.projectionId,
-					observedRevision: result.intervention.observedRevision,
-					operationId: result.intervention.operationId,
-					idempotencyKey: result.intervention.idempotencyKey,
-				};
-				if ("input" in result.intervention) {
-					details.input = result.intervention.input;
-				}
-				await sink.sendCustomMessage(interventionMessage(details), {
-					triggerTurn: false,
-					deliverAs: "nextTurn",
-				});
-			} catch {
-				// Recorded first; ACK accepted even if context emit fails.
-			}
-		}
+	if (result.status !== "accepted") return { data: interventionStatus(result) };
+
+	const details: ProjectionInterventionMessage["details"] = {
+		projectionId: result.intervention.projectionId,
+		observedRevision: result.intervention.observedRevision,
+		operationId: result.intervention.operationId,
+		idempotencyKey: result.intervention.idempotencyKey,
+	};
+	if ("input" in result.intervention) {
+		details.input = result.intervention.input;
+	}
+
+	if (!sink) {
 		return {
-			data: {
-				status: "accepted",
-				projectionId: result.intervention.projectionId,
-				revision: result.snapshot.revision,
-			},
+			data: interventionStatus(runtime.failIntervention(result.intervention)),
 		};
 	}
-	if (result.status === "duplicate") {
+
+	try {
+		await sink.sendCustomMessage(interventionMessage(details), {
+			triggerTurn: false,
+			deliverAs: "nextTurn",
+		});
+	} catch {
 		return {
-			data: {
-				status: "duplicate",
-				projectionId: result.intervention.projectionId,
-				revision: result.snapshot.revision,
-			},
+			data: interventionStatus(runtime.failIntervention(result.intervention)),
 		};
 	}
-	return { data: result };
+
+	return {
+		data: interventionStatus(runtime.confirmIntervention(result.intervention)),
+	};
 }
 
 const PROJECTION_RPC_COMMANDS = new Set(["publish_projection", "get_projection", "submit_projection_intervention"]);

@@ -31,6 +31,8 @@ import type { ModelRegistry } from "../../config/model-registry";
 import type { BashResult } from "../../exec/bash-executor";
 import type { ExecOptions, ExecResult } from "../../exec/exec";
 import type { PythonResult } from "../../ipy/executor";
+import type { ProjectionSnapshot } from "../../modes/rpc/projection-types";
+import type { RpcProjectionCommandStatus } from "../../modes/rpc/rpc-types";
 import type { Theme } from "../../modes/theme/theme";
 import type { EditToolDetails } from "../../patch";
 import type { CompactionPreparation, CompactionResult } from "../../session/compaction";
@@ -1014,6 +1016,9 @@ export interface ExtensionAPI {
 	/** Register a tool that the LLM can call. */
 	registerTool<TParams extends TSchema = TSchema, TDetails = unknown>(tool: ToolDefinition<TParams, TDetails>): void;
 
+	/** Publish a validated familiar projection through the opted-in RPC host. */
+	publishProjection(snapshot: ProjectionSnapshot): RpcProjectionCommandStatus;
+
 	// =========================================================================
 	// Command, Shortcut, Flag Registration
 	// =========================================================================
@@ -1275,6 +1280,8 @@ export type GetThinkingLevelHandler = () => ThinkingLevel | undefined;
 
 export type SetThinkingLevelHandler = (level: ThinkingLevel, persist?: boolean) => void;
 
+export type PublishProjectionHandler = (snapshot: ProjectionSnapshot) => RpcProjectionCommandStatus;
+
 /** Shared state created by loader, used during registration and runtime. */
 export interface ExtensionRuntimeState {
 	flagValues: Map<string, boolean | string>;
@@ -1295,6 +1302,7 @@ export interface ExtensionActions {
 	setModel: SetModelHandler;
 	getThinkingLevel: GetThinkingLevelHandler;
 	setThinkingLevel: SetThinkingLevelHandler;
+	publishProjection?: PublishProjectionHandler;
 }
 
 /** Actions for ExtensionContext (ctx.* in event handlers). */

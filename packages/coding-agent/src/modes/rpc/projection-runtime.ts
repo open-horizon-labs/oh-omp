@@ -13,13 +13,22 @@ export type ProjectionPublishResult =
 export type ProjectionInterveneResult =
 	| { status: "accepted"; intervention: ProjectionIntervention; snapshot: ProjectionSnapshot }
 	| { status: "duplicate"; intervention: ProjectionIntervention; snapshot: ProjectionSnapshot }
+	| { status: "unknown"; reason: string }
 	| { status: "conflict"; reason: string }
 	| { status: "invalid"; reason: string };
+
+type InterventionDeliveryState = "pending" | "confirmed" | "unknown";
 
 type StoredIntervention = {
 	canonical: string;
 	intervention: ProjectionIntervention;
+	snapshot: ProjectionSnapshot;
+	delivery: InterventionDeliveryState;
 };
+
+const DELIVERY_PENDING_REASON = "intervention-delivery-pending";
+const DELIVERY_UNKNOWN_REASON = "intervention-delivery-unknown";
+const DELIVERY_CONFIRMATION_MISMATCH_REASON = "intervention-delivery-confirmation-mismatch";
 
 function invalidReason(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
@@ -92,14 +101,16 @@ export class ProjectionRuntime {
 			if (stored.canonical !== canonicalIntervention(intervention)) {
 				return { status: "conflict", reason: "idempotency-conflict" };
 			}
-			const snapshot = this.#snapshots.get(intervention.projectionId);
-			if (snapshot === undefined) {
-				return { status: "conflict", reason: "unknown-projection" };
+			if (stored.delivery === "pending") {
+				return { status: "unknown", reason: DELIVERY_PENDING_REASON };
+			}
+			if (stored.delivery === "unknown") {
+				return { status: "unknown", reason: DELIVERY_UNKNOWN_REASON };
 			}
 			return {
 				status: "duplicate",
 				intervention: stored.intervention,
-				snapshot,
+				snapshot: stored.snapshot,
 			};
 		}
 
@@ -117,11 +128,65 @@ export class ProjectionRuntime {
 		const nextStored: StoredIntervention = {
 			canonical: canonicalIntervention(intervention),
 			intervention,
+			snapshot,
+			delivery: "pending",
 		};
 		const nextByKey = storedByKey ?? new Map<string, StoredIntervention>();
 		nextByKey.set(intervention.idempotencyKey, nextStored);
 		this.#interventions.set(intervention.projectionId, nextByKey);
 
 		return { status: "accepted", intervention, snapshot };
+	}
+
+	confirmIntervention(intervention: ProjectionIntervention): ProjectionInterveneResult {
+		const stored = this.#storedIntervention(intervention);
+		if (stored === undefined || stored.canonical !== canonicalIntervention(intervention)) {
+			return {
+				status: "unknown",
+				reason: DELIVERY_CONFIRMATION_MISMATCH_REASON,
+			};
+		}
+		if (stored.delivery === "unknown") {
+			return { status: "unknown", reason: DELIVERY_UNKNOWN_REASON };
+		}
+		if (stored.delivery === "confirmed") {
+			return {
+				status: "duplicate",
+				intervention: stored.intervention,
+				snapshot: stored.snapshot,
+			};
+		}
+		stored.delivery = "confirmed";
+		return {
+			status: "accepted",
+			intervention: stored.intervention,
+			snapshot: stored.snapshot,
+		};
+	}
+
+	failIntervention(intervention: ProjectionIntervention): ProjectionInterveneResult {
+		const stored = this.#storedIntervention(intervention);
+		if (stored === undefined || stored.canonical !== canonicalIntervention(intervention)) {
+			return {
+				status: "unknown",
+				reason: DELIVERY_CONFIRMATION_MISMATCH_REASON,
+			};
+		}
+		if (stored.delivery === "confirmed") {
+			return {
+				status: "duplicate",
+				intervention: stored.intervention,
+				snapshot: stored.snapshot,
+			};
+		}
+		if (stored.delivery === "unknown") {
+			return { status: "unknown", reason: DELIVERY_UNKNOWN_REASON };
+		}
+		stored.delivery = "unknown";
+		return { status: "unknown", reason: DELIVERY_UNKNOWN_REASON };
+	}
+
+	#storedIntervention(intervention: ProjectionIntervention): StoredIntervention | undefined {
+		return this.#interventions.get(intervention.projectionId)?.get(intervention.idempotencyKey);
 	}
 }
